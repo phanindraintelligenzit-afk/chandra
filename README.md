@@ -12,20 +12,159 @@ Autonomous AWS observation agent that emits a daily Cloud Health Briefing coveri
 
 ## Architecture
 
+### LangGraph Observation Pipeline
+
+```mermaid
+flowchart TD
+    START([▶ START]) --> onboard["🔑 onboard_account\n resolve account ID + regions"]
+    onboard --> fanout{"⚡ fanout_observers\n Send per KRA"}
+
+    fanout -->|parallel| cost["💰 observe_cost\ntools/cost.py"]
+    fanout -->|parallel| security["🔒 observe_security\ntools/security.py"]
+    fanout -->|parallel| compliance["📋 observe_compliance\ntools/compliance.py"]
+    fanout -->|parallel| performance["⚡ observe_performance\ntools/performance.py"]
+    fanout -->|parallel| reliability["🛡️ observe_reliability\ntools/reliability.py"]
+
+    cost -->|list[Finding]| analyze
+    security -->|list[Finding]| analyze
+    compliance -->|list[Finding]| analyze
+    performance -->|list[Finding]| analyze
+    reliability -->|list[Finding]| analyze
+
+    analyze["🤖 analyze\nLLM rank + dedup\n+ scorecard math"] --> compose["📝 compose_briefing\nLLM executive summary\n+ Markdown/JSON render"]
+    compose --> persist["💾 persist\nwrite Run, Finding,\nBriefing rows"]
+    persist --> END([⏹ END])
+
+    style START fill:#22c55e,color:#fff
+    style END fill:#ef4444,color:#fff
+    style fanout fill:#f59e0b,color:#fff
+    style analyze fill:#8b5cf6,color:#fff
+    style compose fill:#8b5cf6,color:#fff
 ```
-START → onboard_account → fanout_observers
-                             ├─► observe_cost
-                             ├─► observe_security
-                             ├─► observe_compliance
-                             ├─► observe_performance
-                             └─► observe_reliability
-                                   └─► analyze (LLM rank + dedup)
-                                         └─► compose_briefing (LLM narrative)
-                                               └─► persist → END
+
+### Full System Architecture
+
+```mermaid
+flowchart TB
+    subgraph CLI["🖥️ CLI  (cli.py — Typer)"]
+        run_cmd["chandra run"]
+        eval_cmd["chandra eval"]
+        render_cmd["chandra render"]
+    end
+
+    subgraph Graph["🔄 LangGraph Pipeline  (graphs/)"]
+        direction TB
+        G1[onboard_account]
+        G2["observe_* ×5\n(parallel branches)"]
+        G3[analyze]
+        G4[compose_briefing]
+        G5[persist]
+        G1 --> G2 --> G3 --> G4 --> G5
+    end
+
+    subgraph Tools["🔧 KRA Detectors  (tools/)  — boto3 only, no LLM"]
+        T1[cost.py]
+        T2[security.py]
+        T3[compliance.py]
+        T4[performance.py]
+        T5[reliability.py]
+        TBASE[base.py\nDetectorContext\npaginate()]
+    end
+
+    subgraph Briefing["📄 Briefing  (briefing/)"]
+        B1[composer.py\nllm_rank · score_findings\nrender_markdown]
+        B2[schemas.py\nFinding · AnalyzedFinding\nScorecard · BriefingPayload]
+    end
+
+    subgraph AWS["☁️ AWS Layer  (aws/)"]
+        A1[client_factory.py\nAwsClientFactory\nadaptive retry]
+        A2[regions.py\nactive_regions()]
+    end
+
+    subgraph LLM["🤖 LLM  (Amazon Bedrock)"]
+        L1["Claude Sonnet\nvia ChatBedrockConverse"]
+        L2["prompts/\nanalyzer.md · briefer.md\nobserver.md"]
+    end
+
+    subgraph DB["🗄️ Persistence  (db/ + Postgres)"]
+        D1[session.py\nsession_scope()]
+        D2["models.py\nRun · Finding\nBriefing · EvalRun"]
+        D3["Alembic migrations"]
+        CP["PostgresSaver\n(LangGraph checkpointer)"]
+    end
+
+    subgraph Dashboard["📊 Dashboard  (dashboard/app.py)"]
+        Dash["Streamlit\nLatest briefing\nFindings explorer\nEval trend"]
+    end
+
+    subgraph Evals["🧪 Eval Harness  (evals/)"]
+        EH[harness.py]
+        SM[seed_manifest.yaml\n10 seeded misconfigs]
+        ER["reports/\nbriefing-*.md + .json"]
+    end
+
+    subgraph IAC["🏗️ Infrastructure  (iac/synthetic_env/)"]
+        TF["Terraform modules\n10 known misconfigs\nseeded in burner AWS"]
+    end
+
+    run_cmd --> Graph
+    eval_cmd --> EH
+    render_cmd --> DB
+
+    Graph --> Tools
+    Graph --> Briefing
+    Graph --> DB
+
+    Tools --> AWS
+    Tools --> TBASE
+    Briefing --> LLM
+    Briefing --> B2
+    LLM --> L2
+
+    DB --> D1
+    DB --> D2
+    DB --> D3
+    Graph -.->|checkpointing| CP
+    CP --> DB
+
+    Dashboard --> DB
+    EH --> Graph
+    EH --> SM
+    EH --> ER
+    IAC --> AWS
+```
+
+### State Flow & Data Model
+
+```mermaid
+flowchart LR
+    subgraph ChandraState["ChandraState  (TypedDict)"]
+        S1[run_id]
+        S2[account_id]
+        S3["regions: list[str]"]
+        S4["raw_findings: dict[KRA → list[Finding]]\n⬡ merge_raw_findings reducer"]
+        S5["analyzed_findings: list[AnalyzedFinding]"]
+        S6["scorecard: dict[str, int]"]
+        S7[briefing_md: str]
+        S8["briefing_json: dict"]
+        S9["errors: list[dict]  ⬡ add reducer"]
+    end
+
+    subgraph DBSchema["Postgres Schema"]
+        R["runs\nid · account_id · status\nstarted_at · finished_at"]
+        F["findings\nkra · severity · detector_id\nresource_arn · evidence_jsonb"]
+        B["briefings\nscorecard_jsonb · markdown_text\nfindings_count"]
+        E["eval_runs\nrecall_overall · recall_per_kra\nprecision_overall · fp_count"]
+        R -->|1:N| F
+        R -->|1:1| B
+        R -->|1:1| E
+    end
+
+    ChandraState -->|persist node writes| DBSchema
 ```
 
 Observers fan out via `Send(...)`. Each observer calls a deterministic boto3 tool module and returns
-`list[Finding]`. The LLM is invoked only in `analyze` and `compose_briefing` — it never invents findings.
+`list[Finding]`. The LLM is invoked only in `analyze` and `compose_briefing` — it **never invents findings**.
 
 ## Success bar
 
