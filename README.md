@@ -16,28 +16,28 @@ Autonomous AWS observation agent that emits a daily Cloud Health Briefing coveri
 
 ```mermaid
 flowchart TD
-    START([▶ START]) --> onboard["🔑 onboard_account\n resolve account ID + regions"]
-    onboard --> fanout{"⚡ fanout_observers\n Send per KRA"}
+    START([START]) --> onboard["onboard_account\nresolve account ID + regions"]
+    onboard --> fanout{"fanout_observers\nSend per KRA"}
 
-    fanout -->|parallel| cost["💰 observe_cost\ntools/cost.py"]
-    fanout -->|parallel| security["🔒 observe_security\ntools/security.py"]
-    fanout -->|parallel| compliance["📋 observe_compliance\ntools/compliance.py"]
-    fanout -->|parallel| performance["⚡ observe_performance\ntools/performance.py"]
-    fanout -->|parallel| reliability["🛡️ observe_reliability\ntools/reliability.py"]
+    fanout -->|parallel| cost["observe_cost\ntools/cost.py"]
+    fanout -->|parallel| security["observe_security\ntools/security.py"]
+    fanout -->|parallel| compliance["observe_compliance\ntools/compliance.py"]
+    fanout -->|parallel| performance["observe_performance\ntools/performance.py"]
+    fanout -->|parallel| reliability["observe_reliability\ntools/reliability.py"]
 
-    cost -->|list[Finding]| analyze
-    security -->|list[Finding]| analyze
-    compliance -->|list[Finding]| analyze
-    performance -->|list[Finding]| analyze
-    reliability -->|list[Finding]| analyze
+    cost -->|findings| analyze
+    security -->|findings| analyze
+    compliance -->|findings| analyze
+    performance -->|findings| analyze
+    reliability -->|findings| analyze
 
-    analyze["🤖 analyze\nLLM rank + dedup\n+ scorecard math"] --> compose["📝 compose_briefing\nLLM executive summary\n+ Markdown/JSON render"]
-    compose --> persist["💾 persist\nwrite Run, Finding,\nBriefing rows"]
-    persist --> END([⏹ END])
+    analyze["analyze\nLLM rank + dedup\n+ scorecard math"] --> compose["compose_briefing\nLLM executive summary\n+ Markdown and JSON render"]
+    compose --> persist["persist\nwrite Run, Finding,\nBriefing rows"]
+    persist --> END([END])
 
     style START fill:#22c55e,color:#fff
     style END fill:#ef4444,color:#fff
-    style fanout fill:#f59e0b,color:#fff
+    style fanout fill:#f59e0b,color:#000
     style analyze fill:#8b5cf6,color:#fff
     style compose fill:#8b5cf6,color:#fff
 ```
@@ -46,64 +46,64 @@ flowchart TD
 
 ```mermaid
 flowchart TB
-    subgraph CLI["🖥️ CLI  (cli.py — Typer)"]
+    subgraph CLI["CLI  cli.py — Typer"]
         run_cmd["chandra run"]
         eval_cmd["chandra eval"]
         render_cmd["chandra render"]
     end
 
-    subgraph Graph["🔄 LangGraph Pipeline  (graphs/)"]
+    subgraph Graph["LangGraph Pipeline  graphs/"]
         direction TB
         G1[onboard_account]
-        G2["observe_* ×5\n(parallel branches)"]
+        G2["observe x5\nparallel branches"]
         G3[analyze]
         G4[compose_briefing]
         G5[persist]
         G1 --> G2 --> G3 --> G4 --> G5
     end
 
-    subgraph Tools["🔧 KRA Detectors  (tools/)  — boto3 only, no LLM"]
+    subgraph Tools["KRA Detectors  tools/  — boto3 only, no LLM"]
         T1[cost.py]
         T2[security.py]
         T3[compliance.py]
         T4[performance.py]
         T5[reliability.py]
-        TBASE[base.py\nDetectorContext\npaginate()]
+        TBASE["base.py\nDetectorContext\npaginate"]
     end
 
-    subgraph Briefing["📄 Briefing  (briefing/)"]
-        B1[composer.py\nllm_rank · score_findings\nrender_markdown]
-        B2[schemas.py\nFinding · AnalyzedFinding\nScorecard · BriefingPayload]
+    subgraph Briefing["Briefing  briefing/"]
+        B1["composer.py\nllm_rank, score_findings\nrender_markdown"]
+        B2["schemas.py\nFinding, AnalyzedFinding\nScorecard, BriefingPayload"]
     end
 
-    subgraph AWS["☁️ AWS Layer  (aws/)"]
-        A1[client_factory.py\nAwsClientFactory\nadaptive retry]
-        A2[regions.py\nactive_regions()]
+    subgraph AWS["AWS Layer  aws/"]
+        A1["client_factory.py\nAwsClientFactory\nadaptive retry"]
+        A2["regions.py\nactive_regions"]
     end
 
-    subgraph LLM["🤖 LLM  (Amazon Bedrock)"]
+    subgraph LLM["LLM  Amazon Bedrock"]
         L1["Claude Sonnet\nvia ChatBedrockConverse"]
-        L2["prompts/\nanalyzer.md · briefer.md\nobserver.md"]
+        L2["prompts/\nanalyzer.md, briefer.md\nobserver.md"]
     end
 
-    subgraph DB["🗄️ Persistence  (db/ + Postgres)"]
-        D1[session.py\nsession_scope()]
-        D2["models.py\nRun · Finding\nBriefing · EvalRun"]
+    subgraph DB["Persistence  db/ + Postgres"]
+        D1["session.py\nsession_scope"]
+        D2["models.py\nRun, Finding\nBriefing, EvalRun"]
         D3["Alembic migrations"]
-        CP["PostgresSaver\n(LangGraph checkpointer)"]
+        CP["PostgresSaver\nLangGraph checkpointer"]
     end
 
-    subgraph Dashboard["📊 Dashboard  (dashboard/app.py)"]
+    subgraph Dashboard["Dashboard  dashboard/app.py"]
         Dash["Streamlit\nLatest briefing\nFindings explorer\nEval trend"]
     end
 
-    subgraph Evals["🧪 Eval Harness  (evals/)"]
+    subgraph Evals["Eval Harness  evals/"]
         EH[harness.py]
-        SM[seed_manifest.yaml\n10 seeded misconfigs]
-        ER["reports/\nbriefing-*.md + .json"]
+        SM["seed_manifest.yaml\n10 seeded misconfigs"]
+        ER["reports/\nbriefing md and json"]
     end
 
-    subgraph IAC["🏗️ Infrastructure  (iac/synthetic_env/)"]
+    subgraph IAC["Infrastructure  iac/synthetic_env/"]
         TF["Terraform modules\n10 known misconfigs\nseeded in burner AWS"]
     end
 
@@ -138,26 +138,26 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph ChandraState["ChandraState  (TypedDict)"]
+    subgraph ChandraState["ChandraState TypedDict"]
         S1[run_id]
         S2[account_id]
-        S3["regions: list[str]"]
-        S4["raw_findings: dict[KRA → list[Finding]]\n⬡ merge_raw_findings reducer"]
-        S5["analyzed_findings: list[AnalyzedFinding]"]
-        S6["scorecard: dict[str, int]"]
-        S7[briefing_md: str]
-        S8["briefing_json: dict"]
-        S9["errors: list[dict]  ⬡ add reducer"]
+        S3["regions: list of str"]
+        S4["raw_findings: KRA to list of Finding\nreduced by merge_raw_findings"]
+        S5["analyzed_findings: list of AnalyzedFinding"]
+        S6["scorecard: str to int"]
+        S7[briefing_md]
+        S8[briefing_json]
+        S9["errors: list of dict\nreduced by add"]
     end
 
     subgraph DBSchema["Postgres Schema"]
-        R["runs\nid · account_id · status\nstarted_at · finished_at"]
-        F["findings\nkra · severity · detector_id\nresource_arn · evidence_jsonb"]
-        B["briefings\nscorecard_jsonb · markdown_text\nfindings_count"]
-        E["eval_runs\nrecall_overall · recall_per_kra\nprecision_overall · fp_count"]
-        R -->|1:N| F
-        R -->|1:1| B
-        R -->|1:1| E
+        R["runs\nid, account_id, status\nstarted_at, finished_at"]
+        F["findings\nkra, severity, detector_id\nresource_arn, evidence_jsonb"]
+        B["briefings\nscorecard_jsonb, markdown_text\nfindings_count"]
+        E["eval_runs\nrecall_overall, recall_per_kra\nprecision_overall, fp_count"]
+        R -->|1 to N| F
+        R -->|1 to 1| B
+        R -->|1 to 1| E
     end
 
     ChandraState -->|persist node writes| DBSchema
