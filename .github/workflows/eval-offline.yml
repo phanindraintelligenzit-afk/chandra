@@ -1,0 +1,78 @@
+name: eval-offline
+
+# Runs the regression eval against a checked-in JSONL fixture, no AWS creds
+# required. Skips gracefully until LG-08 ships the fixture so this workflow
+# can be merged early and start protecting recall the moment the fixture lands.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Nightly at 02:00 UTC to catch any drift introduced through dependency bumps
+    - cron: "0 2 * * *"
+
+concurrency:
+  group: eval-offline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-offline:
+    name: Regression eval (offline fixture)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: chandra
+          POSTGRES_PASSWORD: chandra
+          POSTGRES_DB: chandra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_URL: postgresql+psycopg://chandra:chandra@localhost:5432/chandra
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Skip until fixture exists
+        id: gate
+        run: |
+          if [ -f evals/fixtures/baseline_v1.jsonl ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::evals/fixtures/baseline_v1.jsonl not present yet (waiting on LG-08). Skipping."
+          fi
+
+      - name: Set up Python 3.12
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.gate.outputs.ready == 'true'
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        if: steps.gate.outputs.ready == 'true'
+        run: uv sync --all-extras
+
+      - name: Migrate
+        if: steps.gate.outputs.ready == 'true'
+        run: uv run alembic upgrade head
+
+      - name: Run offline eval
+        if: steps.gate.outputs.ready == 'true'
+        run: uv run chandra eval --fixture evals/fixtures/baseline_v1.jsonl
