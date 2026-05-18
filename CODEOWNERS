@@ -1,0 +1,65 @@
+# Chandra — Code review routing
+# -----------------------------------------------------------------------------
+# When a PR touches a path on the left, the team on the right is auto-requested
+# for review. Branch protection on `main` requires at least one approval, so
+# CODEOWNERS effectively gates who can merge what.
+#
+# IMPORTANT — placeholder handles below. Before merging COORD-01, replace the
+# `@intelligenzit/<team>` placeholders with either:
+#   (a) Actual GitHub team slugs after creating these teams in the org, or
+#   (b) Individual GitHub usernames (e.g. `@maheshwar-handle`).
+#
+# Team composition (2026-05):
+#   AWS         -> Maheshwar
+#   LangGraph   -> Siva
+#   Frontend    -> Aishani
+#   Intern/Docs -> Kshiraja
+#   Project     -> Phani (Phanindra Malladi)
+# -----------------------------------------------------------------------------
+
+# Fallback owner for anything not matched below. The project lead reviews
+# cross-cutting / unowned changes.
+*                                       @intelligenzit/chandra-leads
+
+# LangGraph topology, state, nodes, prompts, briefing composer.
+/src/chandra/graphs/                    @intelligenzit/langgraph-team
+/src/chandra/briefing/                  @intelligenzit/langgraph-team
+/src/chandra/prompts/                   @intelligenzit/langgraph-team
+/src/chandra/kras.py                    @intelligenzit/langgraph-team
+
+# AWS-facing code: detectors, client factory, IaC, observability.
+/src/chandra/aws/                       @intelligenzit/aws-team
+/src/chandra/tools/                     @intelligenzit/aws-team
+/src/chandra/observability.py           @intelligenzit/aws-team @intelligenzit/langgraph-team
+/iac/                                   @intelligenzit/aws-team
+/Dockerfile                             @intelligenzit/aws-team
+/docker-compose.yml                     @intelligenzit/aws-team
+
+# Frontend surface — Streamlit (legacy debug) + future FastAPI + Next.js.
+/src/chandra/dashboard/                 @intelligenzit/frontend-team
+/src/chandra/api/                       @intelligenzit/frontend-team
+
+# Database models + migrations — schema changes require AWS + LangGraph signoff
+# because both write/read from these tables.
+/src/chandra/db/                        @intelligenzit/aws-team @intelligenzit/langgraph-team
+
+# Evals — owned by LangGraph (recall/precision logic) but AWS reviews any
+# Terraform changes inside the synthetic env.
+/evals/                                 @intelligenzit/langgraph-team
+
+# Tests — owned by whoever owns the code under test; default to LangGraph for
+# cross-cutting test infra.
+/tests/                                 @intelligenzit/langgraph-team
+
+# Docs + runbooks — Kshiraja is the docs owner per COORD-03 and COORD-05.
+/docs/                                  @intelligenzit/docs
+/README.md                              @intelligenzit/chandra-leads
+/SECURITY.md                            @intelligenzit/chandra-leads
+/LICENSE                                @intelligenzit/chandra-leads
+
+# Repo plumbing — only repo admins can change CI / CODEOWNERS to prevent
+# bypassing review by editing the rules themselves.
+/.github/                               @intelligenzit/chandra-leads
+/CODEOWNERS                             @intelligenzit/chandra-leads
+/pyproject.toml                         @intelligenzit/chandra-leads
+/Makefile                               @intelligenzit/chandra-leads
