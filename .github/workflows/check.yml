@@ -1,0 +1,69 @@
+name: check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ruff + mypy + pytest
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: chandra
+          POSTGRES_PASSWORD: chandra
+          POSTGRES_DB: chandra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_URL: postgresql+psycopg://chandra:chandra@localhost:5432/chandra
+      AWS_DEFAULT_REGION: us-east-1
+      # Intentionally NOT setting any real AWS or LangSmith creds — unit tests
+      # use moto and a no-op Bedrock path. Integration tests are skipped in CI.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run alembic migrations
+        run: uv run alembic upgrade head
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format check
+        run: uv run ruff format --check src tests
+
+      - name: mypy --strict
+        run: uv run mypy src
+
+      - name: pytest (unit only)
+        run: uv run pytest -m "not integration"
