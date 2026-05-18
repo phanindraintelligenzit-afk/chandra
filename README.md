@@ -16,23 +16,23 @@ Autonomous AWS observation agent that emits a daily Cloud Health Briefing coveri
 
 ```mermaid
 flowchart TD
-    START([START]) --> onboard["onboard_account\nresolve account ID + regions"]
-    onboard --> fanout{"fanout_observers\nSend per KRA"}
+    START([START]) --> onboard["onboard_account"]
+    onboard --> fanout{"fanout_observers"}
 
-    fanout -->|parallel| cost["observe_cost\ntools/cost.py"]
-    fanout -->|parallel| security["observe_security\ntools/security.py"]
-    fanout -->|parallel| compliance["observe_compliance\ntools/compliance.py"]
-    fanout -->|parallel| performance["observe_performance\ntools/performance.py"]
-    fanout -->|parallel| reliability["observe_reliability\ntools/reliability.py"]
+    fanout -->|parallel| cost["observe_cost"]
+    fanout -->|parallel| security["observe_security"]
+    fanout -->|parallel| compliance["observe_compliance"]
+    fanout -->|parallel| performance["observe_performance"]
+    fanout -->|parallel| reliability["observe_reliability"]
 
-    cost -->|findings| analyze
-    security -->|findings| analyze
-    compliance -->|findings| analyze
-    performance -->|findings| analyze
-    reliability -->|findings| analyze
+    cost --> analyze["analyze\nLLM rank and dedup\nscorecard math"]
+    security --> analyze
+    compliance --> analyze
+    performance --> analyze
+    reliability --> analyze
 
-    analyze["analyze\nLLM rank + dedup\n+ scorecard math"] --> compose["compose_briefing\nLLM executive summary\n+ Markdown and JSON render"]
-    compose --> persist["persist\nwrite Run, Finding,\nBriefing rows"]
+    analyze --> compose["compose_briefing\nLLM executive summary\nMarkdown and JSON render"]
+    compose --> persist["persist\nwrite Run Finding Briefing rows"]
     persist --> END([END])
 
     style START fill:#22c55e,color:#fff
@@ -46,121 +46,117 @@ flowchart TD
 
 ```mermaid
 flowchart TB
-    subgraph CLI["CLI  cli.py — Typer"]
+    subgraph CLI["CLI via cli.py and Typer"]
         run_cmd["chandra run"]
         eval_cmd["chandra eval"]
         render_cmd["chandra render"]
     end
 
-    subgraph Graph["LangGraph Pipeline  graphs/"]
-        direction TB
-        G1[onboard_account]
-        G2["observe x5\nparallel branches"]
-        G3[analyze]
-        G4[compose_briefing]
-        G5[persist]
+    subgraph Graph["LangGraph Pipeline in graphs/"]
+        G1["onboard_account"]
+        G2["observe x5 parallel"]
+        G3["analyze"]
+        G4["compose_briefing"]
+        G5["persist"]
         G1 --> G2 --> G3 --> G4 --> G5
     end
 
-    subgraph Tools["KRA Detectors  tools/  — boto3 only, no LLM"]
-        T1[cost.py]
-        T2[security.py]
-        T3[compliance.py]
-        T4[performance.py]
-        T5[reliability.py]
-        TBASE["base.py\nDetectorContext\npaginate"]
+    subgraph Tools["KRA Detectors in tools/"]
+        T1["cost.py"]
+        T2["security.py"]
+        T3["compliance.py"]
+        T4["performance.py"]
+        T5["reliability.py"]
+        T6["base.py DetectorContext"]
     end
 
-    subgraph Briefing["Briefing  briefing/"]
-        B1["composer.py\nllm_rank, score_findings\nrender_markdown"]
-        B2["schemas.py\nFinding, AnalyzedFinding\nScorecard, BriefingPayload"]
+    subgraph Briefing["Briefing Module in briefing/"]
+        B1["composer.py"]
+        B2["schemas.py"]
     end
 
-    subgraph AWS["AWS Layer  aws/"]
-        A1["client_factory.py\nAwsClientFactory\nadaptive retry"]
-        A2["regions.py\nactive_regions"]
+    subgraph AWSLayer["AWS Layer in aws/"]
+        A1["client_factory.py"]
+        A2["regions.py"]
     end
 
-    subgraph LLM["LLM  Amazon Bedrock"]
-        L1["Claude Sonnet\nvia ChatBedrockConverse"]
-        L2["prompts/\nanalyzer.md, briefer.md\nobserver.md"]
+    subgraph LLM["LLM via Amazon Bedrock"]
+        L1["Claude Sonnet"]
+        L2["prompts/"]
     end
 
-    subgraph DB["Persistence  db/ + Postgres"]
-        D1["session.py\nsession_scope"]
-        D2["models.py\nRun, Finding\nBriefing, EvalRun"]
+    subgraph DB["Persistence in db/ and Postgres"]
+        D1["session.py"]
+        D2["models.py"]
         D3["Alembic migrations"]
-        CP["PostgresSaver\nLangGraph checkpointer"]
+        D4["PostgresSaver checkpointer"]
     end
 
-    subgraph Dashboard["Dashboard  dashboard/app.py"]
-        Dash["Streamlit\nLatest briefing\nFindings explorer\nEval trend"]
+    subgraph Dashboard["Dashboard in dashboard/app.py"]
+        Dash["Streamlit"]
     end
 
-    subgraph Evals["Eval Harness  evals/"]
-        EH[harness.py]
-        SM["seed_manifest.yaml\n10 seeded misconfigs"]
-        ER["reports/\nbriefing md and json"]
+    subgraph Evals["Eval Harness in evals/"]
+        E1["harness.py"]
+        E2["seed_manifest.yaml"]
+        E3["reports/"]
     end
 
-    subgraph IAC["Infrastructure  iac/synthetic_env/"]
-        TF["Terraform modules\n10 known misconfigs\nseeded in burner AWS"]
+    subgraph IAC["Infrastructure in iac/synthetic_env/"]
+        TF["Terraform"]
     end
 
-    run_cmd --> Graph
-    eval_cmd --> EH
-    render_cmd --> DB
+    CLI --> Graph
+    CLI --> Evals
+    CLI --> DB
 
     Graph --> Tools
     Graph --> Briefing
     Graph --> DB
 
-    Tools --> AWS
-    Tools --> TBASE
+    Tools --> AWSLayer
     Briefing --> LLM
-    Briefing --> B2
-    LLM --> L2
 
-    DB --> D1
-    DB --> D2
-    DB --> D3
-    Graph -.->|checkpointing| CP
-    CP --> DB
+    Graph -.->|checkpointing| DB
 
     Dashboard --> DB
-    EH --> Graph
-    EH --> SM
-    EH --> ER
-    IAC --> AWS
+    Evals --> Graph
+    IAC --> AWSLayer
 ```
 
-### State Flow & Data Model
+### State Flow and Data Model
 
 ```mermaid
 flowchart LR
-    subgraph ChandraState["ChandraState TypedDict"]
-        S1[run_id]
-        S2[account_id]
-        S3["regions: list of str"]
-        S4["raw_findings: KRA to list of Finding\nreduced by merge_raw_findings"]
-        S5["analyzed_findings: list of AnalyzedFinding"]
-        S6["scorecard: str to int"]
-        S7[briefing_md]
-        S8[briefing_json]
-        S9["errors: list of dict\nreduced by add"]
+    subgraph State["ChandraState TypedDict"]
+        S1["run_id"]
+        S2["account_id"]
+        S3["regions"]
+        S4["raw_findings - merged by merge_raw_findings"]
+        S5["analyzed_findings"]
+        S6["scorecard"]
+        S7["briefing_md"]
+        S8["briefing_json"]
+        S9["errors - merged by add reducer"]
     end
 
-    subgraph DBSchema["Postgres Schema"]
-        R["runs\nid, account_id, status\nstarted_at, finished_at"]
-        F["findings\nkra, severity, detector_id\nresource_arn, evidence_jsonb"]
-        B["briefings\nscorecard_jsonb, markdown_text\nfindings_count"]
-        E["eval_runs\nrecall_overall, recall_per_kra\nprecision_overall, fp_count"]
-        R -->|1 to N| F
-        R -->|1 to 1| B
-        R -->|1 to 1| E
+    subgraph PG["Postgres Tables"]
+        R["runs"]
+        F["findings"]
+        B["briefings"]
+        E["eval_runs"]
+        R --> F
+        R --> B
+        R --> E
     end
 
-    ChandraState -->|persist node writes| DBSchema
+    subgraph CP["LangGraph Checkpointer"]
+        CPn["PostgresSaver per thread_id"]
+    end
+
+    State -->|persist node writes| PG
+    State -->|after every node| CP
+    CP -->|stored in| PG
 ```
 
 Observers fan out via `Send(...)`. Each observer calls a deterministic boto3 tool module and returns
