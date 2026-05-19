@@ -33,6 +33,7 @@ dependencies = [
     "openai-agents>=0.0.15",
     "anthropic>=0.49.0",
     "langchain-openai>=1.2.1",
+    "gradio>=6.14.0",
 ]
 
 [project.optional-dependencies]
