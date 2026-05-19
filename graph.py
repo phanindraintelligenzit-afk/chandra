@@ -1,12 +1,14 @@
 import json
 import uuid
 from typing import Annotated, TypedDict
-
+import os
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from langchain_aws import ChatBedrockConverse
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 # ── Import all tools from tools.py ───────────────────────────────────────────
 from call_tools import (
@@ -34,7 +36,10 @@ class AgentState(TypedDict):
 
 
 # ── LLM with tools bound ──────────────────────────────────────────────────────
-llm = ChatOpenAI(model="gpt-5.4-nano")
+llm = ChatBedrockConverse(
+    model=os.getenv("MODEL_NAME"), 
+    max_tokens=20000
+)
 llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM_PROMPT = (
@@ -43,7 +48,6 @@ SYSTEM_PROMPT = (
     "history, CloudTrail audit logs, and cost summaries. Use them as needed to "
     "answer the user's question thoroughly."
 )
-
 
 # ── Graph nodes ───────────────────────────────────────────────────────────────
 def call_llm(state: AgentState) -> AgentState:
