@@ -37,8 +37,7 @@ class AgentState(TypedDict):
 
 # ── LLM with tools bound ──────────────────────────────────────────────────────
 llm = ChatBedrockConverse(
-    model=os.getenv("MODEL_NAME"), 
-    max_tokens=20000
+    model=os.getenv("MODEL_NAME")
 )
 llm_with_tools = llm.bind_tools(tools)
 
