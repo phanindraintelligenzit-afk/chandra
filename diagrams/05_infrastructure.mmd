@@ -1,0 +1,35 @@
+flowchart TB
+    subgraph LOCAL["Local Dev - Docker Compose"]
+        LC1["chandra-worker container"]
+        LC2["chandra-api container"]
+        LC3["chandra-dashboard container"]
+        LC4[("postgres:15 container")]
+        LC1 --> LC4
+        LC2 --> LC4
+        LC3 --> LC4
+    end
+
+    subgraph CICD2["CI/CD - GitHub Actions"]
+        PR["On PR:\nlint + test + build image"]
+        MERGE["On merge to main:\nbuild image push to ECR\nmigrate DB then ECS deploy"]
+        PR --> MERGE
+    end
+
+    subgraph PROD["Production - AWS"]
+        ECR["ECR\nContainer Registry"]
+        ECS1["ECS Task\nchandra-worker\nlong-running"]
+        ECS2["ECS Task\nchandra-api"]
+        ECS3["ECS Task\nchandra-dashboard"]
+        RDS[("RDS PostgreSQL")]
+        SM["Secrets Manager\nAll credentials"]
+        ECS1 --> RDS
+        ECS2 --> RDS
+        ECS3 --> RDS
+        ECS1 --> SM
+        ECS2 --> SM
+        ECS3 --> SM
+    end
+
+    CICD2 --> ECR --> ECS1
+    ECR --> ECS2
+    ECR --> ECS3

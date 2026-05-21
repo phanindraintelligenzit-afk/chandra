@@ -1,0 +1,32 @@
+flowchart LR
+    FIRE["Scheduler fires KRA job"]
+
+    subgraph STAGE1["Stage 1 - OBSERVE - Backend Dev"]
+        OB1["Call AWS APIs in parallel\nNO AI here"]
+        OB2["Returns raw observations"]
+    end
+
+    subgraph STAGE2["Stage 2 - DETECT - Backend Dev"]
+        DE1["Apply deterministic rules engine\nNO AI here"]
+        DE2["Returns Finding list with severity"]
+    end
+
+    subgraph STAGE3["Stage 3 - DECIDE - AI/ML Engineer"]
+        DC1{"Within autonomy bounds?"}
+        DC2["LLM consulted for edge cases only here"]
+    end
+
+    subgraph STAGE4["Stage 4 - ACT - Backend Dev"]
+        AC1["Execute approved playbook action\nSlack - Jira - Lambda"]
+        ESC["ESCALATE to human engineer\nwith full context"]
+    end
+
+    subgraph STAGE5["Stage 5 - REPORT - Backend Dev"]
+        RP1["Write to Postgres\nUpdate KRA metrics\nEmit Datadog log"]
+    end
+
+    FIRE --> OB1 --> OB2 --> DE1 --> DE2 --> DC1
+    DC1 -->|"YES - act"| AC1
+    DC1 -->|"NO - escalate"| DC2 --> ESC
+    AC1 --> RP1
+    ESC --> RP1

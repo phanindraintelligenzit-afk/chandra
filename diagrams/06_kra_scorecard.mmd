@@ -1,0 +1,15 @@
+flowchart LR
+    READ2["Read KRA thresholds\nfrom JD YAML"]
+    PULL2["Pull last 7 days of\nkra_metrics from Postgres"]
+    CALC2["Calculate rolling avg\nper KRA metric"]
+    JUDGE{"Compare vs\nJD threshold"}
+    GREEN2["GREEN\nKRA on track"]
+    AMBER2["AMBER\n70 to 90 pct of target"]
+    RED2["RED\nKRA failing SLA"]
+    SELFESC2["Escalate to human:\nChandra is underperforming"]
+    RPT2["Generate Weekly KRA Report\nPost to Slack\nWrite to briefings table"]
+
+    READ2 --> PULL2 --> CALC2 --> JUDGE
+    JUDGE -->|"90pct or above"| GREEN2 --> RPT2
+    JUDGE -->|"70 to 89pct"| AMBER2 --> RPT2
+    JUDGE -->|"below 70pct"| RED2 --> SELFESC2 --> RPT2

@@ -1,0 +1,38 @@
+flowchart TB
+    SCHED2["APScheduler Engine"]
+
+    subgraph KRA1["KRA-01 - Cost Anomaly - Every 60 minutes"]
+        K1T["Tools: Cost Explorer\nCloudWatch - Cost Baseline calc"]
+        K1R["Rule: daily delta above 500 USD\nor service 3x baseline"]
+        K1A["Auto-Act: tag resource\nOpen Jira ticket\nSlack cloud-costs channel"]
+    end
+
+    subgraph KRA2["KRA-02 - IAM Drift - Every 30 minutes"]
+        K2T["Tools: IAM Analyzer\nSecurity Hub - GuardDuty - CloudTrail"]
+        K2R["Rule: key unused 90+ days\nover-permissive policy exists\nhigh-sev open 24h+"]
+        K2A["Auto-Act: disable stale key\nGenerate Terraform PR\nPagerDuty P2"]
+    end
+
+    subgraph KRA3["KRA-03 - Incident Triage - Every 5 minutes"]
+        K3T["Tools: CloudWatch Alarms\nPagerDuty API - X-Ray traces"]
+        K3R["Rule: alarm in ALARM state\ntrace fault rate above 5pct"]
+        K3A["Auto-Act: open PagerDuty P1\nSlack incidents channel\nClassify P1 vs P2"]
+    end
+
+    subgraph KRA4["KRA-04 - Compliance Evidence - Every 6 hours"]
+        K4T["Tools: Config Rules\nCloudTrail export - Security Hub"]
+        K4R["Rule: compliance rule non-conformant\nevidence gap detected"]
+        K4A["Auto-Act: package artifacts\nUpload to S3\nGenerate audit report"]
+    end
+
+    subgraph KRA5["KRA-05 - Runbook Authoring - Event-triggered"]
+        K5T["Tools: Config change feed\nCloudTrail API - GitHub/Confluence API"]
+        K5R["Rule: infrastructure change detected\ndocumentation lag above 48h"]
+        K5A["Auto-Act: write runbook entry via LLM\nPush to wiki"]
+    end
+
+    SCHED2 -->|"60 min"| K1T --> K1R --> K1A
+    SCHED2 -->|"30 min"| K2T --> K2R --> K2A
+    SCHED2 -->|"5 min"| K3T --> K3R --> K3A
+    SCHED2 -->|"6 hr"| K4T --> K4R --> K4A
+    SCHED2 -->|"event"| K5T --> K5R --> K5A

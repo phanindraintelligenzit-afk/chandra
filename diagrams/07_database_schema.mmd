@@ -1,0 +1,64 @@
+erDiagram
+    runs {
+        string run_id PK
+        string kra_id
+        string started_at
+        string ended_at
+        string status
+    }
+    findings {
+        string id PK
+        string run_id FK
+        string kra_id
+        string severity
+        string summary
+        string raw_json
+        string ts
+    }
+    kra_metrics {
+        string id PK
+        string run_id FK
+        string kra_id
+        string metric_name
+        string value
+        string threshold
+        string passed
+        string ts
+    }
+    actions_taken {
+        string id PK
+        string kra_id
+        string action_type
+        string params_json
+        string result_json
+        string auto_or_human
+        string ts
+    }
+    escalations {
+        string id PK
+        string kra_id
+        string finding_id FK
+        string reason
+        string context_json
+        string resolved_at
+        string ts
+    }
+    worker_heartbeat {
+        string id PK
+        string status
+        string last_run_ts
+        string next_run_ts
+        string error_msg
+    }
+    briefings {
+        string id PK
+        string run_id FK
+        string markdown_content
+        string json_content
+        string posted_at
+    }
+
+    runs ||--o{ findings : "has"
+    runs ||--o{ kra_metrics : "produces"
+    runs ||--o{ briefings : "generates"
+    findings ||--o{ escalations : "triggers"

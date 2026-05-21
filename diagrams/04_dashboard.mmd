@@ -1,0 +1,16 @@
+flowchart LR
+    API["Backend REST API\n/api/*"]
+
+    subgraph DASH2["Dashboard - Frontend Developer"]
+        PG1["Worker Status\nHeartbeat\nLast run per KRA\nNext run per KRA\nScheduler errors"]
+        PG2["KRA Scorecard\nGREEN / AMBER / RED per KRA\nvs JD threshold\n30-day trend chart"]
+        PG3["Actions Log\nEvery autonomous action\nAuto vs Human-approved\nFilter by KRA / date"]
+        PG4["Escalation Queue\nPending human decisions\nApprove / Reject buttons\nImpact + recommendation"]
+        PG5["Findings Explorer\nFilter by severity / KRA\nClick to raw evidence"]
+    end
+
+    API -->|"GET /api/heartbeat"| PG1
+    API -->|"GET /api/kra/metrics"| PG2
+    API -->|"GET /api/actions"| PG3
+    API -->|"GET /api/escalations"| PG4
+    API -->|"GET /api/findings"| PG5

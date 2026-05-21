@@ -1,0 +1,99 @@
+{
+  "health": "Degraded",
+  "kra_status": [
+    {
+      "kra_code": "KRA-01",
+      "status": "Red",
+      "achievement": "Cost spike detected (Bedrock + RDS) but no automated cost anomaly alerting configured; remediation not triggered.",
+      "note": null
+    },
+    {
+      "kra_code": "KRA-02",
+      "status": "Red",
+      "achievement": "Critical IAM drift: S3 public bucket access enabled by user with no approval record. RDS anomalous login. EC2 port probing. Security Hub findings active.",
+      "note": null
+    },
+    {
+      "kra_code": "KRA-03",
+      "status": "Yellow",
+      "achievement": "Multiple critical and high severity threats actively detected (S3 public access, RDS breach, EC2 compromise). Initial triage complete but response workflow undefined.",
+      "note": null
+    },
+    {
+      "kra_code": "KRA-04",
+      "status": "Yellow",
+      "achievement": "Audit trail shows Config Recorder gaps, S3 policy changes, and CloudTrail events. Evidence for S3 and RDS incidents is present but fragmented across regions.",
+      "note": null
+    },
+    {
+      "kra_code": "KRA-05",
+      "status": "Red",
+      "achievement": "No documentation or runbooks referenced in data. No IaC, monitoring, or incident response procedures visible.",
+      "note": null
+    }
+  ],
+  "issues": [
+    "Critical: Public S3 bucket exposure with disabled BlockPublicAccess — data breach risk.",
+    "Critical: Anomalous RDS login — indicates credential compromise.",
+    "High: Bedrock cost spike (120% increase) — unmonitored, unapproved usage.",
+    "High: EC2 instance i-0eb04c4c172bf0f81 under active port scan and external malicious communication — potential server compromise.",
+    "High: AWS Config recorder disabled in 16 of 17 regions — compliance failure.",
+    "Medium: Persistent suspicious commands found across containers, instances, and clusters — malware infection likely."
+  ],
+  "observations": [
+    "EBS volume vol-01aff3dca71d62a48 (associated with i-071cdccebd99a2a00) is experiencing sustained high throughput (avg 13,157 MB/s) and IOPS (avg 82) — exceeds standard gp3 limits; risk of throttling.",
+    "EBS volume vol-0abb338f76b55fa8e shows 1775 avg WriteOps and 247MB/s write throughput — consistent with high-write workload; but QueueLength is low (avg 0.07), suggesting no I/O bottleneck.",
+    "StatusCheckFailed alarm exists for i-0eb04c4c172bf0f81 — currently in OK state but may indicate prior system health issues.",
+    "RDS instance 'chandra-database-1' (m7g.large) has 100% EBSIOBalance% (99.0%), meaning 1% EBS I/O credits depleted; monitor for future degradation.",
+    "Bedrock Model qwen.qwen3-next-80b-a3b consumed 99,334 input tokens and 2,062 output tokens in last 6h — high usage unattributed to documented application.",
+    "S3 bucket 'chandra-synth-electric-gelding-leaky' has both public access granted (Severity 8.0) AND BlockPublicAccess disabled — critical security exposure.",
+    "RDS user 'GeneratedFindingUserName' logged in anomalously — potential credential compromise.",
+    "EC2 instance i-0eb04c4c172bf0f81 is experiencing port probes from malicious hosts — firewall or NACL policy likely insufficient.",
+    "AWS Config Recorder is only enabled in us-east-1; all other regions lack compliance monitoring.",
+    "Log group 'RDSOSMetrics' shows 1 error count in last 6h — possible IAM permissions issue for log ingestion."
+  ],
+  "cost_snapshot": [
+    {
+      "service": "Amazon Relational Database Service",
+      "daily_avg_usd": 11.69,
+      "change_24h_pct": 12.15,
+      "note": "Significant spike due to Bedrock usage; RDS instance type may be underutilized"
+    },
+    {
+      "service": "AmazonCloudWatch",
+      "daily_avg_usd": 0.77,
+      "change_24h_pct": 0.0,
+      "note": "No anomaly detected"
+    },
+    {
+      "service": "EC2 - Other",
+      "daily_avg_usd": 0.17,
+      "change_24h_pct": -5.43,
+      "note": "Slight reduction; consistent with baseline"
+    },
+    {
+      "service": "Claude Haiku 4.5 (Amazon Bedrock Edition)",
+      "daily_avg_usd": 0.26,
+      "change_24h_pct": 120.0,
+      "note": "Emergency flag: New cost driver with 120% spike in 24h; usage likely unmonitored"
+    }
+  ],
+  "security_posture": [
+    "S3 bucket 'chandra-synth-electric-gelding-leaky': Public access granted AND BlockPublicAccess disabled via github-actions-user — credentials possibly compromised.",
+    "RDS database 'generatedfindingdbinstanceid': Successful login by 'GeneratedFindingUserName' from unknown IP — likely credential reuse or breach.",
+    "EC2 instance i-0eb04c4c172bf0f81: Under port probe attack (15 occurrences) and communicating with low-reputation domain — compromise likelihood high.",
+    "Container and Kubernetes systems: Suspicious commands detected — suggests persistent malware or compromised workload.",
+    "AWS Config not configured in 16 regions — violates AWS Foundational Security Best Practices (FSBP) control 2.3."
+  ],
+  "compliance_summary": "Non-compliant across 16/17 regions. Config Recorder disabled outside us-east-1. S3 bucket policy violations and RDS anomaly detected as audit evidence.",
+  "actions": [
+    "P1: Immediately disable public access on S3 bucket 'chandra-synth-electric-gelding-leaky' (PutBucketPublicAccessBlock). Lock credentials of github-actions-user.",
+    "P1: Rotate all RDS credentials for 'generatedfindingdbinstanceid' and disable 'GeneratedFindingUserName'. Investigate source of login via CloudTrail.",
+    "P1: Stop all Bedrock model invocations for qwen.qwen3-next-80b-a3b — identify and disable unapproved application or service responsible.",
+    "P2: Block outbound traffic from i-0eb04c4c172bf0f81 via NACL and Security Group — isolate instance for forensic analysis.",
+    "P2: Enable AWS Config Recorder in all 16 regions — automate compliance and change detection.",
+    "P3: Audit S3, RDS, and EC2 permissions using AWS Security Hub — implement least-privilege policies.",
+    "P3: Trigger a full incident response workflow — including forensic analysis of i-0eb04c4c172bf0f81 and review of container workloads for malware.",
+    "P4: Authorize and document emergency runbooks for Bedrock monitoring, S3 access review, and RDS credential rotation."
+  ]
+}

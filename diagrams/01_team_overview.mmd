@@ -1,0 +1,65 @@
+flowchart TB
+    JD["Job Description YAML\nKRAs - Thresholds - Autonomy Bounds\nwritten by Team Lead"]
+
+    subgraph BACKEND["Backend Developer"]
+        JDL["JD Loader\nValidate + Parse JD"]
+        PLAN["KRA Planner\nKRA to cron + thresholds"]
+        SCHED["Scheduler Engine\n1 cron job per KRA"]
+        ORCH["Pipeline Orchestrator\nRoutes KRA to Pipeline"]
+        PIPES["5 KRA Sub-Agent Pipelines\nObserve-Detect-Decide-Act-Report"]
+        TOOLS["AWS Tool Library\nCost, IAM, Security, Config, CloudTrail"]
+        AUTO["Autonomy Bounds Engine\nAct or Escalate?"]
+        SCORE["KRA Scorecard\nSelf-evaluation daily"]
+        COMMS["Communication Layer\nSlack - PagerDuty - Jira - Datadog"]
+    end
+
+    subgraph AIML["AI/ML Engineer"]
+        LLM["LLM - Amazon Bedrock\nClaude Sonnet\nDecide + Report only"]
+        PROMPTS["Prompt Library\ndecide - report - escalate - runbook"]
+    end
+
+    subgraph FRONTEND["Frontend Developer"]
+        DASH["Dashboard\nStreamlit or React"]
+        P1D["Page: Worker Status\nHeartbeat - Schedule"]
+        P2D["Page: KRA Scorecard\nGREEN / AMBER / RED"]
+        P3D["Page: Actions Log"]
+        P4D["Page: Escalation Queue\nApprove / Reject"]
+    end
+
+    subgraph DEVOPS["DevOps Engineer"]
+        DB[("PostgreSQL\nAll state + metrics")]
+        DOCKER["Docker\nWorker - API - Dashboard"]
+        CICD["CI/CD\nGitHub Actions to ECS"]
+        SECRETS["AWS Secrets Manager\nAll credentials"]
+        IAC["Terraform / CloudFormation\nRDS - ECS - IAM roles"]
+    end
+
+    subgraph QA["QA Engineer"]
+        TESTS["Unit + Integration Tests\nAWS mocked"]
+        EVAL["KRA Recall Evaluator\n95pct detection on synthetic misconfigs"]
+        SYNTH["10 Synthetic Misconfigs\nin test AWS account"]
+    end
+
+    JD --> JDL --> PLAN --> SCHED --> ORCH --> PIPES
+    PIPES --> TOOLS
+    PIPES --> AUTO
+    PIPES --> LLM
+    PIPES --> COMMS
+    PIPES --> DB
+    PIPES --> SCORE
+    PROMPTS --> LLM
+    DB --> DASH
+    SCORE --> DASH
+    DASH --> P1D
+    DASH --> P2D
+    DASH --> P3D
+    DASH --> P4D
+    DOCKER --> CICD
+    SECRETS --> BACKEND
+    DB --> DEVOPS
+
+    style BACKEND fill:#1e3a5f,color:#f8fafc
+    style AIML fill:#3b1f6b,color:#f8fafc
+    style FRONTEND fill:#14532d,color:#f8fafc
+    style DEVOPS fill:#7c2d12,color:#f8fafc
+    style QA fill:#713f12,color:#f8fafc

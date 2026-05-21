@@ -51,9 +51,18 @@ COPY --from=builder /build/.venv /app/.venv
 COPY --from=builder /build/src   /app/src
 
 # Copy the root-level app files
-COPY --chown=chandra:chandra app.py        /app/app.py
-COPY --chown=chandra:chandra graph.py      /app/graph.py
-COPY --chown=chandra:chandra call_tools.py /app/call_tools.py
+COPY --chown=chandra:chandra app.py           /app/app.py
+COPY --chown=chandra:chandra graph.py         /app/graph.py
+COPY --chown=chandra:chandra call_tools.py    /app/call_tools.py
+
+# FastAPI app files
+COPY --chown=chandra:chandra fastapi_app.py       /app/fastapi_app.py
+COPY --chown=chandra:chandra observation_agent.py /app/observation_agent.py
+COPY --chown=chandra:chandra tools/               /app/tools/
+
+# Startup script that launches both apps
+COPY --chown=chandra:chandra start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # Keep pyproject.toml so uv knows where the project root is
 COPY --chown=chandra:chandra pyproject.toml /app/pyproject.toml
@@ -63,9 +72,15 @@ WORKDIR /app
 USER chandra
 
 ENV PYTHONPATH=/app/src \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    # Gradio
+    GRADIO_SERVER_NAME=0.0.0.0 \
+    GRADIO_SERVER_PORT=7861
 
 EXPOSE 7861
+EXPOSE 6001
 
-# `uv run` will use the already-synced .venv — no reinstall happens
-ENTRYPOINT ["uv", "run", "app.py"]
+# Runs both apps together. Override CMD to start only one:
+#   docker run ... chandra uvicorn fastapi_app:app --host 0.0.0.0 --port 6001
+#   docker run ... chandra uv run app.py
+CMD ["/app/start.sh"]

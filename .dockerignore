@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets — never bake into the image
+.env
+*.env
+
+# Dev/test artifacts
+tests/
+evals/
+observation/
+diagrams/
+*.ipynb
+*.json
+*.log
+
+# Git
+.git/
+.gitignore
