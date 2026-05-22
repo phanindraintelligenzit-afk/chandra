@@ -59,7 +59,7 @@ class KRAStatus(BaseModel):
 class ObservabilityReport(BaseModel):
     """Structured report aligned with the AWS Observability / Cloud SRE role."""
     health: str = Field(description="Overall health status: Healthy | Degraded | Critical")
-    kra_status: List[KRAStatus] = Field(description="Status against each of the 5 defined KRAs")
+    kra_status: List[KRAStatus] = Field(description="Status against each of the defined KRAs")
     issues: List[str] = Field(description="Critical issues / anomalies (P1/P2 level). Empty if none.")
     observations: List[str] = Field(description="Key findings from metrics, CloudTrail, Config, Security Hub, etc.")
     cost_snapshot: List[CostEntry] = Field(description="Top cost drivers with anomaly detection")

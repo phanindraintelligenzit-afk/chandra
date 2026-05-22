@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage
 from langchain_aws import ChatBedrockConverse
 from langgraph.graph import END, StateGraph
 
-from tools.create_jira_ticket import create_jira_ticket
+from tools.jira_tools.create_jira_ticket import create_jira_ticket
 
 load_dotenv(override=True)
 

@@ -26,10 +26,17 @@ class CloudWatchMetricsFetcher:
         metric_data_batch_size: int = 200,
     ):
         self._tz = pytz.timezone(timezone)
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
+        self.__semaphore = None
         self._session = aioboto3.Session()
         # CloudWatch allows up to 500 queries per GetMetricData call.
         self._metric_data_batch_size = max(1, min(metric_data_batch_size, 500))
+
+    @property
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self.__semaphore is None:
+            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
+        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private helpers                                                     #

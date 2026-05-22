@@ -20,8 +20,15 @@ class AWSCloudWatchAlarmsFetcher:
     """
 
     def __init__(self, max_concurrent: int = 15):
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
+        self.__semaphore = None
         self._session = aioboto3.Session()
+
+    @property
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self.__semaphore is None:
+            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
+        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private Helpers                                                   #

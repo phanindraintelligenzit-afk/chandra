@@ -21,8 +21,15 @@ class AWSCostExplorerFetcher:
     def __init__(self, max_concurrent: int = 5):
         # CE API is a global endpoint. We always communicate with us-east-1.
         self.region = "us-east-1"
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
+        self.__semaphore = None
         self._session = aioboto3.Session()
+
+    @property
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self.__semaphore is None:
+            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
+        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Public API                                                        #

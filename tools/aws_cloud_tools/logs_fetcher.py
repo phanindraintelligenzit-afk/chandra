@@ -20,8 +20,15 @@ class AWSCloudWatchLogsFetcher:
     """
 
     def __init__(self, max_concurrent: int = 15):
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
+        self.__semaphore = None
         self._session = aioboto3.Session()
+
+    @property
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self.__semaphore is None:
+            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
+        return self.__semaphore
 
     async def _list_regions(self) -> list[str]:
         async with self._session.client("ec2", region_name="us-east-1") as ec2:
