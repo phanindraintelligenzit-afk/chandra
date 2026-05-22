@@ -16,6 +16,8 @@ from observation_agent import (
     DEFAULT_REGION,
 )
 from analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
+from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
