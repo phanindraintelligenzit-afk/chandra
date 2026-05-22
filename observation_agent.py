@@ -43,6 +43,12 @@ class CostEntry(BaseModel):
     note: Optional[str] = Field(default=None, description="Anomaly flag, savings opportunity, etc.")
 
 
+class ActionItem(BaseModel):
+    actionName: str = Field(description="Short name or title of the action (e.g. 'Revoke S3 Public Access')")
+    actionDescription: str = Field(description="Detailed description of what needs to be done and why")
+    service: str = Field(description="AWS service this action applies to (e.g. 'S3', 'RDS', 'Bedrock')")
+
+
 class KRAStatus(BaseModel):
     kra_code: str = Field(description="e.g. KRA-01")
     status: str = Field(description="Green | Yellow | Red")
@@ -59,7 +65,7 @@ class ObservabilityReport(BaseModel):
     cost_snapshot: List[CostEntry] = Field(description="Top cost drivers with anomaly detection")
     security_posture: List[str] = Field(description="IAM drift, Security Hub findings, misconfigurations")
     compliance_summary: str = Field(description="Compliance evidence readiness summary")
-    actions: List[str] = Field(description="Prioritised actionable recommendations (most urgent first)")
+    actions: List[ActionItem] = Field(description="Prioritised actionable recommendations (most urgent first)")
 
 
 class AgentState(TypedDict):
