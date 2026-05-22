@@ -19,17 +19,9 @@ class AWSCloudTrailFetcher:
     Requires: pip install aioboto3 pytz
     """
 
-    def __init__(self, timezone: str = "Asia/Kolkata", max_concurrent: int = 10):
+    def __init__(self, timezone: str = "Asia/Kolkata"):
         self._tz = pytz.timezone(timezone)
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private helpers                                                   #
@@ -91,18 +83,17 @@ class AWSCloudTrailFetcher:
         if lookup_attribute:
             kwargs["LookupAttributes"] = [lookup_attribute]
 
-        async with self._semaphore:
-            try:
-                async with self._session.client("cloudtrail", region_name=region) as ct:
-                    paginator = ct.get_paginator("lookup_events")
-                    async for page in paginator.paginate(**kwargs):
-                        for raw_ev in page.get("Events", []):
-                            events.append(self._parse_event(raw_ev, region))
-                            if len(events) >= max_events_per_region:
-                                return events
-            except Exception:
-                # Silently catch token errors or region initialization failures
-                return []
+        try:
+            async with self._session.client("cloudtrail", region_name=region) as ct:
+                paginator = ct.get_paginator("lookup_events")
+                async for page in paginator.paginate(**kwargs):
+                    for raw_ev in page.get("Events", []):
+                        events.append(self._parse_event(raw_ev, region))
+                        if len(events) >= max_events_per_region:
+                            return events
+        except Exception:
+            # Silently catch token errors or region initialization failures
+            return []
         return events
 
     # ------------------------------------------------------------------ #

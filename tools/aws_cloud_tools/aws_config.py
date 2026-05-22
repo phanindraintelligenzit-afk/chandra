@@ -19,16 +19,8 @@ class AWSConfigHistoryFetcher:
     Requires: pip install aioboto3
     """
 
-    def __init__(self, max_concurrent: int = 15):
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
+    def __init__(self):
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private Helpers                                                   #
@@ -42,26 +34,25 @@ class AWSConfigHistoryFetcher:
 
     async def _check_region_recorder(self, region: str) -> dict:
         """Checks if AWS Config is actually turned on in a region."""
-        async with self._semaphore:
-            try:
-                async with self._session.client("config", region_name=region) as config_client:
-                    response = await config_client.describe_configuration_recorder_status()
-                    recorders = response.get("ConfigurationRecordersStatus", [])
-                    
-                    if not recorders:
-                        return {"Region": region, "Status": "OFF (No Recorder Configured)"}
-                    
-                    status = recorders[0]
-                    is_recording = status.get("recording", False)
-                    last_status = status.get("lastStatus", "UNKNOWN")
-                    
-                    return {
-                        "Region": region, 
-                        "Status": "RECORDING" if is_recording else "OFF",
-                        "DeliveryStatus": last_status
-                    }
-            except Exception as e:
-                return {"Region": region, "Status": f"ERROR: {str(e)}"}
+        try:
+            async with self._session.client("config", region_name=region) as config_client:
+                response = await config_client.describe_configuration_recorder_status()
+                recorders = response.get("ConfigurationRecordersStatus", [])
+
+                if not recorders:
+                    return {"Region": region, "Status": "OFF (No Recorder Configured)"}
+
+                status = recorders[0]
+                is_recording = status.get("recording", False)
+                last_status = status.get("lastStatus", "UNKNOWN")
+
+                return {
+                    "Region": region,
+                    "Status": "RECORDING" if is_recording else "OFF",
+                    "DeliveryStatus": last_status
+                }
+        except Exception as e:
+            return {"Region": region, "Status": f"ERROR: {str(e)}"}
 
     async def _get_active_resource_types(self, config_client) -> list[str]:
         """
@@ -151,37 +142,36 @@ class AWSConfigHistoryFetcher:
         """
         region_changes = []
 
-        async with self._semaphore:
-            try:
-                async with self._session.client("config", region_name=region) as config_client:
-                    # 1. Dynamically discover active types in this region
-                    active_resource_types = await self._get_active_resource_types(config_client)
-                    
-                    # 2. Iterate through only the active resource types found
-                    for resource_type in active_resource_types:
-                        paginator = config_client.get_paginator("list_discovered_resources")
-                        
-                        async for page in paginator.paginate(resourceType=resource_type, includeDeletedResources=True):
-                            resource_ids = [res["resourceId"] for res in page.get("resourceIdentifiers", [])]
-                            
-                            if not resource_ids:
-                                continue
+        try:
+            async with self._session.client("config", region_name=region) as config_client:
+                # 1. Dynamically discover active types in this region
+                active_resource_types = await self._get_active_resource_types(config_client)
 
-                            # 3. Fetch history/diff profile concurrently for discovered items
-                            history_tasks = [
-                                self._get_resource_diff(config_client, region, resource_type, r_id, start_time, end_time)
-                                for r_id in resource_ids
-                            ]
-                            
-                            results = await asyncio.gather(*history_tasks)
-                            
-                            for res in results:
-                                if res:
-                                    region_changes.append(res)
-                                    
-            except Exception:
-                return []
-                
+                # 2. Iterate through only the active resource types found
+                for resource_type in active_resource_types:
+                    paginator = config_client.get_paginator("list_discovered_resources")
+
+                    async for page in paginator.paginate(resourceType=resource_type, includeDeletedResources=True):
+                        resource_ids = [res["resourceId"] for res in page.get("resourceIdentifiers", [])]
+
+                        if not resource_ids:
+                            continue
+
+                        # 3. Fetch history/diff profile concurrently for discovered items
+                        history_tasks = [
+                            self._get_resource_diff(config_client, region, resource_type, r_id, start_time, end_time)
+                            for r_id in resource_ids
+                        ]
+
+                        results = await asyncio.gather(*history_tasks)
+
+                        for res in results:
+                            if res:
+                                region_changes.append(res)
+
+        except Exception:
+            return []
+
         return region_changes
 
     # ------------------------------------------------------------------ #

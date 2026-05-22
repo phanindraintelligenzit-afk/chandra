@@ -19,17 +19,9 @@ class AWSXRayFetcher:
     Requires: pip install aioboto3 pytz
     """
 
-    def __init__(self, timezone: str = "Asia/Kolkata", max_concurrent: int = 15):
+    def __init__(self, timezone: str = "Asia/Kolkata"):
         self._tz = pytz.timezone(timezone)
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private Helpers                                                   #
@@ -81,18 +73,17 @@ class AWSXRayFetcher:
         """
         region_traces = []
 
-        async with self._semaphore:
-            try:
-                async with self._session.client("xray", region_name=region) as xray:
-                    paginator = xray.get_paginator("get_trace_summaries")
-                    
-                    async for page in paginator.paginate(StartTime=start_time, EndTime=end_time):
-                        for trace in page.get("TraceSummaries", []):
-                            region_traces.append(self._parse_trace(trace, region))
-            except Exception:
-                # X-Ray might not be fully configured in every single active region; skip errors silently
-                return []
-                
+        try:
+            async with self._session.client("xray", region_name=region) as xray:
+                paginator = xray.get_paginator("get_trace_summaries")
+
+                async for page in paginator.paginate(StartTime=start_time, EndTime=end_time):
+                    for trace in page.get("TraceSummaries", []):
+                        region_traces.append(self._parse_trace(trace, region))
+        except Exception:
+            # X-Ray might not be fully configured in every single active region; skip errors silently
+            return []
+
         return region_traces
 
     # ------------------------------------------------------------------ #

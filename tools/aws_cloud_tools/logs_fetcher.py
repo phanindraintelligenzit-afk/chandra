@@ -19,16 +19,8 @@ class AWSCloudWatchLogsFetcher:
     Requires: pip install aioboto3
     """
 
-    def __init__(self, max_concurrent: int = 15):
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
+    def __init__(self):
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     async def _list_regions(self) -> list[str]:
         async with self._session.client("ec2", region_name="us-east-1") as ec2:
@@ -38,44 +30,43 @@ class AWSCloudWatchLogsFetcher:
     async def _execute_query_in_region(
         self, region: str, log_group_prefix: Optional[str], query: str, start_time: int, end_time: int
     ) -> list[dict]:
-        async with self._semaphore:
-            try:
-                async with self._session.client("logs", region_name=region) as logs_client:
-                    # 1. Discover log groups (up to 50 allowed by AWS Insights)
-                    paginator = logs_client.get_paginator("describe_log_groups")
-                    log_group_names = []
-                    kwargs = {"logGroupNamePrefix": log_group_prefix} if log_group_prefix else {}
-                    
-                    async for page in paginator.paginate(**kwargs):
-                        for lg in page.get("logGroups", []):
-                            log_group_names.append(lg["logGroupName"])
-                            if len(log_group_names) >= 50: break
-                        if len(log_group_names) >= 50: break
-                            
-                    if not log_group_names: return []
+        try:
+            async with self._session.client("logs", region_name=region) as logs_client:
+                # 1. Discover log groups (up to 50 allowed by AWS Insights)
+                paginator = logs_client.get_paginator("describe_log_groups")
+                log_group_names = []
+                kwargs = {"logGroupNamePrefix": log_group_prefix} if log_group_prefix else {}
 
-                    # 2. Start query
-                    start_response = await logs_client.start_query(
-                        logGroupNames=log_group_names,
-                        startTime=start_time,
-                        endTime=end_time,
-                        queryString=query
-                    )
-                    query_id = start_response["queryId"]
-                    
-                    # 3. Poll for completion
-                    while True:
-                        await asyncio.sleep(2)
-                        res = await logs_client.get_query_results(queryId=query_id)
-                        if res["status"] in ["Complete", "Failed", "Cancelled"]:
-                            break
-                    
-                    if res["status"] != "Complete": return []
-                        
-                    return [{"Region": region, **{field["field"]: field["value"] for field in row}} 
-                            for row in res.get("results", [])]
-            except Exception:
-                return []
+                async for page in paginator.paginate(**kwargs):
+                    for lg in page.get("logGroups", []):
+                        log_group_names.append(lg["logGroupName"])
+                        if len(log_group_names) >= 50: break
+                    if len(log_group_names) >= 50: break
+
+                if not log_group_names: return []
+
+                # 2. Start query
+                start_response = await logs_client.start_query(
+                    logGroupNames=log_group_names,
+                    startTime=start_time,
+                    endTime=end_time,
+                    queryString=query
+                )
+                query_id = start_response["queryId"]
+
+                # 3. Poll for completion
+                while True:
+                    await asyncio.sleep(2)
+                    res = await logs_client.get_query_results(queryId=query_id)
+                    if res["status"] in ["Complete", "Failed", "Cancelled"]:
+                        break
+
+                if res["status"] != "Complete": return []
+
+                return [{"Region": region, **{field["field"]: field["value"] for field in row}}
+                        for row in res.get("results", [])]
+        except Exception:
+            return []
 
     async def fetch_critical_errors(
         self, log_group_prefix: Optional[str] = None, hours_lookback: int = 24, max_results: int = 50

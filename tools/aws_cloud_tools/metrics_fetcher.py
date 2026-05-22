@@ -22,21 +22,12 @@ class CloudWatchMetricsFetcher:
     def __init__(
         self,
         timezone: str = "Asia/Kolkata",
-        max_concurrent: int = 20,
         metric_data_batch_size: int = 200,
     ):
         self._tz = pytz.timezone(timezone)
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
         self._session = aioboto3.Session()
         # CloudWatch allows up to 500 queries per GetMetricData call.
         self._metric_data_batch_size = max(1, min(metric_data_batch_size, 500))
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private helpers                                                     #
@@ -68,16 +59,15 @@ class CloudWatchMetricsFetcher:
         end_time: datetime,
         period: int,
     ) -> list[dict]:
-        async with self._semaphore:
-            response = await cloudwatch.get_metric_statistics(
-                Namespace=namespace,
-                MetricName=metric_name,
-                Dimensions=dimensions,
-                StartTime=start_time,
-                EndTime=end_time,
-                Period=period,
-                Statistics=["Average"],
-            )
+        response = await cloudwatch.get_metric_statistics(
+            Namespace=namespace,
+            MetricName=metric_name,
+            Dimensions=dimensions,
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=period,
+            Statistics=["Average"],
+        )
 
         datapoints = response.get("Datapoints", [])
         for pt in datapoints:
@@ -134,8 +124,7 @@ class CloudWatchMetricsFetcher:
             if next_token:
                 request_kwargs["NextToken"] = next_token
 
-            async with self._semaphore:
-                response = await cloudwatch.get_metric_data(**request_kwargs)
+            response = await cloudwatch.get_metric_data(**request_kwargs)
 
             for metric_result in response.get("MetricDataResults", []):
                 query_id = metric_result["Id"]

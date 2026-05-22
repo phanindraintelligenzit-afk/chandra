@@ -19,16 +19,8 @@ class AWSCloudWatchAlarmsFetcher:
     Requires: pip install aioboto3
     """
 
-    def __init__(self, max_concurrent: int = 15):
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
+    def __init__(self):
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Private Helpers                                                   #
@@ -76,23 +68,22 @@ class AWSCloudWatchAlarmsFetcher:
         if state_filter:
             kwargs["StateValue"] = state_filter
 
-        async with self._semaphore:
-            try:
-                async with self._session.client("cloudwatch", region_name=region) as cw_client:
-                    paginator = cw_client.get_paginator("describe_alarms")
-                    
-                    async for page in paginator.paginate(**kwargs):
-                        # CloudWatch splits alarms into standard Metric Alarms and Composite Alarms
-                        for metric_alarm in page.get("MetricAlarms", []):
-                            region_alarms.append(self._parse_alarm(metric_alarm, region, "Metric"))
-                            
-                        for composite_alarm in page.get("CompositeAlarms", []):
-                            region_alarms.append(self._parse_alarm(composite_alarm, region, "Composite"))
-                            
-            except Exception:
-                # Silently catch token errors or region initialization failures
-                return []
-                
+        try:
+            async with self._session.client("cloudwatch", region_name=region) as cw_client:
+                paginator = cw_client.get_paginator("describe_alarms")
+
+                async for page in paginator.paginate(**kwargs):
+                    # CloudWatch splits alarms into standard Metric Alarms and Composite Alarms
+                    for metric_alarm in page.get("MetricAlarms", []):
+                        region_alarms.append(self._parse_alarm(metric_alarm, region, "Metric"))
+
+                    for composite_alarm in page.get("CompositeAlarms", []):
+                        region_alarms.append(self._parse_alarm(composite_alarm, region, "Composite"))
+
+        except Exception:
+            # Silently catch token errors or region initialization failures
+            return []
+
         return region_alarms
 
     # ------------------------------------------------------------------ #

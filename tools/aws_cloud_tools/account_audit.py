@@ -16,16 +16,8 @@ class AWSOptimizationAndSecurityFetcher:
     and AWS Compute Optimizer (for cost savings). Both are accessible on Basic support plans.
     """
 
-    def __init__(self, max_concurrent: int = 15):
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
+    def __init__(self):
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     async def _list_regions(self) -> list[str]:
         """Return all enabled AWS regions for the current account."""
@@ -40,34 +32,33 @@ class AWSOptimizationAndSecurityFetcher:
     async def _fetch_region_security(self, region: str) -> list[dict]:
         """Fetches active CRITICAL and HIGH security vulnerabilities from Security Hub."""
         findings = []
-        async with self._semaphore:
-            try:
-                async with self._session.client("securityhub", region_name=region) as sh_client:
-                    # Filter for active, critical/high severity issues
-                    filters = {
-                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}],
-                        'SeverityLabel': [
-                            {'Value': 'CRITICAL', 'Comparison': 'EQUALS'},
-                            {'Value': 'HIGH', 'Comparison': 'EQUALS'}
-                        ]
-                    }
-                    
-                    paginator = sh_client.get_paginator("get_findings")
-                    async for page in paginator.paginate(Filters=filters):
-                        for finding in page.get("Findings", []):
-                            findings.append({
-                                "Region": region,
-                                "Severity": finding.get("Severity", {}).get("Label"),
-                                "Title": finding.get("Title"),
-                                "Description": finding.get("Description"),
-                                "ResourceId": finding.get("Resources", [{}])[0].get("Id", "Unknown"),
-                                "Remediation": finding.get("Remediation", {}).get("Recommendation", {}).get("Url", "No URL provided")
-                            })
-            except Exception as e:
-                # Security Hub might not be enabled in this region
-                if "InvalidAccessException" in str(e) or "not subscribed" in str(e):
-                    pass 
-                return []
+        try:
+            async with self._session.client("securityhub", region_name=region) as sh_client:
+                # Filter for active, critical/high severity issues
+                filters = {
+                    'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}],
+                    'SeverityLabel': [
+                        {'Value': 'CRITICAL', 'Comparison': 'EQUALS'},
+                        {'Value': 'HIGH', 'Comparison': 'EQUALS'}
+                    ]
+                }
+
+                paginator = sh_client.get_paginator("get_findings")
+                async for page in paginator.paginate(Filters=filters):
+                    for finding in page.get("Findings", []):
+                        findings.append({
+                            "Region": region,
+                            "Severity": finding.get("Severity", {}).get("Label"),
+                            "Title": finding.get("Title"),
+                            "Description": finding.get("Description"),
+                            "ResourceId": finding.get("Resources", [{}])[0].get("Id", "Unknown"),
+                            "Remediation": finding.get("Remediation", {}).get("Recommendation", {}).get("Url", "No URL provided")
+                        })
+        except Exception as e:
+            # Security Hub might not be enabled in this region
+            if "InvalidAccessException" in str(e) or "not subscribed" in str(e):
+                pass
+            return []
         return findings
 
     # ------------------------------------------------------------------ #
@@ -77,35 +68,34 @@ class AWSOptimizationAndSecurityFetcher:
     async def _fetch_region_costs(self, region: str) -> list[dict]:
         """Fetches over-provisioned (wasting money) EC2 instances."""
         savings = []
-        async with self._semaphore:
-            try:
-                async with self._session.client("compute-optimizer", region_name=region) as co_client:
-                    # Filter for resources that are too big for their workload
-                    filters = [{'name': 'Finding', 'values': ['OVER_PROVISIONED']}]
-                    
-                    response = await co_client.get_ec2_instance_recommendations(filters=filters)
-                    
-                    for rec in response.get("instanceRecommendations", []):
-                        current_type = rec.get("currentInstanceType")
-                        options = rec.get("recommendationOptions", [])
-                        
-                        recommended_type = options[0].get("instanceType") if options else "Unknown"
-                        estimated_savings = options[0].get("estimatedMonthlySavings", {}).get("value", 0.0) if options else 0.0
+        try:
+            async with self._session.client("compute-optimizer", region_name=region) as co_client:
+                # Filter for resources that are too big for their workload
+                filters = [{'name': 'Finding', 'values': ['OVER_PROVISIONED']}]
 
-                        savings.append({
-                            "Region": region,
-                            "ResourceType": "EC2 Instance",
-                            "InstanceArn": rec.get("instanceArn"),
-                            "Finding": "OVER_PROVISIONED (Wasting Money)",
-                            "CurrentType": current_type,
-                            "RecommendedType": recommended_type,
-                            "EstimatedMonthlySavings": f"${estimated_savings:.2f}"
-                        })
-            except Exception as e:
-                # Compute Optimizer might not be opted-in
-                if "OptInRequiredException" in str(e):
-                    pass
-                return []
+                response = await co_client.get_ec2_instance_recommendations(filters=filters)
+
+                for rec in response.get("instanceRecommendations", []):
+                    current_type = rec.get("currentInstanceType")
+                    options = rec.get("recommendationOptions", [])
+
+                    recommended_type = options[0].get("instanceType") if options else "Unknown"
+                    estimated_savings = options[0].get("estimatedMonthlySavings", {}).get("value", 0.0) if options else 0.0
+
+                    savings.append({
+                        "Region": region,
+                        "ResourceType": "EC2 Instance",
+                        "InstanceArn": rec.get("instanceArn"),
+                        "Finding": "OVER_PROVISIONED (Wasting Money)",
+                        "CurrentType": current_type,
+                        "RecommendedType": recommended_type,
+                        "EstimatedMonthlySavings": f"${estimated_savings:.2f}"
+                    })
+        except Exception as e:
+            # Compute Optimizer might not be opted-in
+            if "OptInRequiredException" in str(e):
+                pass
+            return []
         return savings
 
     # ------------------------------------------------------------------ #

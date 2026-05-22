@@ -18,18 +18,10 @@ class AWSCostExplorerFetcher:
     Requires: pip install aioboto3
     """
 
-    def __init__(self, max_concurrent: int = 5):
+    def __init__(self):
         # CE API is a global endpoint. We always communicate with us-east-1.
         self.region = "us-east-1"
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
         self._session = aioboto3.Session()
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     # ------------------------------------------------------------------ #
     #  Public API                                                        #
@@ -63,19 +55,18 @@ class AWSCostExplorerFetcher:
         next_token = None
 
         # Loop manually to handle pagination for large time windows
-        async with self._semaphore:
-            async with self._session.client("ce", region_name=self.region) as ce:
-                while True:
-                    if next_token:
-                        request_kwargs["NextPageToken"] = next_token
-                        
-                    response = await ce.get_cost_and_usage(**request_kwargs)
-                    all_results_by_time.extend(response.get("ResultsByTime", []))
-                    
-                    next_token = response.get("NextPageToken")
-                    if not next_token:
-                        break
-                        
+        async with self._session.client("ce", region_name=self.region) as ce:
+            while True:
+                if next_token:
+                    request_kwargs["NextPageToken"] = next_token
+
+                response = await ce.get_cost_and_usage(**request_kwargs)
+                all_results_by_time.extend(response.get("ResultsByTime", []))
+
+                next_token = response.get("NextPageToken")
+                if not next_token:
+                    break
+
         return {
             "TimePeriod": {"Start": start_date, "End": end_date},
             "Granularity": granularity,

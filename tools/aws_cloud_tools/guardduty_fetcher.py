@@ -28,16 +28,8 @@ class AWSGuardDutyFetcher:
     DEFAULT_MAX_PER_REGION = 12
     DEFAULT_MAX_TOTAL = 35
 
-    def __init__(self, max_concurrent: int = 8):
+    def __init__(self):
         self._session = aioboto3.Session()
-        self._max_concurrent = max_concurrent
-        self.__semaphore = None
-
-    @property
-    def _semaphore(self) -> asyncio.Semaphore:
-        if self.__semaphore is None:
-            self.__semaphore = asyncio.Semaphore(self._max_concurrent)
-        return self.__semaphore
 
     async def _list_regions(self) -> list[str]:
         async with self._session.client("ec2", region_name="us-east-1") as ec2:
@@ -85,33 +77,32 @@ class AWSGuardDutyFetcher:
         error_message is set when the API call fails (previously swallowed as empty).
         """
         cap = min(max(1, max_ids), 50)  # GuardDuty API limit per list_findings call
-        async with self._semaphore:
-            try:
-                async with self._session.client("guardduty", region_name=region) as gd:
-                    detectors = await gd.list_detectors()
-                    d_ids = detectors.get("DetectorIds", [])
-                    if not d_ids:
-                        return [], None
+        try:
+            async with self._session.client("guardduty", region_name=region) as gd:
+                detectors = await gd.list_detectors()
+                d_ids = detectors.get("DetectorIds", [])
+                if not d_ids:
+                    return [], None
 
-                    list_resp = await gd.list_findings(
-                        DetectorId=d_ids[0],
-                        FindingCriteria=self._finding_criteria(min_severity),
-                        MaxResults=cap,
-                    )
-                    ids = list_resp.get("FindingIds", [])
-                    if not ids:
-                        return [], None
+                list_resp = await gd.list_findings(
+                    DetectorId=d_ids[0],
+                    FindingCriteria=self._finding_criteria(min_severity),
+                    MaxResults=cap,
+                )
+                ids = list_resp.get("FindingIds", [])
+                if not ids:
+                    return [], None
 
-                    detail = await gd.get_findings(
-                        DetectorId=d_ids[0],
-                        FindingIds=ids[:cap],
-                    )
-                    return [
-                        self._parse_finding(f, region)
-                        for f in detail.get("Findings", [])
-                    ], None
-            except Exception as exc:
-                return [], str(exc)
+                detail = await gd.get_findings(
+                    DetectorId=d_ids[0],
+                    FindingIds=ids[:cap],
+                )
+                return [
+                    self._parse_finding(f, region)
+                    for f in detail.get("Findings", [])
+                ], None
+        except Exception as exc:
+            return [], str(exc)
 
     async def fetch_guardduty_summary(
         self,
