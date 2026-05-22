@@ -21,10 +21,10 @@ WORKDIR /app
 
 # Copy dependency manifests first (layer-cache friendly)
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
 
-# Sync all dependencies into the project venv using uv
-RUN uv sync --frozen --no-dev
+# Install only third-party dependencies; skip building the local package
+# (project uses a flat layout, no src/chandra package to install)
+RUN uv sync --frozen --no-dev --no-install-project
 
 ############################
 # Stage 2 — runtime
@@ -46,9 +46,8 @@ RUN apt-get update \
 # Copy uv binary so we can use `uv run` at container start
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy venv + project source from builder
+# Copy venv from builder
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/src   /app/src
 
 # Copy the root-level app files
 COPY --chown=chandra:chandra app.py           /app/app.py
@@ -72,7 +71,7 @@ COPY --chown=chandra:chandra uv.lock        /app/uv.lock
 WORKDIR /app
 USER chandra
 
-ENV PYTHONPATH=/app/src \
+ENV PYTHONPATH=/app \
     PATH="/app/.venv/bin:${PATH}" \
     # Gradio
     GRADIO_SERVER_NAME=0.0.0.0 \
