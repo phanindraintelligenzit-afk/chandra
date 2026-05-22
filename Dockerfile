@@ -17,7 +17,7 @@ RUN apt-get update \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-WORKDIR /build
+WORKDIR /app
 
 # Copy dependency manifests first (layer-cache friendly)
 COPY pyproject.toml uv.lock README.md ./
@@ -47,8 +47,8 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy venv + project source from builder
-COPY --from=builder /build/.venv /app/.venv
-COPY --from=builder /build/src   /app/src
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/src   /app/src
 
 # Copy the root-level app files
 COPY --chown=chandra:chandra app.py           /app/app.py
@@ -58,6 +58,7 @@ COPY --chown=chandra:chandra call_tools.py    /app/call_tools.py
 # FastAPI app files
 COPY --chown=chandra:chandra fastapi_app.py       /app/fastapi_app.py
 COPY --chown=chandra:chandra observation_agent.py /app/observation_agent.py
+COPY --chown=chandra:chandra analyzer_agent.py    /app/analyzer_agent.py
 COPY --chown=chandra:chandra tools/               /app/tools/
 
 # Startup script that launches both apps

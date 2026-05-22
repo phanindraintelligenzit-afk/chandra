@@ -15,6 +15,7 @@ from observation_agent import (
     PipelineResponse,
     DEFAULT_REGION,
 )
+from analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
 from tools.cost_explorer import AWSCostExplorerFetcher
 
 logging.basicConfig(
@@ -80,6 +81,39 @@ def run_pipeline(request: PipelineRequest):
         )
 
     return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
+class ActionInput(BaseModel):
+    actionName: str = Field(description="Short name of the action")
+    actionDescription: str = Field(description="Detailed description of what needs to be done")
+    service: str = Field(description="AWS service this action applies to")
+
+
+class AnalyzerRequest(BaseModel):
+    actions: List[ActionInput] = Field(description="List of remediation actions to analyze")
+    projectKey: str = Field(default="DEV", description="Jira project key for ticket creation")
+
+
+@app.post("/analyzeActions", response_model=AnalyzerPipelineResponse)
+def analyze_actions(request: AnalyzerRequest):
+    logger.info(
+        "POST /analyzeActions called with %d actions, projectKey=%s",
+        len(request.actions),
+        request.projectKey,
+    )
+    try:
+        agent = AnalyzerAgent()
+        response = agent.RunPipeline(request.model_dump())
+    except Exception as exc:
+        logger.exception("AnalyzerAgent initialisation failed: %s", exc)
+        response = AnalyzerPipelineResponse(
+            statusCode=500,
+            status="error",
+            exception=str(exc),
+            output=None,
+        )
+
+    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)
