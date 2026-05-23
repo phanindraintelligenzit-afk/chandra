@@ -17,6 +17,7 @@ from observation_agent import (
 )
 from analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
+from copilot_agents.graph import build_graph, chat as copilot_chat
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,10 +31,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Built once so MemorySaver persists across requests (keyed by sessionId)
+_copilot_agent = build_graph()
+
 
 class KRAInput(BaseModel):
-    code: str = Field(description="KRA identifier, e.g. KRA-01")
-    description: str = Field(description="What this KRA measures / targets")
+    code: Optional[str] = Field(default=None, description="Optional KRA identifier (e.g. KRA-01). Auto-labelled if omitted.")
+    description: str = Field(description="Free-form goal or objective. Can be an observability target (e.g. 'IAM drift monitoring') or any operational task (e.g. 'Deploy code from github.com/org/repo to EC2 in us-east-1').")
 
 
 class PipelineRequest(BaseModel):
@@ -113,6 +117,27 @@ def analyze_actions(request: AnalyzerRequest):
         )
 
     return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
+
+class CopilotRequest(BaseModel):
+    sessionId: str = Field(description="Conversation thread ID — reuse to retain memory across turns")
+    message: str = Field(description="User message to the copilot agent")
+
+
+class CopilotResponse(BaseModel):
+    sessionId: str
+    reply: str
+
+
+@app.post("/copilot/chat", response_model=CopilotResponse)
+def copilot_chat_endpoint(request: CopilotRequest):
+    logger.info("POST /copilot/chat sessionId=%s", request.sessionId)
+    try:
+        reply = copilot_chat(_copilot_agent, request.sessionId, request.message)
+        return JSONResponse(status_code=200, content={"sessionId": request.sessionId, "reply": reply})
+    except Exception as exc:
+        logger.exception("Copilot chat failed: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 
 if __name__ == "__main__":

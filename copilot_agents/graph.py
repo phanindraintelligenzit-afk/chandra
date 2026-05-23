@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # ── Import all tools from tools.py ───────────────────────────────────────────
-from call_tools import (
+from copilot_agents.call_tools import (
     get_aws_cost_summary,
     get_cloudtrail_api_logs,
     get_cpu_metrics,

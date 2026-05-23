@@ -233,18 +233,18 @@ DEFAULT_REGION = "us-east-1"
 def default_tool_args(tool_name: str, region: str = DEFAULT_REGION) -> dict:
     """Default kwargs for parallel tool invocation in the observability pipeline."""
     return {
-        "fetch_metrics_summary": {"region": region, "last_hours": 6},
-        "fetch_alarms_summary": {"max_total_alarms": 40},
+        "fetch_metrics_summary": {"region": region, "last_hours": 1},
+        "fetch_alarms_summary": {"max_total_alarms": 20},
         "fetch_recent_events": {"max_results": 20},
         "fetch_budget_status": {},
-        "fetch_events_summary": {"last_hours": 2, "max_total_events": 30},
+        "fetch_events_summary": {"last_hours": 2, "max_total_events": 15},
         "fetch_costs_summary": {"days_lookback": 7},
         "fetch_active_threats": {},
-        "fetch_critical_errors": {"hours_lookback": 24, "max_results": 50},
-        "fetch_global_logs": {"hours_lookback": 24, "max_total_results": 20},
+        "fetch_critical_errors": {"hours_lookback": 12, "max_results": 20},
+        "fetch_global_logs": {"hours_lookback": 4, "max_total_results": 15},
         "fetch_account_audit": {"max_results": 20},
         "check_recorder_status": {},
-        "fetch_recent_changes": {"hours_lookback": 24, "max_total_results": 15},
-        "fetch_global_xray_summary": {"hours_lookback": 8, "max_traces_total": 50},
+        "fetch_recent_changes": {"hours_lookback": 12, "max_total_results": 15},
+        "fetch_global_xray_summary": {"hours_lookback": 8, "max_traces_total": 20},
         "fetch_all_findings": {},
     }.get(tool_name, {})

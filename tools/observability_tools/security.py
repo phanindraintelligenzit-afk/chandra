@@ -1,13 +1,4 @@
-"""Security KRA detectors.
-
-Detector IDs:
-
-* ``SEC-001-public-s3``     — bucket block-public-access disabled OR policy allows ``*``
-* ``SEC-002-open-sg-ssh``   — SG with 0.0.0.0/0 on 22/3389/3306/5432
-* ``SEC-003-stale-key``     — IAM access key older than 90 days
-* ``SEC-004-root-mfa``      — root account MFA not enabled
-* ``SEC-005-wildcard-iam``  — customer-managed policy with ``Action: *`` + ``Resource: *``
-"""
+"""Security KRA detectors."""
 
 from __future__ import annotations
 
@@ -18,38 +9,23 @@ from typing import Any
 from briefing.schemas import Finding
 from config import settings
 from structlog import get_logger
-from tools.observability_tools import DetectorContext, detector_guard, paginate
+from tools.observability_tools import DetectorContext, detector_guard, paginate, run_per_region
 
 logger = get_logger(__name__)
 
 STALE_KEY_DAYS = 90
+DANGEROUS_PORTS: dict[int, str] = {22: "SSH", 3389: "RDP", 3306: "MySQL", 5432: "PostgreSQL"}
 
 
 def _stale_key_threshold_days() -> int:
     override = settings.stale_key_days_override
     return override if override is not None else STALE_KEY_DAYS
 
-DANGEROUS_PORTS: dict[int, str] = {
-    22: "SSH",
-    3389: "RDP",
-    3306: "MySQL",
-    5432: "PostgreSQL",
-}
-
 
 def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:
-    """Detect S3 buckets that are effectively public.
-
-    Triggers when EITHER:
-
-    1. Public Access Block is missing or any of its four flags is False, OR
-    2. The bucket policy contains a statement with ``Effect=Allow`` and
-       ``Principal`` set to ``*`` or ``{"AWS": "*"}``.
-    """
     detector_id = "SEC-001-public-s3"
     findings: list[Finding] = []
-    factory = ctx.factory
-    s3 = factory.client("s3")
+    s3 = ctx.factory.client("s3")
 
     bucket_names: list[str] = []
     with detector_guard(ctx, detector_id=detector_id):
@@ -67,17 +43,11 @@ def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:
         pab_evidence: dict[str, Any] = {}
         with detector_guard(ctx, detector_id=detector_id, resource_arn=arn):
             try:
-                pab_resp = s3.get_public_access_block(Bucket=name)
-                pab = pab_resp["PublicAccessBlockConfiguration"]
+                pab = s3.get_public_access_block(Bucket=name)["PublicAccessBlockConfiguration"]
                 pab_evidence = pab
                 if not all(
                     pab.get(k, False)
-                    for k in (
-                        "BlockPublicAcls",
-                        "IgnorePublicAcls",
-                        "BlockPublicPolicy",
-                        "RestrictPublicBuckets",
-                    )
+                    for k in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
                 ):
                     pab_disabled = True
             except s3.exceptions.ClientError as exc:
@@ -92,8 +62,7 @@ def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:
         policy_evidence: dict[str, Any] = {}
         with detector_guard(ctx, detector_id=detector_id, resource_arn=arn):
             try:
-                policy_resp = s3.get_bucket_policy(Bucket=name)
-                policy_doc = json.loads(policy_resp["Policy"])
+                policy_doc = json.loads(s3.get_bucket_policy(Bucket=name)["Policy"])
                 policy_evidence = {"Policy": policy_doc}
                 policy_public = _bucket_policy_is_public(policy_doc)
             except s3.exceptions.ClientError as exc:
@@ -145,23 +114,21 @@ def _bucket_policy_is_public(policy_doc: dict[str, Any]) -> bool:
 
 
 def find_open_security_groups(ctx: DetectorContext) -> list[Finding]:
-    """Detect SGs exposing dangerous ports to 0.0.0.0/0 in any active region."""
     detector_id = "SEC-002-open-sg-ssh"
-    findings: list[Finding] = []
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         ec2 = ctx.factory.client("ec2", region=region)
+        findings: list[Finding] = []
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(ec2, "describe_security_groups"):
                 for sg in page.get("SecurityGroups", []):
                     findings.extend(_inspect_security_group(sg, region, detector_id))
+        return findings
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
-def _inspect_security_group(
-    sg: dict[str, Any], region: str, detector_id: str
-) -> list[Finding]:
+def _inspect_security_group(sg: dict[str, Any], region: str, detector_id: str) -> list[Finding]:
     findings: list[Finding] = []
     sg_id = sg["GroupId"]
     owner_id = sg.get("OwnerId", "unknown")
@@ -174,14 +141,11 @@ def _inspect_security_group(
             continue
         from_port = perm.get("FromPort")
         to_port = perm.get("ToPort")
-        open_to_world = any(
-            r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", []) or []
-        )
+        open_to_world = any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", []) or [])
         if not open_to_world:
             continue
         if ip_protocol == "-1":
-            for port, name in DANGEROUS_PORTS.items():
-                exposed.append((port, name))
+            exposed.extend(DANGEROUS_PORTS.items())
             continue
         if from_port is None or to_port is None:
             continue
@@ -201,10 +165,7 @@ def _inspect_security_group(
             resource_arn=arn,
             resource_type="AWS::EC2::SecurityGroup",
             region=region,
-            title=(
-                f"Security group {sg_id} exposes {ports_listed} "
-                f"to 0.0.0.0/0"
-            ),
+            title=f"Security group {sg_id} exposes {ports_listed} to 0.0.0.0/0",
             evidence={"GroupId": sg_id, "IpPermissions": sg.get("IpPermissions", [])},
             recommendation=(
                 "Restrict the offending ingress rules to your corporate CIDR range, "
@@ -217,7 +178,6 @@ def _inspect_security_group(
 
 
 def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
-    """Detect IAM access keys older than ``STALE_KEY_DAYS`` (default 90)."""
     detector_id = "SEC-003-stale-key"
     findings: list[Finding] = []
     iam = ctx.factory.client("iam")
@@ -253,10 +213,7 @@ def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
                             resource_arn=user_arn,
                             resource_type="AWS::IAM::AccessKey",
                             region="global",
-                            title=(
-                                f"IAM access key for {username} is {age_days}d old "
-                                f"(threshold {threshold_days}d)"
-                            ),
+                            title=f"IAM access key for {username} is {age_days}d old (threshold {threshold_days}d)",
                             evidence={
                                 "UserName": username,
                                 "AccessKeyId": key["AccessKeyId"],
@@ -276,15 +233,13 @@ def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
 
 
 def check_root_mfa(ctx: DetectorContext) -> list[Finding]:
-    """Emit a finding if the AWS account root user does not have MFA enabled."""
     detector_id = "SEC-004-root-mfa"
     findings: list[Finding] = []
     iam = ctx.factory.client("iam")
 
     with detector_guard(ctx, detector_id=detector_id):
         summary = iam.get_account_summary().get("SummaryMap", {})
-        mfa_enabled = bool(summary.get("AccountMFAEnabled", 0))
-        if not mfa_enabled:
+        if not bool(summary.get("AccountMFAEnabled", 0)):
             findings.append(
                 Finding(
                     kra="security",
@@ -306,7 +261,6 @@ def check_root_mfa(ctx: DetectorContext) -> list[Finding]:
 
 
 def find_overly_permissive_iam(ctx: DetectorContext) -> list[Finding]:
-    """Detect customer-managed policies that grant ``Action: *`` on ``Resource: *``."""
     detector_id = "SEC-005-wildcard-iam"
     findings: list[Finding] = []
     iam = ctx.factory.client("iam")
@@ -320,10 +274,9 @@ def find_overly_permissive_iam(ctx: DetectorContext) -> list[Finding]:
         policy_arn = policy["Arn"]
         with detector_guard(ctx, detector_id=detector_id, resource_arn=policy_arn):
             version_id = policy["DefaultVersionId"]
-            version = iam.get_policy_version(
-                PolicyArn=policy_arn, VersionId=version_id
-            )
-            doc = version["PolicyVersion"]["Document"]
+            doc = iam.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)[
+                "PolicyVersion"
+            ]["Document"]
             if isinstance(doc, str):
                 doc = json.loads(doc)
             if _policy_doc_is_wildcard(doc):
@@ -358,9 +311,7 @@ def _policy_doc_is_wildcard(doc: dict[str, Any]) -> bool:
     for stmt in statements:
         if stmt.get("Effect") != "Allow":
             continue
-        actions = stmt.get("Action")
-        resources = stmt.get("Resource")
-        if _has_wildcard(actions) and _has_wildcard(resources):
+        if _has_wildcard(stmt.get("Action")) and _has_wildcard(stmt.get("Resource")):
             return True
     return False
 
@@ -383,7 +334,6 @@ ALL_DETECTORS = (
 
 
 def run_all(ctx: DetectorContext) -> list[Finding]:
-    """Run every security detector and concatenate findings."""
     out: list[Finding] = []
     for fn in ALL_DETECTORS:
         out.extend(fn(ctx))

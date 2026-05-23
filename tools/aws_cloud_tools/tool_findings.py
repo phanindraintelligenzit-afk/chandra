@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import os
+import time
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -24,6 +25,7 @@ _MODULES = {
 
 
 async def _run_one(name: str, account_id: str, regions: list) -> tuple[str, list]:
+    t0 = time.perf_counter()
     print(f"Running {name.upper()} detectors...")
     try:
         ctx = DetectorContext(
@@ -32,8 +34,24 @@ async def _run_one(name: str, account_id: str, regions: list) -> tuple[str, list
             factory=ClientFactory(),
         )
         mod = importlib.import_module(_MODULES[name])
-        findings = await asyncio.to_thread(mod.run_all, ctx)
-        print(f"  Found {len(findings)} {name} issues\n")
+        detectors = getattr(mod, "ALL_DETECTORS", None)
+
+        if detectors:
+            results = await asyncio.gather(
+                *[asyncio.to_thread(fn, ctx) for fn in detectors],
+                return_exceptions=True,
+            )
+            findings = []
+            for fn, result in zip(detectors, results):
+                if isinstance(result, Exception):
+                    print(f"  [{name.upper()}] {fn.__name__} error: {result}")
+                else:
+                    findings.extend(result)
+        else:
+            findings = await asyncio.to_thread(mod.run_all, ctx)
+
+        elapsed = time.perf_counter() - t0
+        print(f"  Found {len(findings)} {name} issues  ({elapsed:.1f}s)\n")
         return name, findings
     except Exception as e:
         print(f"  Skipped {name} (not found or error): {e}\n")

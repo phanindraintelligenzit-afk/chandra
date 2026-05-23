@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from botocore.exceptions import BotoCoreError, ClientError
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -60,3 +63,37 @@ def paginate(client: Any, operation: str, **kwargs: Any) -> Iterator[dict[str, A
     """Yield every page from a boto3 paginator."""
     paginator = client.get_paginator(operation)
     yield from paginator.paginate(**kwargs)
+
+
+def run_per_region(
+    ctx: "DetectorContext",
+    fn: Callable[["DetectorContext", str], list[_T]],
+    *,
+    max_workers: int = 10,
+) -> list[_T]:
+    """Run ``fn(ctx, region)`` concurrently for every region in ``ctx.regions``.
+
+    Replaces the common ``for region in ctx.regions`` loop inside detectors.
+    Errors from individual regions are recorded in ``ctx.errors`` and skipped
+    so all other regions still complete.
+    """
+    results: list[_T] = []
+    workers = min(len(ctx.regions), max_workers)
+    if workers == 0:
+        return results
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_region = {
+            pool.submit(fn, ctx, region): region for region in ctx.regions
+        }
+        for future in as_completed(future_to_region):
+            region = future_to_region[future]
+            try:
+                results.extend(future.result())
+            except Exception as exc:
+                ctx.record_error(
+                    detector_id="run_per_region",
+                    region=region,
+                    error=exc,
+                )
+    return results

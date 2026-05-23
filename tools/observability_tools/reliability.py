@@ -1,12 +1,4 @@
-"""Reliability KRA detectors.
-
-Detector IDs:
-
-* ``REL-001-rds-single-az`` — prod-tagged RDS without Multi-AZ.
-* ``REL-002-s3-versioning`` — versioning disabled on ``Criticality=high`` buckets.
-* ``REL-003-no-dlm``        — no DLM lifecycle policy in a region with attached volumes.
-* ``REL-004-no-backup-plan``— no AWS Backup plans configured in an active region.
-"""
+"""Reliability KRA detectors."""
 
 from __future__ import annotations
 
@@ -14,7 +6,7 @@ from typing import Any
 
 from briefing.schemas import Finding
 from structlog import get_logger
-from tools.observability_tools import DetectorContext, detector_guard, paginate
+from tools.observability_tools import DetectorContext, detector_guard, paginate, run_per_region
 
 logger = get_logger(__name__)
 
@@ -24,27 +16,24 @@ CRITICAL_TAG_VALUES = {"high", "critical"}
 
 
 def check_rds_multi_az(ctx: DetectorContext) -> list[Finding]:
-    """Flag prod-tagged RDS instances that are NOT Multi-AZ deployments."""
     detector_id = "REL-001-rds-single-az"
-    findings: list[Finding] = []
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         rds = ctx.factory.client("rds", region=region)
+        findings: list[Finding] = []
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(rds, "describe_db_instances"):
                 for db in page.get("DBInstances", []):
                     tags = {t["Key"]: t["Value"] for t in db.get("TagList", []) or []}
-                    env = tags.get("Environment", "").lower()
-                    if env not in PROD_VALUES:
+                    if tags.get("Environment", "").lower() not in PROD_VALUES:
                         continue
                     if db.get("MultiAZ"):
                         continue
-                    arn = db["DBInstanceArn"]
                     findings.append(
                         Finding(
                             kra="reliability",
                             severity="high",
-                            resource_arn=arn,
+                            resource_arn=db["DBInstanceArn"],
                             resource_type="AWS::RDS::DBInstance",
                             region=region,
                             title=(
@@ -63,12 +52,12 @@ def check_rds_multi_az(ctx: DetectorContext) -> list[Finding]:
                             detector_id=detector_id,
                         )
                     )
+        return findings
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 def check_s3_versioning(ctx: DetectorContext) -> list[Finding]:
-    """Flag buckets tagged ``Criticality=high|critical`` without versioning enabled."""
     detector_id = "REL-002-s3-versioning"
     findings: list[Finding] = []
     s3 = ctx.factory.client("s3")
@@ -86,135 +75,114 @@ def check_s3_versioning(ctx: DetectorContext) -> list[Finding]:
                 tag_resp = s3.get_bucket_tagging(Bucket=name)
                 tags = {t["Key"]: t["Value"] for t in tag_resp.get("TagSet", [])}
             except s3.exceptions.ClientError as exc:
-                code = exc.response.get("Error", {}).get("Code")
-                if code != "NoSuchTagSet":
+                if exc.response.get("Error", {}).get("Code") != "NoSuchTagSet":
                     raise
 
         if tags.get(CRITICAL_TAG_KEY, "").lower() not in CRITICAL_TAG_VALUES:
             continue
 
-        versioning_enabled = False
         with detector_guard(ctx, detector_id=detector_id, resource_arn=arn):
-            ver = s3.get_bucket_versioning(Bucket=name)
-            versioning_enabled = ver.get("Status") == "Enabled"
-
-        if not versioning_enabled:
-            findings.append(
-                Finding(
-                    kra="reliability",
-                    severity="high",
-                    resource_arn=arn,
-                    resource_type="AWS::S3::Bucket",
-                    region="us-east-1",
-                    title=(
-                        f"S3 bucket {name} is tagged "
-                        f"{CRITICAL_TAG_KEY}={tags[CRITICAL_TAG_KEY]} "
-                        "but versioning is disabled"
-                    ),
-                    evidence={"Tags": tags, "VersioningStatus": "Disabled"},
-                    recommendation=(
-                        "Enable versioning and, for highly-sensitive data, "
-                        "MFA Delete. Pair with a lifecycle rule to expire "
-                        "non-current versions on a defined schedule."
-                    ),
-                    detector_id=detector_id,
+            if s3.get_bucket_versioning(Bucket=name).get("Status") != "Enabled":
+                findings.append(
+                    Finding(
+                        kra="reliability",
+                        severity="high",
+                        resource_arn=arn,
+                        resource_type="AWS::S3::Bucket",
+                        region="us-east-1",
+                        title=(
+                            f"S3 bucket {name} is tagged "
+                            f"{CRITICAL_TAG_KEY}={tags[CRITICAL_TAG_KEY]} "
+                            "but versioning is disabled"
+                        ),
+                        evidence={"Tags": tags, "VersioningStatus": "Disabled"},
+                        recommendation=(
+                            "Enable versioning and, for highly-sensitive data, "
+                            "MFA Delete. Pair with a lifecycle rule to expire "
+                            "non-current versions on a defined schedule."
+                        ),
+                        detector_id=detector_id,
+                    )
                 )
-            )
 
     return findings
 
 
 def check_ebs_snapshot_policy(ctx: DetectorContext) -> list[Finding]:
-    """Flag regions that have attached EBS volumes but no DLM lifecycle policy."""
     detector_id = "REL-003-no-dlm"
-    findings: list[Finding] = []
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         ec2 = ctx.factory.client("ec2", region=region)
         dlm = ctx.factory.client("dlm", region=region)
 
-        has_attached_volumes = False
+        has_attached = False
         with detector_guard(ctx, detector_id=detector_id, region=region):
-            for page in paginate(
-                ec2,
-                "describe_volumes",
-                Filters=[{"Name": "status", "Values": ["in-use"]}],
-            ):
+            for page in paginate(ec2, "describe_volumes", Filters=[{"Name": "status", "Values": ["in-use"]}]):
                 if page.get("Volumes"):
-                    has_attached_volumes = True
+                    has_attached = True
                     break
 
-        if not has_attached_volumes:
-            continue
+        if not has_attached:
+            return []
 
-        has_policy = False
         evidence: dict[str, Any] = {}
         with detector_guard(ctx, detector_id=detector_id, region=region):
-            resp = dlm.get_lifecycle_policies()
-            policies = resp.get("Policies", [])
+            policies = dlm.get_lifecycle_policies().get("Policies", [])
             evidence = {"PolicyCount": len(policies)}
-            has_policy = bool(policies)
+            if policies:
+                return []
 
-        if not has_policy:
-            findings.append(
-                Finding(
-                    kra="reliability",
-                    severity="medium",
-                    resource_arn=f"arn:aws:dlm:{region}:{ctx.account_id}:policy/*",
-                    resource_type="AWS::DLM::LifecyclePolicy",
-                    region=region,
-                    title=(
-                        f"Region {region} has in-use EBS volumes but no DLM "
-                        "lifecycle policy"
-                    ),
-                    evidence=evidence,
-                    recommendation=(
-                        "Create a DLM policy targeting volumes by tag (e.g. "
-                        "Backup=daily) with a retention schedule that matches "
-                        "your RPO."
-                    ),
-                    detector_id=detector_id,
-                )
+        return [
+            Finding(
+                kra="reliability",
+                severity="medium",
+                resource_arn=f"arn:aws:dlm:{region}:{ctx.account_id}:policy/*",
+                resource_type="AWS::DLM::LifecyclePolicy",
+                region=region,
+                title=f"Region {region} has in-use EBS volumes but no DLM lifecycle policy",
+                evidence=evidence,
+                recommendation=(
+                    "Create a DLM policy targeting volumes by tag (e.g. "
+                    "Backup=daily) with a retention schedule that matches your RPO."
+                ),
+                detector_id=detector_id,
             )
+        ]
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 def check_backup_plans(ctx: DetectorContext) -> list[Finding]:
-    """Flag regions with zero AWS Backup plans."""
     detector_id = "REL-004-no-backup-plan"
-    findings: list[Finding] = []
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         backup = ctx.factory.client("backup", region=region)
         plan_count = 0
-        evidence: dict[str, Any] = {}
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(backup, "list_backup_plans"):
-                plans = page.get("BackupPlansList", [])
-                plan_count += len(plans)
-            evidence = {"PlanCount": plan_count}
+                plan_count += len(page.get("BackupPlansList", []))
 
-        if plan_count == 0:
-            findings.append(
-                Finding(
-                    kra="reliability",
-                    severity="medium",
-                    resource_arn=f"arn:aws:backup:{region}:{ctx.account_id}:backup-plan/*",
-                    resource_type="AWS::Backup::BackupPlan",
-                    region=region,
-                    title=f"No AWS Backup plans configured in {region}",
-                    evidence=evidence,
-                    recommendation=(
-                        "Create at least one AWS Backup plan with a retention "
-                        "rule that satisfies your business RPO/RTO, and assign "
-                        "resources via tag-based selection."
-                    ),
-                    detector_id=detector_id,
-                )
+        if plan_count > 0:
+            return []
+        return [
+            Finding(
+                kra="reliability",
+                severity="medium",
+                resource_arn=f"arn:aws:backup:{region}:{ctx.account_id}:backup-plan/*",
+                resource_type="AWS::Backup::BackupPlan",
+                region=region,
+                title=f"No AWS Backup plans configured in {region}",
+                evidence={"PlanCount": 0},
+                recommendation=(
+                    "Create at least one AWS Backup plan with a retention "
+                    "rule that satisfies your business RPO/RTO, and assign "
+                    "resources via tag-based selection."
+                ),
+                detector_id=detector_id,
             )
+        ]
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 ALL_DETECTORS = (

@@ -14,9 +14,13 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_aws import ChatBedrockConverse
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.outputs import LLMResult
 
 from tools.langchain_tools import DEFAULT_REGION, TOOLS_LIST, default_tool_args
 
@@ -36,6 +40,25 @@ ORIGINAL_KRAS = """
 **KRA-05** Infra documentation & runbook authoring
 """
 
+
+class _TokenUsageCallback(BaseCallbackHandler):
+    """Logs actual input/output token counts returned by Bedrock after the LLM call."""
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        for generations in response.generations:
+            for gen in generations:
+                usage = getattr(gen.message, "usage_metadata", None) if hasattr(gen, "message") else None
+                if usage:
+                    logger.info(
+                        "LLM token usage | input_tokens=%d | output_tokens=%d | total_tokens=%d",
+                        usage.get("input_tokens", 0),
+                        usage.get("output_tokens", 0),
+                        usage.get("total_tokens", 0),
+                    )
+                    return
+        logger.warning("Token usage metadata not available in LLM response")
+
+
 class CostEntry(BaseModel):
     service: str = Field(description="AWS service name")
     daily_avg_usd: float = Field(description="Average daily cost in USD")
@@ -43,10 +66,21 @@ class CostEntry(BaseModel):
     note: Optional[str] = Field(default=None, description="Anomaly flag, savings opportunity, etc.")
 
 
+class IssueItem(BaseModel):
+    issue: str = Field(description="Concise description of the issue or anomaly detected")
+    priorityLevel: str = Field(description="Priority level: P1 (critical/immediate) | P2 (high/urgent) | P3 (medium/scheduled)")
+    service: str = Field(description="Primary AWS service affected (e.g. S3, RDS, EC2, IAM, Bedrock, EKS, CloudTrail)")
+    region: Optional[str] = Field(default=None, description="AWS region where the issue was detected, if applicable")
+    resourceId: Optional[str] = Field(default=None, description="Specific resource ID or name involved, if identifiable")
+
+
 class ActionItem(BaseModel):
     actionName: str = Field(description="Short name or title of the action (e.g. 'Revoke S3 Public Access')")
     actionDescription: str = Field(description="Detailed description of what needs to be done and why")
-    service: str = Field(description="AWS service this action applies to (e.g. 'S3', 'RDS', 'Bedrock')")
+    service: str = Field(description="AWS service this action applies to (e.g. 'S3', 'RDS', 'EC2', 'CodeDeploy')")
+    kraCode: str = Field(description="The KRA code this action addresses (must match one of the input KRA codes)")
+    priorityLevel: str = Field(description="Execution priority: P1 (immediate) | P2 (this sprint) | P3 (backlog)")
+    steps: Optional[List[str]] = Field(default=None, description="Ordered step-by-step instructions. Required for operational or task-type KRAs (e.g. deployments, migrations, runbook tasks). Omit for simple remediation actions.")
 
 
 class KRAStatus(BaseModel):
@@ -60,12 +94,12 @@ class ObservabilityReport(BaseModel):
     """Structured report aligned with the AWS Observability / Cloud SRE role."""
     health: str = Field(description="Overall health status: Healthy | Degraded | Critical")
     kra_status: List[KRAStatus] = Field(description="Status against each of the defined KRAs")
-    issues: List[str] = Field(description="Critical issues / anomalies (P1/P2 level). Empty if none.")
+    issues: List[IssueItem] = Field(description="detected issues and anomalies, each with priority and affected service.")
     observations: List[str] = Field(description="Key findings from metrics, CloudTrail, Config, Security Hub, etc.")
     cost_snapshot: List[CostEntry] = Field(description="Top cost drivers with anomaly detection")
     security_posture: List[str] = Field(description="IAM drift, Security Hub findings, misconfigurations")
     compliance_summary: str = Field(description="Compliance evidence readiness summary")
-    actions: List[ActionItem] = Field(description="Prioritised actionable recommendations (most urgent first)")
+    actions: List[ActionItem] = Field(description="Recommended actions driven by the input KRAs. One or more actions per KRA, ordered by KRA sequence then priorityLevel (P1 first). Actions reflect what is needed to achieve each KRA — independent of the issues list.")
 
 
 class AgentState(TypedDict):
@@ -98,6 +132,7 @@ class AwsObservabilityAgent:
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
             self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
+            # self.Llm = ChatOpenAI(model="gpt-5.4")
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:
@@ -108,7 +143,10 @@ class AwsObservabilityAgent:
     def _build_kras_str(kras: Optional[List[Any]]) -> str:
         if not kras:
             return ORIGINAL_KRAS
-        lines = [f"**{k.code}** {k.description}" for k in kras]
+        lines = []
+        for i, k in enumerate(kras, start=1):
+            code = getattr(k, "code", None) or f"KRA-{i:02d}"
+            lines.append(f"**{code}** {k.description}")
         return "\n".join(lines)
 
     def TriggerToolsNode(self, state: AgentState) -> dict:
@@ -151,7 +189,15 @@ class AwsObservabilityAgent:
         if failed_tools:
             logger.warning("Parse failures for tools: %s", failed_tools)
 
-        logger.info("Normalisation complete. Tools collected=%d", len(raw_results))
+        for tool_name, result in raw_results.items():
+            tool_chars = len(json.dumps(result, default=str))
+            logger.info("Tool payload | tool=%s | chars=%d | estimated_tokens≈%d", tool_name, tool_chars, tool_chars // 4)
+
+        total_chars = len(json.dumps(raw_results, default=str))
+        logger.info(
+            "Normalisation complete | tools_collected=%d | total_chars=%d | estimated_tokens≈%d",
+            len(raw_results), total_chars, total_chars // 4,
+        )
         return {"raw_results": raw_results}
 
     def SummaryNode(self, state: AgentState) -> dict:
@@ -163,7 +209,11 @@ class AwsObservabilityAgent:
             empty_report = ObservabilityReport(
                 health="Unknown",
                 kra_status=[],
-                issues=["No data collected from AWS tools."],
+                issues=[IssueItem(
+                    issue="No data collected from AWS tools.",
+                    priorityLevel="P3",
+                    service="Unknown",
+                )],
                 observations=[],
                 cost_snapshot=[],
                 security_posture=["Unable to assess security posture"],
@@ -174,18 +224,59 @@ class AwsObservabilityAgent:
 
         try:
             raw_str = json.dumps(raw_results, indent=2, default=str)
-            prompt = f"""You are an autonomous AWS Cloud SRE / Observability Agent.
+            prompt = f"""You are an autonomous AWS Cloud Engineer Agent capable of handling both observability analysis and operational tasks.
 
-**Job Context & KRAs:**
+**User-defined KRAs (Key Result Areas):**
 {self.Kras}
 
-Raw data from AWS tools:
+**AWS environment data collected by tools:**
 {raw_str}
 
-Analyze the data and produce a professional structured report."""
+Produce a structured report following these rules:
+
+1. **issues** — Enumerate problems found in the AWS data across cost, security, compliance, performance, and reliability.
+   - `issue`: one-sentence description of what is wrong.
+   - `priorityLevel`: P1 = active breach or outage, P2 = high risk / cost anomaly, P3 = best-practice gap.
+   - `service`: primary AWS service (S3, RDS, EC2, IAM, Bedrock, EKS, CloudTrail, Config, etc.).
+   - `region`: AWS region if determinable, else omit.
+   - `resourceId`: specific resource name or ID if identifiable, else omit.
+
+2. **observations** — All noteworthy findings from the tool data even when no fix is required.
+
+3. **actions** — Recommended actions driven entirely by the KRAs above, NOT derived from the issues list.
+   For EVERY KRA provided, reason about its objective type and generate the appropriate actions:
+
+   - **Observability / monitoring KRAs** (e.g. cost anomaly detection, IAM drift, compliance): Use the tool data to assess the current state and recommend what must be done to achieve or maintain the KRA target.
+   - **Operational / task KRAs** (e.g. "deploy code from GitHub to EC2", "migrate database", "set up CI/CD pipeline"): Use any relevant resource data from the tools (instance IDs, VPCs, regions, existing roles, etc.) and produce a concrete action plan with ordered `steps`.
+   - **Any other KRA type**: Apply the same principle — assess what the KRA requires, use available data as context, and recommend actions that directly advance it.
+
+   For each action:
+   - `kraCode`: must exactly match one of the KRA codes listed above.
+   - `actionName`: concise imperative title (≤10 words).
+   - `actionDescription`: what to do, why it advances the KRA, and which resource is involved.
+   - `service`: primary AWS service.
+   - `priorityLevel`: P1 = do immediately, P2 = this sprint, P3 = backlog.
+   - `steps`: ordered list of concrete steps — required for operational/task KRAs, optional for observability KRAs.
+
+   Every KRA must have at least one action. Multiple actions per KRA are encouraged when data supports it.
+   Order by KRA sequence, then P1 → P3 within each KRA.
+
+4. **cost_snapshot** — Every service with notable spend or anomaly.
+
+5. Never fabricate data not present in the tool results. For operational KRAs, steps may use AWS best practices when the tools provide partial context."""
+
+            prompt_chars = len(prompt)
+            raw_data_chars = len(raw_str)
+            logger.info(
+                "Sending to LLM | raw_data_chars=%d | total_prompt_chars=%d | estimated_prompt_tokens≈%d",
+                raw_data_chars, prompt_chars, prompt_chars // 4,
+            )
 
             structured_llm = self.Llm.with_structured_output(ObservabilityReport)
-            report: ObservabilityReport = structured_llm.invoke([HumanMessage(content=prompt)])
+            report: ObservabilityReport = structured_llm.invoke(
+                [HumanMessage(content=prompt)],
+                config={"callbacks": [_TokenUsageCallback()]},
+            )
             logger.info("Structured report generated. health=%s", report.health)
             return {"final_summary": report.model_dump_json()}
         except Exception as exc:

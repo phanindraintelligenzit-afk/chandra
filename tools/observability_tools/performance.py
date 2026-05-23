@@ -1,11 +1,4 @@
-"""Performance KRA detectors.
-
-Detector IDs:
-
-* ``PERF-001-no-asg``        — EC2 tagged ``Environment=prod`` not in an Auto Scaling group.
-* ``PERF-002-rds-idle``      — RDS with sustained CPU <10% AND connections <5 over 14d.
-* ``PERF-003-oversized-ec2`` — EC2 with sustained CPU below 30% — headroom >70%.
-"""
+"""Performance KRA detectors."""
 
 from __future__ import annotations
 
@@ -15,7 +8,7 @@ from typing import Any
 
 from briefing.schemas import Finding
 from structlog import get_logger
-from tools.observability_tools import DetectorContext, detector_guard, paginate
+from tools.observability_tools import DetectorContext, detector_guard, paginate, run_per_region
 
 logger = get_logger(__name__)
 
@@ -26,13 +19,12 @@ LOOKBACK_DAYS = 14
 
 
 def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
-    """Flag prod-tagged EC2 instances that are not members of any ASG."""
     detector_id = "PERF-001-no-asg"
-    findings: list[Finding] = []
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         ec2 = ctx.factory.client("ec2", region=region)
         asg = ctx.factory.client("autoscaling", region=region)
+        findings: list[Finding] = []
 
         asg_instance_ids: set[str] = set()
         with detector_guard(ctx, detector_id=detector_id, region=region):
@@ -54,21 +46,14 @@ def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
                         instance_id = inst["InstanceId"]
                         if instance_id in asg_instance_ids:
                             continue
-                        arn = (
-                            f"arn:aws:ec2:{region}:{ctx.account_id}:"
-                            f"instance/{instance_id}"
-                        )
                         findings.append(
                             Finding(
                                 kra="performance",
                                 severity="medium",
-                                resource_arn=arn,
+                                resource_arn=f"arn:aws:ec2:{region}:{ctx.account_id}:instance/{instance_id}",
                                 resource_type="AWS::EC2::Instance",
                                 region=region,
-                                title=(
-                                    f"Production EC2 {instance_id} is not part of "
-                                    "any Auto Scaling group"
-                                ),
+                                title=f"Production EC2 {instance_id} is not part of any Auto Scaling group",
                                 evidence={
                                     "InstanceId": instance_id,
                                     "InstanceType": inst.get("InstanceType"),
@@ -82,20 +67,20 @@ def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
                                 detector_id=detector_id,
                             )
                         )
+        return findings
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
-    """Flag RDS instances with sustained low CPU AND low connection count."""
     detector_id = "PERF-002-rds-idle"
-    findings: list[Finding] = []
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=LOOKBACK_DAYS)
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         rds = ctx.factory.client("rds", region=region)
         cw = ctx.factory.client("cloudwatch", region=region)
+        findings: list[Finding] = []
 
         dbs: list[dict[str, Any]] = []
         with detector_guard(ctx, detector_id=detector_id, region=region):
@@ -105,29 +90,20 @@ def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
         for db in dbs:
             identifier = db["DBInstanceIdentifier"]
             arn = db["DBInstanceArn"]
-            with detector_guard(
-                ctx, detector_id=detector_id, region=region, resource_arn=arn
-            ):
-                cpu = cw.get_metric_statistics(
+            with detector_guard(ctx, detector_id=detector_id, region=region, resource_arn=arn):
+                cpu_pts = cw.get_metric_statistics(
                     Namespace="AWS/RDS",
                     MetricName="CPUUtilization",
                     Dimensions=[{"Name": "DBInstanceIdentifier", "Value": identifier}],
-                    StartTime=start,
-                    EndTime=now,
-                    Period=3600,
-                    Statistics=["Average"],
-                )
-                conn = cw.get_metric_statistics(
+                    StartTime=start, EndTime=now, Period=3600, Statistics=["Average"],
+                ).get("Datapoints", [])
+                conn_pts = cw.get_metric_statistics(
                     Namespace="AWS/RDS",
                     MetricName="DatabaseConnections",
                     Dimensions=[{"Name": "DBInstanceIdentifier", "Value": identifier}],
-                    StartTime=start,
-                    EndTime=now,
-                    Period=3600,
-                    Statistics=["Average"],
-                )
-                cpu_pts = cpu.get("Datapoints", [])
-                conn_pts = conn.get("Datapoints", [])
+                    StartTime=start, EndTime=now, Period=3600, Statistics=["Average"],
+                ).get("Datapoints", [])
+
                 if not cpu_pts or not conn_pts:
                     continue
                 avg_cpu = statistics.fmean(p["Average"] for p in cpu_pts)
@@ -158,26 +134,25 @@ def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
                         detector_id=detector_id,
                     )
                 )
+        return findings
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
-    """Flag EC2 instances with sustained CPU below 30% — >70% headroom."""
     detector_id = "PERF-003-oversized-ec2"
-    findings: list[Finding] = []
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=LOOKBACK_DAYS)
 
-    for region in ctx.regions:
+    def _check_region(ctx: DetectorContext, region: str) -> list[Finding]:
         ec2 = ctx.factory.client("ec2", region=region)
         cw = ctx.factory.client("cloudwatch", region=region)
+        findings: list[Finding] = []
 
         instances: list[dict[str, Any]] = []
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(
-                ec2,
-                "describe_instances",
+                ec2, "describe_instances",
                 Filters=[{"Name": "instance-state-name", "Values": ["running"]}],
             ):
                 for reservation in page.get("Reservations", []):
@@ -185,26 +160,16 @@ def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
 
         for inst in instances:
             instance_id = inst["InstanceId"]
-            arn = (
-                f"arn:aws:ec2:{region}:{ctx.account_id}:instance/{instance_id}"
-            )
-            with detector_guard(
-                ctx, detector_id=detector_id, region=region, resource_arn=arn
-            ):
-                metric = cw.get_metric_statistics(
+            arn = f"arn:aws:ec2:{region}:{ctx.account_id}:instance/{instance_id}"
+            with detector_guard(ctx, detector_id=detector_id, region=region, resource_arn=arn):
+                pts = cw.get_metric_statistics(
                     Namespace="AWS/EC2",
                     MetricName="CPUUtilization",
                     Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
-                    StartTime=start,
-                    EndTime=now,
-                    Period=3600,
-                    Statistics=["Maximum"],
-                )
-                pts = metric.get("Datapoints", [])
+                    StartTime=start, EndTime=now, Period=3600, Statistics=["Maximum"],
+                ).get("Datapoints", [])
                 if not pts:
                     continue
-                # If the *peak* hourly CPU never exceeded OVERSIZED_CPU,
-                # the instance is over-provisioned.
                 peak = max(p["Maximum"] for p in pts)
                 if peak >= OVERSIZED_CPU:
                     continue
@@ -233,8 +198,9 @@ def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
                         detector_id=detector_id,
                     )
                 )
+        return findings
 
-    return findings
+    return run_per_region(ctx, _check_region)
 
 
 ALL_DETECTORS = (
