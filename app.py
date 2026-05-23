@@ -1,7 +1,7 @@
 import os
 import uuid
 import gradio as gr
-from graph import build_graph, chat
+from copilot_agents.graph import build_graph, chat
 
 # ── Build the agent once at startup ──────────────────────────────────────────
 agent = build_graph()

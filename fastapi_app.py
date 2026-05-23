@@ -90,6 +90,9 @@ class ActionInput(BaseModel):
     actionName: str = Field(description="Short name of the action")
     actionDescription: str = Field(description="Detailed description of what needs to be done")
     service: str = Field(description="AWS service this action applies to")
+    kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
+    priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
+    steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
 
 
 class AnalyzerRequest(BaseModel):

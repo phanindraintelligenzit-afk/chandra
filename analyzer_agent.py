@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage
 from langchain_aws import ChatBedrockConverse
 from langgraph.graph import END, StateGraph
 
-from tools.jira_tools.create_jira_ticket import create_jira_ticket
+from tools.jira_tools.create_jira_ticket import add_comment_to_ticket, create_jira_ticket
 
 load_dotenv(override=True)
 
@@ -36,8 +36,6 @@ class AnalyzedAction(BaseModel):
     severity: str = Field(description="Severity level: HIGH | MEDIUM | LOW")
     HumanReviewNeeded: bool = Field(description="Whether human review is required before executing this action")
     priority: str = Field(description="Execution priority: HIGH | MEDIUM | LOW")
-    jiraSummary: str = Field(description="Concise Jira ticket title (max 150 chars)")
-    jiraDescription: str = Field(description="Detailed Jira ticket description with steps and rationale")
 
 
 class AnalysisResult(BaseModel):
@@ -102,9 +100,6 @@ For each action below, determine:
   - MEDIUM → execute within current sprint
   - LOW    → schedule for backlog
 
-- **jiraSummary**: A concise Jira ticket title (≤150 chars) that clearly states what must be done.
-- **jiraDescription**: A detailed description for the Jira ticket. Include: what the problem is, what needs to be done, why it matters, and any relevant resource identifiers from the action description.
-
 Actions to analyze:
 {json.dumps(actions, indent=2)}
 
@@ -121,26 +116,34 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
 
     def _create_tickets_node(self, state: AgentState) -> dict:
         analyzed = state["analyzed_actions"]
+        original_actions = state["actionsDict"].get("actions", [])
         project_key = state["actionsDict"].get("projectKey", "DEV")
         logger.info("Creating %d Jira tickets in project=%s", len(analyzed), project_key)
 
+        original_map = {a["actionName"]: a for a in original_actions}
         priority_map = {"HIGH": "High", "MEDIUM": "Medium", "LOW": "Low"}
         final_output = []
 
         for action in analyzed:
             jira_priority = priority_map.get(action["priority"], "Medium")
-            logger.info("Creating ticket for action='%s' priority=%s", action["actionName"], jira_priority)
+            original = original_map.get(action["actionName"], {})
+            summary = action["actionName"]
+            description = original.get("actionDescription", "")
+            steps = original.get("steps") or []
+            logger.info("Creating ticket for action='%s' priority=%s", summary, jira_priority)
 
             result = create_jira_ticket(
                 project_key=project_key,
-                summary=action["jiraSummary"],
-                description=action["jiraDescription"],
+                summary=summary,
+                description=description,
                 issuetype="Task",
                 priority=jira_priority,
             )
 
             if result["status"] == "success":
                 logger.info("Ticket created: %s", result["issue_key"])
+                if steps:
+                    add_comment_to_ticket(result["issue_key"], steps)
                 final_output.append({
                     "actionName": action["actionName"],
                     "severity": action["severity"],

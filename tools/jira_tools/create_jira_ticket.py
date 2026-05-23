@@ -42,12 +42,12 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
         # 3. Check if the project already exists
         try:
             jira.project(project_key)
-            print(f"✅ Project '{project_key}' already exists. Skipping creation.")
-        
+            print(f"Project '{project_key}' already exists. Skipping creation.")
+
         except JIRAError as e:
             # If the project is not found (404 Error), create it
             if e.status_code == 404:
-                print(f"⚠️ Project '{project_key}' not found. Creating it now...")
+                print(f"Project '{project_key}' not found. Creating it now...")
                 
                 # Setup requests auth for the REST API calls
                 auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
@@ -70,7 +70,7 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
                 
                 project_response = requests.post(f"{JIRA_SERVER}/rest/api/3/project", auth=auth, headers=headers, json=project_payload)
                 project_response.raise_for_status()
-                print(f"✅ Successfully created new project: '{project_key}'!")
+                print(f"Successfully created new project: '{project_key}'!")
                 
             else:
                 # If it's a different error (like bad token), raise it
@@ -79,17 +79,40 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
         # 4. Create the ticket using the constructed dictionary
         new_issue = jira.create_issue(fields=fields)
         issue_url = f"{JIRA_SERVER}/browse/{new_issue.key}"
-        
-        print(f"\n🎉 Success! Ticket {new_issue.key} created.")
-        
+
+        print(f"Success! Ticket {new_issue.key} created.")
+
         return {
-            "status": "success", 
-            "issue_key": new_issue.key, 
+            "status": "success",
+            "issue_key": new_issue.key,
             "url": issue_url
         }
 
     except Exception as e:
         print(f"An error occurred: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
+    """Add implementation steps as a comment on an existing Jira ticket."""
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if not steps:
+        return {"status": "skipped", "message": "No steps provided"}
+
+    comment_body = "*Steps to implement:*\n" + "\n".join(
+        f"{i + 1}. {step}" for i, step in enumerate(steps)
+    )
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira.add_comment(issue_key, comment_body)
+        print(f"Steps comment added to {issue_key}")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Failed to add comment to {issue_key}: {e}")
         return {"status": "error", "message": str(e)}
 
 # ==========================================
