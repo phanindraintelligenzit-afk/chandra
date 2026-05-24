@@ -12,6 +12,7 @@ from chandra.graphs.nodes import (
     action_executor_node,
     analyze,
     compose_briefing,
+    escalation_node,
     fanout_observers,
     observe_compliance,
     observe_cost,
@@ -62,6 +63,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
         Pass an explicit :class:`MemorySaver` in tests.
     """
     graph: StateGraph[ChandraState] = StateGraph(ChandraState)
+    graph.add_node("escalation", escalation_node)
 
     graph.add_node("onboard_account", onboard_account)
     graph.add_node("observe_cost", observe_cost)
@@ -92,7 +94,8 @@ def build_graph(checkpointer: Any | None = None) -> Any:
         graph.add_edge(f"observe_{kra}", "analyze")
 
     graph.add_edge("analyze", "action_executor")
-    graph.add_edge("action_executor", "compose_briefing")
+    graph.add_edge("action_executor", "escalation")
+    graph.add_edge("escalation", "compose_briefing")
     graph.add_edge("compose_briefing", "persist")
     graph.add_edge("persist", END)
 
