@@ -1,0 +1,1192 @@
+================================================================================
+ARCHITECTURE COMPARISON DOCUMENT
+Chandra Digital Cloud Engineer — Current vs. Proposed Digital Worker Platform
+Generated: 2026-05-22
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 1: CURRENT CHANDRA ARCHITECTURE
+────────────────────────────────────────────────────────────────────────────────
+
+PURPOSE
+-------
+Read-only autonomous AWS observation agent. Detects misconfigurations and
+health issues across five KRAs, ranks them using an LLM, and produces a
+scored briefing report. It NEVER mutates infrastructure.
+
+PIPELINE FLOW
+-------------
+
+  [CLI: chandra run --account <id>]
+              │
+              ▼
+  ┌─────────────────────────┐
+  │     onboard_account     │  Resolves AWS account ID + active regions.
+  │                         │  Seeds: account_id, regions, raw_findings={}, errors=[]
+  └────────────┬────────────┘
+               │
+               ▼
+  ┌─────────────────────────┐
+  │    fanout_observers     │  Emits Send(...) per KRA — LangGraph parallel branches.
+  └──┬──────┬──────┬──────┬─┴─────┐
+     │      │      │      │       │
+     ▼      ▼      ▼      ▼       ▼
+  [cost] [sec] [comp] [perf] [reli]   ← 5 observer nodes run concurrently
+     │      │      │      │       │
+     └──────┴──────┴──────┴───────┘
+               │  (reducers merge raw_findings dict + errors list)
+               ▼
+  ┌─────────────────────────┐
+  │        analyze          │  Deterministic rank (severity weight → KRA order →
+  │                         │  detector_id → resource_arn). LLM re-rank via Bedrock
+  │                         │  (falls back to deterministic on failure).
+  │                         │  Computes per-KRA scorecard: 100 - min(100, Σweight×5)
+  └────────────┬────────────┘
+               │  analyzed_findings, scorecard
+               ▼
+  ┌─────────────────────────┐
+  │    compose_briefing     │  Calls Bedrock for 3-bullet executive summary.
+  │                         │  Renders Markdown + JSON briefing (top-10 findings,
+  │                         │  KRA scorecard table, full findings, run metadata).
+  └────────────┬────────────┘
+               │  briefing_md, briefing_json
+               ▼
+  ┌─────────────────────────┐
+  │         persist         │  ONLY node that writes to Postgres.
+  │                         │  Upserts: Run, Finding rows, Briefing row. Idempotent
+  │                         │  on run_id.
+  └────────────┬────────────┘
+               │
+               ▼
+            [END]
+         Writes .md + .json to evals/reports/
+         Prints scorecard table to terminal
+
+
+COMPONENT MAP
+-------------
+
+  Layer              Component                  Technology
+  ─────────────────  ─────────────────────────  ──────────────────────────────
+  Orchestration      LangGraph pipeline         langgraph
+  LLM                Bedrock (Claude Sonnet)    langchain-aws / ChatBedrockConverse
+  Detectors          Pure boto3 functions       moto (unit tests)
+  State              ChandraState (TypedDict)   LangGraph reducers
+  Persistence        PostgreSQL                 SQLAlchemy ORM + Alembic
+  CLI                Typer + Rich               uv run chandra run
+  Dashboard          Streamlit 3-tab UI         Reads Postgres directly
+  IaC (eval env)     Terraform synthetic env    10 seeded misconfigs
+  CI                 GitHub Actions             ruff + mypy + pytest
+
+
+STRICT INVARIANTS (must not be violated)
+-----------------------------------------
+  1. Detectors in src/chandra/tools/ NEVER call the LLM.
+  2. The LLM NEVER fabricates findings — it only ranks detector output.
+  3. Only the persist node writes to Postgres.
+  4. Detector errors are swallowed into context.errors — detectors never raise.
+  5. The pipeline is stateless between runs (no carry-over state).
+
+
+DATA FLOW (key schemas)
+-----------------------
+
+  Finding           Raw detector output: kra, severity, detector_id,
+                    resource_arn, resource_type, region, title, evidence,
+                    recommendation.
+
+  AnalyzedFinding   Finding + rank (int) + rationale (str, LLM-generated).
+
+  Scorecard         Per-KRA integer scores (0–100) + overall average.
+
+  BriefingPayload   Full Pydantic model: run_id, account_id, generated_at,
+                    scorecard, executive_summary, top_findings, all_findings,
+                    metadata.
+
+
+CURRENT CAPABILITIES SUMMARY
+------------------------------
+  ✅ Multi-region AWS discovery (5 KRA domains)
+  ✅ Deterministic severity scoring + ranking
+  ✅ LLM narrative (executive summary + finding rationale)
+  ✅ Persistent audit trail (Postgres)
+  ✅ Eval harness with recall/precision scoring
+  ✅ Streamlit dashboard
+  ✅ CI pipeline (ruff + mypy + pytest)
+  ❌ No HITL gate
+  ❌ No code/IaC generation
+  ❌ No execution of changes
+  ❌ No validation / reconciliation loop
+  ❌ No sandbox isolation
+  ❌ No async job queue
+  ❌ No self-healing loops
+
+
+================================================================================
+SECTION 2: PROPOSED DIGITAL WORKER PLATFORM ARCHITECTURE
+================================================================================
+
+PURPOSE
+-------
+Autonomous, self-healing Digital Worker that takes Job Descriptions (JDs) and
+KRAs, discovers current cloud state, generates missing IaC/scripts, executes
+them safely inside a sandbox, validates KRA completion against the live
+environment, and produces a full audit ledger. HITL gating prevents runaway
+execution on high-risk operations.
+
+
+ZONE BREAKDOWN
+--------------
+
+  Zone 1: Control Plane        — UI, FastAPI, job queue, state DB
+  Zone 2: Agent Runtime        — The cognitive brain (7 agents)
+  Zone 3: Isolated Sandbox     — Ephemeral execution environment
+
+
+COMPLETE PLATFORM FLOW
+-----------------------
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                            USER INTERFACE                               │
+  │  ┌──────────────────────────────┐    ┌───────────────────────────────┐  │
+  │  │  KRA / Task Management Portal│    │  HITL Gating & Audit Ledger  │  │
+  │  └──────────────┬───────────────┘    └───────────────▲───────────────┘  │
+  └─────────────────┼─────────────────────────────────────┼─────────────────┘
+                    │ REST API                            │ Webhook
+                    ▼                                     │
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                          CORE CONTROL PLANE                             │
+  │                                                                         │
+  │             ┌───────────────────────────────────────┐                   │
+  │             │          FastAPI Backend Engine        │                   │
+  │             └──────────────┬────────────────▲────────┘                  │
+  │                            │                │                           │
+  │             ┌──────────────▼──────┐  ┌──────┴──────────────────────┐   │
+  │             │  Celery / Redis     │  │  PostgreSQL Session Database │   │
+  │             │  Message Broker     │  │  (agent state + JSON logs)   │   │
+  │             └──────────────┬──────┘  └─────────────────────────────┘   │
+  └────────────────────────────┼────────────────────────────────────────────┘
+                               │ Spawns Execution Context
+                               ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                   STATEFUL AGENT RUNTIME PIPELINE                       │
+  │                                                                         │
+  │   [Input: JD + KRAs]                                                    │
+  │          │                                                              │
+  │          ▼                                                              │
+  │  ┌───────────────────────────────┐                                      │
+  │  │    1. Observability Agent     │  Read-only discovery. Runs aws CLI,  │
+  │  │                               │  kubectl, boto3. Flags anomalies.    │
+  │  └───────────────┬───────────────┘                                      │
+  │                  │ ObservabilityTriagePayload                           │
+  │                  ▼                                                      │
+  │  ┌───────────────────────────────┐                                      │
+  │  │     2. Analyzer Agent         │  Compares KRAs vs anomalies.        │
+  │  │                               │  Risk-routes: ASK_HUMAN or          │
+  │  │                               │  AUTO_EXECUTE.                      │
+  │  └───────────────┬───────────────┘                                      │
+  │                  │ RoutingDecisionPayload                               │
+  │          ┌───────┴────────┐                                             │
+  │          │                │                                             │
+  │          ▼ ASK_HUMAN      ▼ AUTO_EXECUTE                                │
+  │  ┌───────────────┐        │                                             │
+  │  │  HITL Gate    │        │  ← State dehydrated to Postgres.            │
+  │  │  (async wait) │        │    Celery worker terminates.                │
+  │  └───────┬───────┘        │    Webhook re-hydrates on approval.         │
+  │          │ [Approved]     │                                             │
+  │          └────────┬───────┘                                             │
+  │                   │                                                     │
+  │                   ▼                                                     │
+  │  ┌────────────────────────────────────────────────────────┐             │
+  │  │                  3. Planner Agent                      │◄──────────┐ │
+  │  │  Builds ExecutionDAG. Flags steps needing              │           │ │
+  │  │  generation_required=true.                             │           │ │
+  │  └───────────────────────┬────────────────────────────────┘           │ │
+  │                          │ ExecutionDAG                               │ │
+  │                          ▼                                            │ │
+  │  ┌────────────────────────────────────────────────────────┐           │ │
+  │  │                 4. Generator Agent                     │◄────┐     │ │
+  │  │  Writes .tf / .py / .sh to sandbox workspace.          │     │     │ │
+  │  │  Runs terraform validate / syntax checks.              │     │ (B) │ │
+  │  │  Internal rewrite loop if syntax fails (max 3).        │     │     │ │
+  │  └───────────────────────┬────────────────────────────────┘     │     │ │
+  │                          │ GeneratorReceipt                      │     │ │
+  │                          ▼                                       │     │ │
+  │  ┌────────────────────────────────────────────────────────┐      │     │ │
+  │  │                 5. Executor Agent                      │      │ (A) │ │
+  │  │  Applies DAG steps sequentially against live infra.    │──────┘     │ │
+  │  │  Captures stdout/stderr. On runtime error → Generator  │            │ │
+  │  │  patch loop (Loop A, max 3 retries).                   │            │ │
+  │  └───────────────────────┬────────────────────────────────┘            │ │
+  │                          │ ExecutionReceipt                            │ │
+  │                          ▼                                             │ │
+  │  ┌────────────────────────────────────────────────────────┐            │ │
+  │  │                6. Validation Agent                     │            │ │
+  │  │  Forces fresh env sweep. Runs programmatic KRA         │            │ │
+  │  │  assertions against live cloud.                        │            │ │
+  │  └───────────────────────┬────────────────────────────────┘            │ │
+  │                          │ ValidationMatrix                            │ │
+  │              ┌───────────┴─────────┐                                   │ │
+  │              │                     │                                   │ │
+  │              ▼ All KRAs Passed     ▼ Gaps Discovered                   │ │
+  │   ┌────────────────────┐  ┌───────────────────────────────────────────┐│ │
+  │   │  7. Reporter Agent │  │  Recovery Loop (Loop B)                   ││ │
+  │   │  Markdown audit    │  │  Packs unresolved_gaps → Planner.         ││ │
+  │   │  ledger for UI.    │  │  Planner locks completed tasks as         ├┘ │
+  │   └────────┬───────────┘  │  immutable, builds targeted sub-DAG.     │──┘ │
+  │            │              └───────────────────────────────────────────┘   │
+  │            ▼ FinalAuditReport                                             │
+  └────────────┼──────────────────────────────────────────────────────────────┘
+               │
+               ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                      ISOLATED SANDBOX WORKSPACE                         │
+  │  Ephemeral Docker / AWS Fargate container                               │
+  │  • Volume mount: /tmp/workspace/ (generated .tf, .py, .sh files)       │
+  │  • subprocess.run with restricted binary allowlist                      │
+  │  • No host machine shell access                                         │
+  │  • Destroyed after execution regardless of outcome                      │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+
+SELF-HEALING LOOPS
+------------------
+
+  Loop A — Code-Fix Loop (Micro)
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Trigger : terraform apply / script returns runtime error (stderr)   │
+  │  Actors  : Executor Agent ↔ Generator Agent                          │
+  │  Action  : Executor passes exact stderr to Generator.                │
+  │            Generator rewrites the specific file. Executor retries.   │
+  │  Cap     : max_retries = 3  →  FAILED_AUTOMATION + escalate to HITL  │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  Loop B — State Reconciliation Loop (Macro)
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Trigger : exit code 0 but Validation finds KRAs not in live cloud   │
+  │  Actors  : Validation Agent ↔ Planner Agent                          │
+  │  Action  : Validation packs unresolved_gaps → Planner.               │
+  │            Planner locks completed tasks, builds targeted sub-DAG.   │
+  │  Cap     : max_retries = 3  →  FAILED_AUTOMATION + escalate to HITL  │
+  └──────────────────────────────────────────────────────────────────────┘
+
+
+AGENT DATA CONTRACTS (Pydantic / JSON)
+---------------------------------------
+
+  Schema                   Producer          Consumer
+  ───────────────────────  ────────────────  ──────────────────────────────
+  ObservabilityTriagePayload  Observability  Analyzer
+  RoutingDecisionPayload      Analyzer       HITL Gate / Planner
+  ExecutionDAG                Planner        Generator
+  GeneratorReceipt            Generator      Executor
+  ExecutionReceipt            Executor       Validation
+  ValidationMatrix            Validation     Reporter / Planner (loop B)
+  FinalAuditReport            Reporter       UI / Postgres
+
+
+INFRASTRUCTURE GUARDRAILS
+--------------------------
+
+  1. State Dehydration    Entire agent memory serialized to Postgres before
+                          HITL wait. Celery worker terminates. Webhook from
+                          UI re-hydrates and resumes the graph.
+
+  2. Stateless Sandbox    Generator + Executor have zero host shell access.
+                          Only /tmp/workspace/ volume is accessible.
+                          Container destroyed after each execution.
+
+  3. Circuit Breakers     Both loops cap at max_retries=3. Breach →
+                          row flagged FAILED_AUTOMATION, terminal logs
+                          escalated to HITL UI.
+
+  4. Audit Ledger         Every agent hand-off, approval, execution log,
+                          and reconciliation attempt persisted to Postgres
+                          and surfaced in the HITL UI.
+
+
+================================================================================
+SECTION 3: CAN THE CURRENT CHANDRA ARCHITECTURE ACHIEVE A DIGITAL WORKER AGENT?
+================================================================================
+
+SHORT ANSWER
+------------
+Partially — but not as-is. The current architecture provides a solid, working
+foundation for the Observation layer. The execution, generation, HITL, and
+reconciliation layers are entirely absent and must be purpose-built.
+
+
+WHAT CURRENT CHANDRA ALREADY PROVIDES (REUSABLE)
+-------------------------------------------------
+
+  Component                      Reuse Value
+  ─────────────────────────────  ───────────────────────────────────────────
+  5 KRA detector suite           Becomes the Observability Agent's discovery
+                                 engine directly. No rewrite needed.
+
+  LangGraph pipeline skeleton    The graph topology (fanout + merge + serial
+                                 nodes) is the right pattern. Extend it with
+                                 new nodes (Planner, Generator, Executor,
+                                 Validation) rather than replacing it.
+
+  Bedrock / LLM integration      The ChatBedrockConverse setup in composer.py
+                                 is ready. Use it for planning, generation,
+                                 and analysis agents.
+
+  Postgres + SQLAlchemy ORM      Extend the models to store ExecutionDAG rows,
+                                 HITL approvals, execution receipts, and
+                                 ValidationMatrix results.
+
+  Severity scoring + ranking     Feeds directly into the Analyzer Agent's
+                                 confidence scoring and risk routing logic.
+
+  Pydantic schemas (briefing/)   The schema discipline is already in place.
+                                 Extend it for the new inter-agent payloads.
+
+  Eval harness + CI pipeline     Regression testing infrastructure is ready.
+                                 Add eval cases for generation + execution.
+
+
+WHAT IS MISSING (MUST BE BUILT)
+--------------------------------
+
+  Gap                            Effort    Notes
+  ─────────────────────────────  ────────  ────────────────────────────────────
+  Planner Agent                  High      LLM-driven DAG construction from
+                                           KRA deltas. New LangGraph node.
+
+  Generator Agent                High      LLM writes .tf / .py / .sh to disk.
+                                           Syntax validation loop. New node.
+
+  Executor Agent                 High      subprocess.run inside sandbox.
+                                           stdout/stderr capture. Error routing.
+
+  Validation Agent               Medium    Re-runs detectors post-execution.
+                                           Compares against KRA checklist.
+
+  HITL Gate + state dehydration  High      Async pause in LangGraph. Serialize
+                                           state to Postgres. Webhook resume.
+                                           Requires Celery + Redis.
+
+  Sandbox isolation              High      Docker / Fargate container per run.
+                                           Volume mount for workspace files.
+                                           Restricted subprocess binary list.
+
+  FastAPI REST layer             Medium    Replaces / wraps the current Typer
+                                           CLI for async job submission and
+                                           webhook callbacks.
+
+  Circuit breakers               Low       Integer counters on loop nodes.
+
+  Reporter Agent                 Low       Extends current compose_briefing
+                                           node to include execution artifacts.
+
+
+FUNDAMENTAL CONSTRAINT: THE TOOL-FIRST INVARIANT
+-------------------------------------------------
+  Current rule: "LLM never fabricates findings — it only ranks detector output."
+  Digital Worker rule: "LLM generates code and plans — but never executes
+  directly on the host."
+
+  These are compatible. The invariant shifts from "LLM is read-only on
+  findings" to "LLM is write-only to sandbox workspace, never to host."
+  The sandbox isolation layer enforces this boundary at the infrastructure
+  level, the same way @detector_guard enforces it today for detectors.
+
+
+REALISTIC EVOLUTION PATH
+-------------------------
+
+  Phase 1 (Current — DONE)
+    Observation + Briefing pipeline. Covers the Observability Agent entirely.
+
+  Phase 2 (Next)
+    Add Analyzer Agent routing node. Add HITL Gate with Postgres state
+    dehydration. Add FastAPI wrapper + Celery/Redis queue. No execution yet.
+
+  Phase 3
+    Add Planner + Generator agents. Sandbox container harness. Unit-test
+    generated artifact syntax only (no live AWS execution in CI).
+
+  Phase 4
+    Add Executor + Validation agents. Loop A circuit breaker. Integration
+    tests against synthetic Terraform env (the iac/synthetic_env/ already
+    exists).
+
+  Phase 5
+    Loop B reconciliation. Reporter Agent. Full audit ledger UI. Eval harness
+    extended to measure KRA resolution rate (target: ≥ 80% recall maintained).
+
+
+VERDICT
+-------
+  The current Chandra architecture is NOT a digital worker as-is.
+  It is a purpose-built READ-ONLY observation agent.
+
+  However, it is the RIGHT foundation to evolve into one because:
+  - The LangGraph graph is extensible (add nodes without rewriting the graph).
+  - The Postgres + Pydantic discipline means new agent contracts slot in cleanly.
+  - The detector suite is the exact discovery engine the Observability Agent needs.
+  - The eval/CI infrastructure gives you regression safety as you add execution.
+
+  The missing half is the WRITE side: Planner → Generator → Executor →
+  Validation → HITL. That requires a sandbox, async job queue, and at minimum
+  three new LangGraph agent nodes. Estimated effort: 8–12 engineering weeks
+  for a production-grade implementation with proper isolation and circuit
+  breakers.
+
+================================================================================
+SECTION 4: CAN A SINGLE AGENT ACHIEVE THE DIGITAL WORKER PLATFORM?
+================================================================================
+
+SHORT ANSWER
+------------
+Yes — a single agent CAN achieve the same outcomes, but it trades structural
+safety for simplicity. Whether that trade-off is acceptable depends entirely
+on your risk tolerance and operational scale.
+
+
+WHAT "SINGLE AGENT" MEANS HERE
+--------------------------------
+A single LLM agent with a large context window and access to a tool belt:
+  - observe()       → runs boto3 detectors
+  - plan()          → reasons over findings and builds a task list
+  - generate()      → writes .tf / .py / .sh files to workspace
+  - execute()       → runs shell commands / terraform apply
+  - validate()      → re-runs detectors post-execution
+  - ask_human()     → pauses and emits a HITL prompt
+  - report()        → produces the final audit markdown
+
+The agent loops over these tools in a ReAct-style (Reason → Act → Observe)
+cycle until all KRAs are satisfied or a circuit breaker fires.
+
+
+WHAT A SINGLE AGENT CAN DO
+---------------------------
+
+  Capability                     Achievable?   Notes
+  ─────────────────────────────  ────────────  ──────────────────────────────────
+  AWS observation (5 KRAs)       ✅ Yes        Call existing detectors as tools.
+  Risk assessment / routing      ✅ Yes        LLM reasons over findings inline.
+  IaC / script generation        ✅ Yes        LLM writes files via tool call.
+  Execution + stdout capture     ✅ Yes        execute() tool wraps subprocess.
+  KRA validation post-execution  ✅ Yes        Re-call observe() tools after exec.
+  HITL gate                      ✅ Yes        ask_human() tool pauses the loop.
+  Self-healing on errors         ✅ Yes        Agent sees stderr, rewrites, retries.
+  Audit report                   ✅ Yes        report() tool at end of loop.
+  Circuit breaker                ✅ Yes        Retry counter tracked in agent state.
+
+
+WHAT A SINGLE AGENT CANNOT DO WELL
+------------------------------------
+
+  Problem                        Why It Hurts
+  ─────────────────────────────  ──────────────────────────────────────────────
+  Context window blowout         A long run (observe + plan + generate + execute
+                                 + validate + fix × 3) fills the context fast.
+                                 The agent starts hallucinating or dropping
+                                 earlier tool outputs as the window saturates.
+
+  No structural safety boundary  In the multi-agent design, the Generator can
+                                 ONLY write files — it has no execute tool.
+                                 A single agent has all tools simultaneously.
+                                 One bad reasoning step can jump straight from
+                                 "generate" to "execute rm -rf" with no wall.
+
+  Non-deterministic hand-offs    Multi-agent contracts (ExecutionDAG,
+                                 ValidationMatrix) are typed Pydantic schemas —
+                                 the hand-off is verified at parse time.
+                                 A single agent's internal "decisions" are
+                                 unverified natural language in the scratchpad.
+
+  Async HITL is harder           Serializing a multi-agent graph to Postgres
+                                 and resuming via webhook is clean. Serializing
+                                 a single agent's entire reasoning chain +
+                                 tool history mid-loop is fragile and vendor-
+                                 dependent (requires checkpointing support).
+
+  Parallel execution             Multi-agent: 5 KRA observers run concurrently
+                                 via LangGraph Send(). Single agent: tools are
+                                 called serially — observation takes 5× longer.
+
+  Auditability                   Each agent in the multi-agent design produces
+                                 a typed receipt (GeneratorReceipt, etc.) that
+                                 is persisted independently. A single agent's
+                                 audit trail is a raw tool-call log — harder to
+                                 query, harder to present in a UI.
+
+  Blast radius on failure        If the multi-agent Executor crashes, only that
+                                 node's state is corrupt. A single agent crash
+                                 mid-execution loses the entire reasoning chain
+                                 and may leave infra in a partial-apply state.
+
+
+SINGLE AGENT vs. MULTI-AGENT — DECISION MATRIX
+------------------------------------------------
+
+  Criterion                  Single Agent     Multi-Agent
+  ─────────────────────────  ───────────────  ──────────────────────────────
+  Build time                 Fast (weeks)     Slower (months)
+  Operational simplicity     High             Medium
+  Context safety             Low              High (scoped per agent)
+  Structural guardrails      Soft (prompts)   Hard (typed schemas + tool walls)
+  Parallel execution         No               Yes (LangGraph Send)
+  Async HITL / dehydration   Fragile          Native (graph checkpointing)
+  Auditability               Raw logs         Structured typed receipts
+  Blast radius on failure    Full run lost    Isolated to one node
+  Scale (10+ concurrent runs)Risky            Designed for it
+
+
+RECOMMENDED SINGLE-AGENT ARCHITECTURE (IF CHOSEN)
+--------------------------------------------------
+If you choose the single-agent path, these guardrails are non-negotiable:
+
+  1. Tool segmentation by phase
+     Define separate tool groups and enforce in the system prompt that the
+     agent may ONLY call execute-class tools after calling validate_plan()
+     first. Soft wall — but better than nothing.
+
+  2. Hard context budget
+     Cap the agent loop at N tool calls (e.g., 30). If the budget is exceeded,
+     force a report() call and escalate to HITL. Prevents runaway loops.
+
+  3. Sandbox-first
+     The execute() tool must run inside a Docker container regardless of
+     agent architecture. This is the only hard safety boundary that cannot
+     be prompt-engineered away.
+
+  4. Structured tool outputs
+     Every tool returns a Pydantic-validated JSON payload, not a raw string.
+     This mimics the multi-agent contract discipline and gives you auditability
+     even in a single-agent design.
+
+  5. Checkpointing
+     After each major phase (observe, plan, generate, execute, validate),
+     persist the agent state snapshot to Postgres. If the agent crashes,
+     resume from the last checkpoint — not from scratch.
+
+  Diagram:
+
+  [LLM Agent — ReAct Loop]
+        │
+        ├─ observe()     → DetectorContext → list[Finding]
+        ├─ plan()        → findings → ExecutionDAG (JSON)
+        ├─ ask_human()   → HITL pause → serialise to Postgres → webhook resume
+        ├─ generate()    → DAG step → write file to /tmp/workspace/
+        ├─ execute()     → file path → subprocess inside Docker → stdout/stderr
+        ├─ validate()    → re-run observe() → ValidationMatrix (JSON)
+        ├─ report()      → all receipts → FinalAuditReport (Markdown)
+        └─ [loop until all_kras_satisfied=true OR retry_count >= 3]
+
+
+VERDICT: SINGLE AGENT
+----------------------
+  A single agent IS capable of achieving the Digital Worker outcomes.
+  It is the right choice for:
+    • Proof-of-concept / MVP (fastest path to a working demo)
+    • Low-concurrency deployments (1–2 runs at a time)
+    • Teams without bandwidth for multi-agent orchestration engineering
+
+  It is the WRONG choice for:
+    • Production with concurrent runs across multiple AWS accounts
+    • Compliance environments requiring hard audit trails per phase
+    • Any scenario where a runaway LLM reasoning error could cause
+      irreversible infrastructure damage at scale
+
+  The pragmatic path: build the single-agent MVP first using the existing
+  Chandra detector suite as the observe() tool belt. Validate the end-to-end
+  loop works. Then harden into the multi-agent design by splitting the single
+  agent's tool groups into bounded nodes — the refactor is mechanical once
+  the tool contracts are proven.
+
+================================================================================
+SECTION 5: SINGLE AGENT DIGITAL WORKER — HOW TO BUILD IT
+================================================================================
+
+OVERVIEW
+--------
+This section is a concrete build guide. It describes every component, file,
+module, and integration needed to evolve the current Chandra codebase into a
+fully functional single-agent Digital Worker. All decisions are grounded in
+the existing stack (LangGraph, Bedrock, Postgres, SQLAlchemy, Pydantic).
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART A: DIRECTORY STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+
+  src/chandra/
+  ├── agent/
+  │   ├── __init__.py
+  │   ├── loop.py              ← Main ReAct agent loop (entry point)
+  │   ├── tools/
+  │   │   ├── __init__.py
+  │   │   ├── observe.py       ← Wraps existing KRA detectors as LangChain tools
+  │   │   ├── plan.py          ← LLM-driven DAG builder tool
+  │   │   ├── generate.py      ← File writer tool (.tf / .py / .sh)
+  │   │   ├── execute.py       ← Sandbox subprocess runner tool
+  │   │   ├── validate.py      ← Post-execution KRA assertion tool
+  │   │   ├── ask_human.py     ← HITL pause + Postgres state serialiser
+  │   │   └── report.py        ← Final audit markdown generator
+  │   ├── schemas.py           ← Pydantic models for all tool I/O payloads
+  │   ├── checkpointer.py      ← Postgres-backed LangGraph checkpointer
+  │   └── sandbox.py           ← Docker container harness for execute tool
+  ├── graphs/                  ← Existing (unchanged)
+  ├── tools/                   ← Existing detectors (unchanged, reused)
+  ├── briefing/                ← Existing (unchanged)
+  ├── db/
+  │   ├── models.py            ← Extend: add AgentRun, HITLRequest, ToolReceipt
+  │   └── session.py           ← Existing (unchanged)
+  └── api/                     ← NEW: FastAPI layer for async job submission
+      ├── __init__.py
+      ├── app.py               ← FastAPI app + routes
+      ├── routes/
+      │   ├── jobs.py          ← POST /jobs, GET /jobs/{id}
+      │   └── hitl.py          ← POST /hitl/{request_id}/approve|reject
+      └── worker.py            ← Celery task: spawns agent loop
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART B: AGENT STATE SCHEMA
+────────────────────────────────────────────────────────────────────────────────
+
+  File: src/chandra/agent/schemas.py
+
+  AgentState (TypedDict — LangGraph state)
+  ─────────────────────────────────────────
+  Field                  Type                    Description
+  ─────────────────────  ──────────────────────  ──────────────────────────────
+  job_id                 str                     Unique run identifier (UUID)
+  account_id             str                     Target AWS account
+  regions                list[str]               Resolved active regions
+  jd_text                str                     Raw Job Description text
+  kras                   list[str]               KRA names from JD parsing
+  phase                  str                     Current phase enum (see below)
+  retry_count            int                     Global circuit breaker counter
+  observations           ObservabilityPayload    Output of observe tool
+  execution_dag          ExecutionDAG | None     Output of plan tool
+  generator_receipts     list[GeneratorReceipt]  One per generated artifact
+  execution_receipts     list[ExecutionReceipt]  One per execute call
+  validation_matrix      ValidationMatrix | None Output of validate tool
+  hitl_request_id        str | None              Set when ask_human is called
+  final_report           str | None              Markdown audit report
+  errors                 list[str]               Accumulated error log
+
+  Phase Enum
+  ──────────
+  OBSERVE → ANALYZE → HITL_WAIT → PLAN → GENERATE → EXECUTE → VALIDATE →
+  REPORT → DONE | FAILED
+
+  Inter-tool Pydantic Schemas
+  ───────────────────────────
+  ObservabilityPayload    findings: list[Finding], anomalies: list[str],
+                          environment_health: str (good/degraded/critical)
+
+  ExecutionDAG            total_steps: int, steps: list[DAGStep]
+  DAGStep                 step_id: str, kra: str, action: str,
+                          generation_required: bool,
+                          generation_targets: list[str], depends_on: list[str]
+
+  GeneratorReceipt        step_id: str, status: str, artifacts: list[str],
+                          lint_output: str, attempt: int
+
+  ExecutionReceipt        step_id: str, status: str, exit_code: int,
+                          stdout: str, stderr: str, attempt: int
+
+  ValidationMatrix        all_kras_satisfied: bool,
+                          kra_checklist: dict[str, bool],
+                          unresolved_gaps: list[str]
+
+  HITLRequest             request_id: str, job_id: str,
+                          risk_assessment: str, proposed_actions: list[str],
+                          status: str (pending/approved/rejected)
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART C: TOOL IMPLEMENTATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 1: observe                                                        │
+  │  File: src/chandra/agent/tools/observe.py                               │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : account_id, regions, kras                                     │
+  │  Output : ObservabilityPayload (JSON)                                   │
+  │  Logic  : Calls existing KRA_RUNNERS (cost, security, compliance,       │
+  │           performance, reliability) via DetectorContext. Runs all 5     │
+  │           concurrently with ThreadPoolExecutor. Returns merged findings  │
+  │           + anomaly flags (public buckets, root key usage, etc.).       │
+  │  Reuses : src/chandra/tools/* — zero rewrite needed.                   │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 2: plan                                                           │
+  │  File: src/chandra/agent/tools/plan.py                                  │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : jd_text, kras, observations (ObservabilityPayload)            │
+  │  Output : ExecutionDAG (JSON)                                           │
+  │  Logic  : Calls Bedrock with planner.md system prompt. Passes JD,      │
+  │           KRAs, and top findings. LLM returns structured JSON DAG.      │
+  │           Pydantic validates the response. If invalid JSON → retry      │
+  │           once with the parse error appended.                           │
+  │  New    : src/chandra/prompts/planner.md (new system prompt)           │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 3: generate                                                       │
+  │  File: src/chandra/agent/tools/generate.py                              │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : dag_step (DAGStep), workspace_path (str)                      │
+  │  Output : GeneratorReceipt (JSON)                                       │
+  │  Logic  : Calls Bedrock with generator.md system prompt. LLM writes     │
+  │           file content. Tool saves file to workspace_path. Runs         │
+  │           terraform validate (for .tf) or py -m ast (for .py) to check  │
+  │           syntax. If syntax fails → re-prompt LLM with error, rewrite,  │
+  │           retry (max 3). Returns file paths + checksums in receipt.     │
+  │  New    : src/chandra/prompts/generator.md                              │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 4: execute                                                        │
+  │  File: src/chandra/agent/tools/execute.py                               │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : artifact_path (str), command (str), workspace_path (str)      │
+  │  Output : ExecutionReceipt (JSON)                                       │
+  │  Logic  : Launches Docker container (sandbox.py). Mounts workspace as   │
+  │           /tmp/workspace/ (read-write). Runs command inside container   │
+  │           via docker exec. Captures stdout + stderr with timeout=300s.  │
+  │           Returns exit_code, stdout, stderr. Container is always         │
+  │           destroyed after the call regardless of outcome.               │
+  │  Safety : Command is validated against an allowlist before execution:   │
+  │           [terraform, python, bash, sh, aws, kubectl, helm].            │
+  │           Any other binary → rejected, ExecutionReceipt.status=BLOCKED. │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 5: validate                                                       │
+  │  File: src/chandra/agent/tools/validate.py                              │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : account_id, regions, kras, execution_dag (ExecutionDAG)       │
+  │  Output : ValidationMatrix (JSON)                                       │
+  │  Logic  : Re-runs observe() with cache=False (forces fresh boto3 calls).│
+  │           For each KRA in the DAG, checks whether the expected          │
+  │           post-execution state is present in the new findings.          │
+  │           Builds kra_checklist dict. If all True → all_kras_satisfied.  │
+  │           If gaps → unresolved_gaps list fed back to plan tool.         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 6: ask_human                                                      │
+  │  File: src/chandra/agent/tools/ask_human.py                             │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : job_id, risk_assessment (str), proposed_actions (list[str])   │
+  │  Output : HITLRequest (JSON) with status=pending                        │
+  │  Logic  : Writes HITLRequest row to Postgres.                           │
+  │           Serialises full AgentState to Postgres checkpoint.            │
+  │           Raises HITLPauseException — the agent loop catches this,      │
+  │           sets phase=HITL_WAIT, and returns control to Celery.          │
+  │           The Celery task terminates (does not block a thread).         │
+  │           FastAPI webhook POST /hitl/{request_id}/approve resumes:      │
+  │             1. Loads checkpoint from Postgres.                          │
+  │             2. Updates HITLRequest.status = approved/rejected.          │
+  │             3. Re-submits job to Celery queue.                          │
+  │             4. Agent loop resumes from phase=PLAN.                      │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Tool 7: report                                                         │
+  │  File: src/chandra/agent/tools/report.py                                │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │  Input  : AgentState (full)                                             │
+  │  Output : FinalAuditReport (Markdown string)                            │
+  │  Logic  : Extends existing render_markdown() from briefing/composer.py. │
+  │           Adds sections: Execution Log (commands run + exit codes),     │
+  │           KRA Resolution Table, Generator Artifacts, HITL Approvals,   │
+  │           Circuit Breaker Events. Persists to Postgres AgentRun row.    │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART D: AGENT LOOP (MAIN BRAIN)
+────────────────────────────────────────────────────────────────────────────────
+
+  File: src/chandra/agent/loop.py
+
+  FULL FLOW DIAGRAM
+  -----------------
+
+  [Job submitted via FastAPI POST /jobs]
+              │
+              ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │                      AGENT LOOP (ReAct style)                        │
+  │                                                                      │
+  │  State: AgentState  ──  persisted to Postgres after each phase       │
+  │  MAX_RETRIES = 3    ──  global circuit breaker                       │
+  │                                                                      │
+  │  Phase: OBSERVE                                                      │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  call observe(account_id, regions, kras)        │                  │
+  │  │  → ObservabilityPayload saved to state          │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: ANALYZE                                                      │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  LLM reasons over ObservabilityPayload         │                  │
+  │  │  Decision: risk_level = LOW | MEDIUM | HIGH    │                  │
+  │  │  If HIGH or destructive actions present:       │                  │
+  │  │    → call ask_human()                          │                  │
+  │  │    → raise HITLPauseException                  │                  │
+  │  │    → loop suspends, Celery task ends           │                  │
+  │  │  If LOW/MEDIUM:                                │                  │
+  │  │    → continue to PLAN                          │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: PLAN                                                         │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  call plan(jd_text, kras, observations)         │                  │
+  │  │  → ExecutionDAG saved to state                 │                  │
+  │  │  Lock any steps already marked complete        │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: GENERATE  (only for steps with generation_required=true)     │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  For each DAGStep needing generation:          │                  │
+  │  │    call generate(step, workspace_path)          │                  │
+  │  │    If GeneratorReceipt.status = FAIL:          │                  │
+  │  │      retry (max 3), else → FAILED_AUTOMATION   │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: EXECUTE                                                      │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  For each DAGStep in dependency order:         │                  │
+  │  │    call execute(artifact, command, workspace)   │                  │
+  │  │    If exit_code != 0:   ◄── Loop A             │                  │
+  │  │      pass stderr to generate() for patch       │                  │
+  │  │      retry execute() (max 3)                   │                  │
+  │  │      If still failing → FAILED_AUTOMATION      │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: VALIDATE                                                     │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  call validate(account_id, regions, kras, dag) │                  │
+  │  │  If ValidationMatrix.all_kras_satisfied:       │                  │
+  │  │    → continue to REPORT                        │                  │
+  │  │  If unresolved_gaps present:   ◄── Loop B      │                  │
+  │  │    increment retry_count                       │                  │
+  │  │    If retry_count >= MAX_RETRIES:              │                  │
+  │  │      → FAILED_AUTOMATION                       │                  │
+  │  │    Else:                                       │                  │
+  │  │      → back to PLAN (targeted sub-DAG)         │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  │  Phase: REPORT                                                       │
+  │  ┌────────────────────────────────────────────────┐                  │
+  │  │  call report(full AgentState)                  │                  │
+  │  │  Persist FinalAuditReport to Postgres          │                  │
+  │  │  phase = DONE                                  │                  │
+  │  └──────────────────────────┬─────────────────────┘                  │
+  │                             │                                        │
+  └─────────────────────────────┼────────────────────────────────────────┘
+                                ▼
+                          [JOB COMPLETE]
+                   FinalAuditReport available via
+                   GET /jobs/{job_id}/report
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART E: SANDBOX HARNESS
+────────────────────────────────────────────────────────────────────────────────
+
+  File: src/chandra/agent/sandbox.py
+
+  Flow:
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  1. docker run --rm                                                     │
+  │       --network=bridge                                                  │
+  │       --memory=512m --cpus=1.0                                          │
+  │       -v {workspace_path}:/tmp/workspace:rw                             │
+  │       -e AWS_PROFILE -e AWS_DEFAULT_REGION                              │
+  │       chandra-sandbox:latest   ← custom image with tf + python + awscli │
+  │                                                                         │
+  │  2. docker exec {container_id} {allowed_command}                        │
+  │       timeout=300s                                                      │
+  │       capture stdout + stderr                                           │
+  │                                                                         │
+  │  3. docker rm -f {container_id}   ← always, even on timeout/error      │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  Sandbox Docker image (Dockerfile.sandbox):
+    FROM python:3.12-slim
+    RUN apt-get install -y terraform awscli
+    RUN pip install boto3
+    WORKDIR /tmp/workspace
+    ENTRYPOINT ["tail", "-f", "/dev/null"]   ← kept alive for exec calls
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART F: POSTGRES DB EXTENSIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  File: src/chandra/db/models.py  (extend existing)
+
+  New tables (Alembic migration required):
+
+  AgentRun
+  ────────
+  id              UUID PK
+  job_id          str  (same as run_id)
+  account_id      str
+  status          str  (running / hitl_wait / done / failed_automation)
+  phase           str  (current phase enum)
+  retry_count     int
+  state_json      JSONB  (full AgentState checkpoint)
+  final_report    text
+  created_at      timestamp
+  updated_at      timestamp
+
+  HITLRequest
+  ───────────
+  id              UUID PK
+  job_id          str  FK → AgentRun.job_id
+  risk_assessment text
+  proposed_actions JSONB
+  status          str  (pending / approved / rejected)
+  reviewer_email  str
+  decided_at      timestamp
+  created_at      timestamp
+
+  ToolReceipt
+  ───────────
+  id              UUID PK
+  job_id          str  FK → AgentRun.job_id
+  tool_name       str  (observe / plan / generate / execute / validate / report)
+  phase           str
+  attempt         int
+  input_json      JSONB
+  output_json     JSONB
+  status          str  (success / failed / blocked)
+  duration_ms     int
+  created_at      timestamp
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART G: FASTAPI LAYER
+────────────────────────────────────────────────────────────────────────────────
+
+  File: src/chandra/api/app.py
+
+  Endpoints:
+
+  POST   /jobs
+         Body: { account_id, jd_text, kras, regions? }
+         → Creates AgentRun row, submits Celery task
+         → Returns: { job_id, status: "queued" }
+
+  GET    /jobs/{job_id}
+         → Returns: AgentRun status, current phase, retry_count
+
+  GET    /jobs/{job_id}/report
+         → Returns: FinalAuditReport markdown (when phase=DONE)
+
+  GET    /jobs/{job_id}/receipts
+         → Returns: list[ToolReceipt] (full audit trail per tool call)
+
+  GET    /hitl/pending
+         → Returns: list[HITLRequest] with status=pending
+
+  POST   /hitl/{request_id}/approve
+         Body: { reviewer_email, notes? }
+         → Updates HITLRequest.status = approved
+         → Re-hydrates AgentState from Postgres checkpoint
+         → Re-submits Celery task from phase=PLAN
+
+  POST   /hitl/{request_id}/reject
+         Body: { reviewer_email, reason }
+         → Updates HITLRequest.status = rejected
+         → Sets AgentRun.status = failed_automation
+         → Persists rejection reason to FinalAuditReport
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART H: LLM SYSTEM PROMPTS (NEW FILES NEEDED)
+────────────────────────────────────────────────────────────────────────────────
+
+  src/chandra/prompts/planner.md
+  ──────────────────────────────
+  Role: You are a cloud infrastructure planner.
+  Input: JD text, KRAs, top findings (JSON).
+  Output: ExecutionDAG JSON ONLY. No prose.
+  Rules:
+    - Each step must reference exactly one KRA.
+    - Set generation_required=true only when no existing Terraform module
+      or script covers the action.
+    - Steps must be topologically sorted (dependencies declared in depends_on).
+    - Destructive actions (delete, terminate, drop) must have a separate step
+      flagged requires_hitl=true.
+
+  src/chandra/prompts/generator.md
+  ─────────────────────────────────
+  Role: You are a cloud infrastructure code generator.
+  Input: DAGStep JSON, existing workspace file listing, error (if retry).
+  Output: { filename: str, content: str } JSON ONLY. No prose.
+  Rules:
+    - Write idempotent Terraform / Python / shell only.
+    - Never write code that deletes resources unless the step explicitly
+      contains action_type=delete.
+    - If given a syntax error on retry, fix only the reported lines.
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART I: BUILD SEQUENCE (IMPLEMENTATION ORDER)
+────────────────────────────────────────────────────────────────────────────────
+
+  Sprint 1 — Foundation
+  ─────────────────────
+  [ ] Add AgentRun, HITLRequest, ToolReceipt models to db/models.py
+  [ ] Write Alembic migration
+  [ ] Implement schemas.py (all Pydantic inter-tool models)
+  [ ] Implement observe tool (wraps existing KRA_RUNNERS)
+  [ ] Unit tests: observe tool returns valid ObservabilityPayload
+
+  Sprint 2 — Planning + HITL
+  ──────────────────────────
+  [ ] Write planner.md system prompt
+  [ ] Implement plan tool (Bedrock call + Pydantic parse + retry)
+  [ ] Implement ask_human tool (HITLRequest row + state serialise)
+  [ ] Implement checkpointer.py (AgentState → Postgres round-trip)
+  [ ] Implement FastAPI app.py with /jobs and /hitl routes
+  [ ] Implement Celery worker.py
+  [ ] Integration test: submit job → observe → analyze → ask_human → approve → plan
+
+  Sprint 3 — Generation + Sandbox
+  ────────────────────────────────
+  [ ] Write generator.md system prompt
+  [ ] Build Dockerfile.sandbox
+  [ ] Implement sandbox.py (docker run / exec / rm)
+  [ ] Implement generate tool (Bedrock → file write → syntax check → retry)
+  [ ] Implement execute tool (sandbox.py + allowlist check + receipt)
+  [ ] Unit tests: generate tool syntax validation loop
+  [ ] Unit tests: execute tool allowlist blocking
+
+  Sprint 4 — Validation + Loops
+  ──────────────────────────────
+  [ ] Implement validate tool (re-run observe + KRA checklist diff)
+  [ ] Wire Loop A in loop.py (execute fail → generate patch → retry)
+  [ ] Wire Loop B in loop.py (validate gaps → plan targeted sub-DAG)
+  [ ] Implement circuit breaker (retry_count >= MAX_RETRIES → FAILED_AUTOMATION)
+  [ ] Integration test: full loop against moto mock AWS
+
+  Sprint 5 — Reporting + UI
+  ──────────────────────────
+  [ ] Implement report tool (extend render_markdown + execution sections)
+  [ ] Add /jobs/{job_id}/report and /jobs/{job_id}/receipts endpoints
+  [ ] Extend Streamlit dashboard: add AgentRun tab + HITL approval panel
+  [ ] Eval harness: add KRA resolution rate metric (target ≥ 80%)
+  [ ] End-to-end smoke test against iac/synthetic_env Terraform misconfigs
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART J: TECHNOLOGY STACK SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+  Component              Technology                  New / Existing
+  ─────────────────────  ──────────────────────────  ──────────────
+  Agent loop             LangGraph (ReAct node)      New
+  LLM calls              langchain-aws Bedrock        Existing
+  Detectors (observe)    src/chandra/tools/*         Existing (reused)
+  Code generation        Bedrock + file I/O          New
+  Sandbox execution      Docker SDK (docker-py)      New
+  HITL async             FastAPI + Celery + Redis     New
+  State checkpoint       Postgres + SQLAlchemy        Existing (extended)
+  Schema validation      Pydantic v2                  Existing (extended)
+  CLI                    Typer (add agent sub-cmd)    Existing (extended)
+  Dashboard              Streamlit (add agent tab)    Existing (extended)
+  CI                     GitHub Actions (unchanged)   Existing
+
+
+────────────────────────────────────────────────────────────────────────────────
+PART K: COMPLETE SINGLE-AGENT ARCHITECTURE DIAGRAM
+────────────────────────────────────────────────────────────────────────────────
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              USER / UI LAYER                                │
+│                                                                             │
+│   POST /jobs  ──────────────────────────────────►  GET /jobs/{id}/report   │
+│   (JD + KRAs)                                       (FinalAuditReport)      │
+│                                                                             │
+│   GET /hitl/pending  ──────────►  POST /hitl/{id}/approve|reject           │
+└────────────────┬────────────────────────────────────────▲───────────────────┘
+                 │                                        │
+                 ▼                                        │ webhook
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           FASTAPI + CELERY + REDIS                         │
+│                                                                             │
+│  FastAPI receives job → writes AgentRun(status=queued) → enqueues Celery   │
+│  Celery worker picks up → spawns agent loop → updates AgentRun on each     │
+│  phase transition → terminates on HITLPauseException or DONE/FAILED        │
+│  Webhook approve → re-hydrate state from Postgres → re-enqueue             │
+└────────────────┬───────────────────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                      SINGLE AGENT LOOP (loop.py)                           │
+│                                                                             │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+│  │ OBSERVE  │───►│ ANALYZE  │───►│  PLAN    │───►│ GENERATE │             │
+│  │          │    │          │    │          │    │          │             │
+│  │observe() │    │LLM reason│    │plan()    │    │generate()│             │
+│  │→ Payload │    │→ route   │    │→ DAG     │    │→ Receipt │             │
+│  └──────────┘    └────┬─────┘    └──────────┘    └────┬─────┘             │
+│                       │                               │                   │
+│                  [HIGH RISK?]                    [SYNTAX FAIL?]            │
+│                       │                          retry ≤3                  │
+│                       ▼                               │                   │
+│               ┌───────────────┐               ┌───────▼──────┐            │
+│               │  ask_human()  │               │   EXECUTE    │            │
+│               │  serialize    │               │  execute()   │            │
+│               │  state →      │               │  → Receipt   │            │
+│               │  Postgres     │               └───────┬──────┘            │
+│               │  raise Pause  │                       │                   │
+│               └───────────────┘                 [EXIT ≠ 0?]               │
+│                                                  Loop A ≤3                │
+│                                                       │                   │
+│                                               ┌───────▼──────┐            │
+│                                               │   VALIDATE   │            │
+│                                               │  validate()  │            │
+│                                               │  → Matrix    │            │
+│                                               └───────┬──────┘            │
+│                                                       │                   │
+│                                              [GAPS?] Loop B ≤3            │
+│                                              back to PLAN                  │
+│                                                       │                   │
+│                                               ┌───────▼──────┐            │
+│                                               │   REPORT     │            │
+│                                               │  report()    │            │
+│                                               │  → Markdown  │            │
+│                                               └───────┬──────┘            │
+│                                                       │                   │
+│                                                    [DONE]                 │
+└───────────────────────────────────────────────────────┬───────────────────┘
+                                                        │
+                                                        ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│                        ISOLATED SANDBOX (Docker)                          │
+│   /tmp/workspace/ ← generated .tf / .py / .sh artifacts                  │
+│   Allowlist: terraform, python, bash, aws, kubectl                        │
+│   Memory: 512m  CPU: 1.0  Timeout: 300s  Destroyed after each exec call   │
+└───────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│                    POSTGRES (State + Audit)                                │
+│   AgentRun     — job status, phase, state checkpoint, final report        │
+│   HITLRequest  — pending approvals, decisions, reviewer audit trail       │
+│   ToolReceipt  — every tool call input/output/duration (full audit log)   │
+│   Run + Finding + Briefing — existing Chandra tables (unchanged)          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+END OF DOCUMENT
+================================================================================

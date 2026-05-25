@@ -106,8 +106,8 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         llm = ChatBedrockConverse(
             model=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
-            temperature=0.0,
-            max_tokens=2048,
+            # temperature=0.0,
+            # max_tokens=2048,
         )
         system = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
         payload = [
@@ -191,8 +191,8 @@ def compose_executive_summary(
         llm = ChatBedrockConverse(
             model=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
-            temperature=0.2,
-            max_tokens=512,
+            # temperature=0.2,
+            # max_tokens=512,
         )
         system = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
         top = [
