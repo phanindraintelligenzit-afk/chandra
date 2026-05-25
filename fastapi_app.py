@@ -16,7 +16,7 @@ from observation_agent import (
     DEFAULT_REGION,
 )
 from analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
-from generator_agent import GeneratorAgent, GeneratorPipelineResponse, GeneratedFile
+from generator_agent import GeneratorAgent, GeneratorPipelineResponse
 from executor_agent import ExecutorAgent, ExecutorPipelineResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from copilot_agents.graph import build_graph, chat as copilot_chat
@@ -257,41 +257,45 @@ class ExecuteActionInput(BaseModel):
     actionName: str = Field(description="Short name or title of the action")
     actionDescription: str = Field(description="Detailed description of what needs to be done and why")
     priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
-    steps: Optional[List[str]] = Field(default=None, description="Optional ordered implementation steps")
     executeFolder: str = Field(description="Path to the folder containing generated scripts / tf files")
+    executableSteps: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Ordered steps from /generateCode, each with 'description' (human-readable) and 'command' (shell command). If None, will do LLM-based planning from folder contents."
+    )
 
 
 @app.post("/executeCode", response_model=ExecutorPipelineResponse)
 def execute_code(request: ExecuteActionInput):
     """
-    Example request:
+    Example request (with executableSteps from /generateCode):
     {
         "actionName": "Automate Bedrock inference disablement for untagged usage",
         "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
         "priorityLevel": "P1",
-        "steps": [
-            "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
-            "Write Lambda function that checks userIdentity.principalId against allowed tag values",
-            "If principal has no Environment=prod tag, deny the request",
-            "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
-            "Test by simulating an untagged Bedrock call"
-        ],
-        "executeFolder": "sandbox_9876"
+        "executeFolder": "sandbox_9876",
+        "executableSteps": [
+            {"description": "Install Python dependencies", "command": "pip install -r lambda/requirements.txt -t lambda/package"},
+            {"description": "Initialize Terraform", "command": "terraform -chdir=infrastructure init"},
+            {"description": "Validate Terraform configuration", "command": "terraform -chdir=infrastructure validate"},
+            {"description": "Plan Terraform deployment", "command": "terraform -chdir=infrastructure plan"},
+            {"description": "Apply Terraform configuration", "command": "terraform -chdir=infrastructure apply -auto-approve"}
+        ]
     }
     """
     logger.info(
-        "POST /executeCode | action=%s | folder=%s",
+        "POST /executeCode | action=%s | folder=%s | steps=%d",
         request.actionName,
         request.executeFolder,
+        len(request.executableSteps) if request.executableSteps else 0,
     )
     try:
         response = _executor_agent.RunPipeline(
             action={
                 "actionName": request.actionName,
                 "actionDescription": request.actionDescription,
-                "steps": request.steps,
             },
             executeFolder=request.executeFolder,
+            executableSteps=request.executableSteps,
         )
     except Exception as exc:
         logger.exception("ExecutorAgent failed: %s", exc)

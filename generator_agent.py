@@ -66,8 +66,25 @@ class GeneratedFile(BaseModel):
     description: str = Field(description="One-sentence description of what this file does")
 
 
+class ExecutableStep(BaseModel):
+    description: str = Field(description="Human-readable description of what this step does (e.g. 'Run terraform init', 'Apply Terraform configuration')")
+    command: str = Field(description="Actual shell command to execute from the sandbox root")
+
+
 class CodeGenerationResult(BaseModel):
     files: List[GeneratedFile] = Field(description="All files needed to execute the action end-to-end")
+    executableSteps: List[ExecutableStep] = Field(
+        description=(
+            "Ordered steps to execute the generated files. Each step has a human-readable description and the actual command. "
+            "Examples: "
+            "[{description: 'Initialize Terraform', command: 'terraform -chdir=infrastructure init'}, "
+            "{description: 'Validate Terraform configuration', command: 'terraform -chdir=infrastructure validate'}, "
+            "{description: 'Plan Terraform deployment', command: 'terraform -chdir=infrastructure plan'}, "
+            "{description: 'Apply Terraform configuration', command: 'terraform -chdir=infrastructure apply -auto-approve'}] OR "
+            "[{description: 'Install Python dependencies', command: 'pip install -r requirements.txt'}, "
+            "{description: 'Enable AWS Config globally', command: 'python enable_config_global.py --region us-east-1 --profile default'}]"
+        )
+    )
     summary: str = Field(
         description="Brief summary of what was generated and the command to run it"
     )
@@ -78,6 +95,7 @@ class AgentState(TypedDict):
     analysis: Optional[Dict]
     clarification: Optional[Dict]   # {"questions": [...], "answers": [...]}
     generated_files: List[Dict]
+    executable_steps: List[Dict]  # List of {"description": str, "command": str}
     sandbox_path: str
     summary: str
 
@@ -88,7 +106,7 @@ class GeneratorPipelineResponse(BaseModel):
     exception: Optional[str] = None
     thread_id: Optional[str] = None
     sandbox_path: Optional[str] = None
-    files: Optional[List[GeneratedFile]] = None
+    executableSteps: Optional[List[ExecutableStep]] = None
     summary: Optional[str] = None
     questions: Optional[List[str]] = None
 
@@ -200,14 +218,24 @@ Requirements:
 - Use least-privilege IAM policies; never use wildcard (*) actions unless absolutely necessary
 - Include a README.md only if setup steps are non-trivial (> 3 steps to get running)
 
+executableSteps rules (CRITICAL):
+- Return a list of objects, each with 'description' (human-readable) and 'command' (actual shell command)
+- Example descriptions: 'Initialize Terraform', 'Run terraform plan', 'Apply configuration', 'Enable Config in all regions'
+- Every step is a separate entry — never chain commands with &&
+- NEVER include 'cd <dir>' in commands; all run from sandbox root
+- Terraform in subdirectories: use 'terraform -chdir=<subdir> init' format
+- Python scripts: use relative paths (e.g. 'python scripts/main.py --region us-east-1')
+- Include every step separately: pip install, terraform init, validate, plan, apply, python calls
+
 Generate ALL files needed. The code must implement the described action completely."""
 
         try:
             structured_llm = self.Llm.with_structured_output(CodeGenerationResult)
             result: CodeGenerationResult = structured_llm.invoke([HumanMessage(content=prompt)])
-            logger.info("Code generation complete. files=%d", len(result.files))
+            logger.info("Code generation complete. files=%d | steps=%d", len(result.files), len(result.executableSteps))
             return {
                 "generated_files": [f.model_dump() for f in result.files],
+                "executable_steps": [s.model_dump() for s in result.executableSteps],
                 "summary": result.summary,
             }
         except Exception as exc:
@@ -303,6 +331,7 @@ Generate ALL files needed. The code must implement the described action complete
                         "analysis": None,
                         "clarification": None,
                         "generated_files": [],
+                        "executable_steps": [],
                         "sandbox_path": "",
                         "summary": "",
                     },
@@ -322,18 +351,17 @@ Generate ALL files needed. The code must implement the described action complete
                 )
 
             final = snapshot.values
-            files = [GeneratedFile(**f) for f in final.get("generated_files", [])]
             logger.info(
                 "RunPipeline completed. sandbox=%s | files=%d",
                 final.get("sandbox_path"),
-                len(files),
+                len(final.get("generated_files", [])),
             )
             return GeneratorPipelineResponse(
                 statusCode=200,
                 status="success",
                 thread_id=tid,
                 sandbox_path=final.get("sandbox_path"),
-                files=files,
+                executableSteps=final.get("executable_steps", []),
                 summary=final.get("summary"),
             )
 

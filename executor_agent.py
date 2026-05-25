@@ -2,14 +2,12 @@
 AWS Executor Agent
 ==================
 Executes Python scripts or Terraform files from a specified folder.
-Scans the execute_folder, creates an execution plan via LLM, then runs
-commands step by step capturing output at each stage.
+Runs commands step by step, capturing output at each stage.
 
-Input:
-    actionName        – name of the action to execute
-    actionDescription – description of what the action does
-    steps             – optional ordered steps list (same as generator_agent)
+Input to RunPipeline:
+    action            – dict with actionName and actionDescription
     executeFolder     – path to the folder containing generated scripts / tf files
+    executableSteps   – list of ordered shell commands to run (from generator_agent output)
 """
 
 from __future__ import annotations
@@ -69,6 +67,7 @@ class ExecutionResult(BaseModel):
 class AgentState(TypedDict):
     action: Dict[str, Any]
     executeFolder: str
+    executableSteps: Optional[List[Dict]]  # List of {"description": str, "command": str}
     folder_contents: Optional[str]
     execution_plan: Optional[Dict]
     execution_results: List[Dict]
@@ -124,7 +123,38 @@ class ExecutorAgent:
         action = state["action"]
         execute_folder = state["executeFolder"]
         folder_contents = state["folder_contents"] or ""
+
+        logger.info("=" * 80)
+        logger.info("PLANNING EXECUTION STRATEGY")
+        logger.info("=" * 80)
+
+        if state.get("executableSteps"):
+            logger.info("✓ Using %d executable steps from generator agent", len(state["executableSteps"]))
+            logger.info("   Skipping LLM planning (steps already provided)")
+            logger.info("-" * 80)
+            for idx, step in enumerate(state["executableSteps"], 1):
+                logger.info("   [%d] %s", idx, step.get("description", step.get("command", "")))
+            logger.info("-" * 80)
+
+            commands = [
+                {
+                    "command": step.get("command") or step.get("cmd") or "",
+                    "description": step.get("description", ""),
+                    "working_dir": ".",
+                    "order": i + 1
+                }
+                for i, step in enumerate(state["executableSteps"])
+            ]
+            return {
+                "execution_plan": {
+                    "execution_type": "mixed",
+                    "commands": commands,
+                    "reasoning": "Steps provided by generator agent.",
+                }
+            }
+
         logger.info("Planning execution for action: %s", action.get("actionName"))
+        logger.info("Invoking LLM to analyze folder contents and create plan...")
 
         toolkit = FileManagementToolkit(root_dir=execute_folder)
         tools_by_name = {t.name: t for t in toolkit.get_tools()}
@@ -185,25 +215,39 @@ Only include commands that are needed based on the actual files present."""
         try:
             structured_llm = self.Llm.with_structured_output(ExecutionPlan)
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
-            logger.info(
-                "Execution plan created. type=%s | commands=%d",
-                plan.execution_type,
-                len(plan.commands),
-            )
+
+            logger.info("=" * 80)
+            logger.info("✓ EXECUTION PLAN CREATED BY LLM")
+            logger.info("=" * 80)
+            logger.info("Execution Type: %s", plan.execution_type)
+            logger.info("Commands Planned: %d", len(plan.commands))
+            logger.info("Reasoning: %s", plan.reasoning)
+            logger.info("-" * 80)
+            for cmd in plan.commands:
+                logger.info("[%d] %s", cmd.order, cmd.description)
+                logger.info("    Command: %s", cmd.command)
+            logger.info("=" * 80)
+
             return {"execution_plan": plan.model_dump()}
         except Exception as exc:
-            logger.exception("Execution planning failed: %s", exc)
+            logger.exception("✗ Execution planning failed: %s", exc)
             raise
 
     def _execute_node(self, state: AgentState) -> dict:
         execute_folder = state["executeFolder"]
         plan = state["execution_plan"]
-        logger.info("Executing %d command(s) in %s", len(plan["commands"]), execute_folder)
+        if not plan or not plan.get("commands"):
+            logger.error("No execution plan or commands found — skipping execution")
+            return {"execution_results": [], "success": False}
+        logger.info("=" * 80)
+        logger.info("EXECUTION STARTED: %d command(s) in %s", len(plan["commands"]), execute_folder)
+        logger.info("=" * 80)
 
         base_path = Path(execute_folder).resolve()
         results: List[Dict] = []
+        total_commands = len(plan["commands"])
 
-        for cmd_info in sorted(plan["commands"], key=lambda c: c["order"]):
+        for idx, cmd_info in enumerate(sorted(plan["commands"], key=lambda c: c["order"]), 1):
             command = cmd_info["command"]
             description = cmd_info.get("description", "")
             relative_dir = cmd_info.get("working_dir", ".")
@@ -212,7 +256,13 @@ Only include commands that are needed based on the actual files present."""
             if not cwd.exists():
                 cwd = base_path
 
-            logger.info("Running [%s]: %s", relative_dir, command)
+            # Pre-execution logging
+            logger.info("-" * 80)
+            logger.info("[%d/%d] EXECUTING: %s", idx, total_commands, description or command)
+            logger.info("        Command: %s", command)
+            logger.info("        Working Dir: %s", cwd)
+            logger.info("-" * 80)
+
             try:
                 proc = subprocess.run(
                     command,
@@ -220,7 +270,7 @@ Only include commands that are needed based on the actual files present."""
                     cwd=str(cwd),
                     capture_output=True,
                     text=True,
-                    timeout=300,
+                    timeout=1000,
                 )
                 success = proc.returncode == 0
                 result = {
@@ -232,9 +282,18 @@ Only include commands that are needed based on the actual files present."""
                     "return_code": proc.returncode,
                     "success": success,
                 }
-                logger.info("Command %s (rc=%d)", "succeeded" if success else "FAILED", proc.returncode)
-                if not success:
-                    logger.warning("stderr: %s", (proc.stderr or "")[:500])
+
+                # Post-execution logging
+                if success:
+                    logger.info("[%d/%d] ✓ SUCCESS: %s completed (rc=%d)", idx, total_commands, description or command, proc.returncode)
+                    if proc.stdout:
+                        stdout_preview = (proc.stdout or "")[:300]
+                        logger.info("        Output: %s%s", stdout_preview, "..." if len(proc.stdout or "") > 300 else "")
+                else:
+                    logger.warning("[%d/%d] ✗ FAILED: %s (rc=%d)", idx, total_commands, description or command, proc.returncode)
+                    stderr_preview = (proc.stderr or "")[:500]
+                    logger.warning("        Error: %s", stderr_preview)
+
             except subprocess.TimeoutExpired:
                 result = {
                     "command": command,
@@ -245,7 +304,8 @@ Only include commands that are needed based on the actual files present."""
                     "return_code": -1,
                     "success": False,
                 }
-                logger.error("Command timed out: %s", command)
+                logger.error("[%d/%d] ✗ TIMEOUT: %s (exceeded 300 seconds)", idx, total_commands, description or command)
+
             except Exception as exc:
                 result = {
                     "command": command,
@@ -256,12 +316,14 @@ Only include commands that are needed based on the actual files present."""
                     "return_code": -1,
                     "success": False,
                 }
-                logger.exception("Command raised exception: %s", exc)
+                logger.exception("[%d/%d] ✗ EXCEPTION: %s - %s", idx, total_commands, description or command, exc)
 
             results.append(result)
 
             if not result["success"]:
-                logger.warning("Stopping execution after failed command: %s", command)
+                logger.error("=" * 80)
+                logger.error("EXECUTION HALTED: Command failed, stopping remaining %d command(s)", total_commands - idx)
+                logger.error("=" * 80)
                 break
 
         overall_success = (
@@ -269,13 +331,30 @@ Only include commands that are needed based on the actual files present."""
             and all(r["success"] for r in results)
             and len(results) == len(plan["commands"])
         )
+
+        # Final summary logging
+        logger.info("=" * 80)
+        if overall_success:
+            logger.info("✓ EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) executed", len(results))
+        else:
+            logger.warning("✗ EXECUTION COMPLETED WITH FAILURES: %d/%d command(s) succeeded", sum(1 for r in results if r["success"]), len(results))
+        logger.info("=" * 80)
+
         return {"execution_results": results, "success": overall_success}
 
     def _report_node(self, state: AgentState) -> dict:
         action = state["action"]
         results = state.get("execution_results", [])
         success = state.get("success", False)
-        logger.info("Generating execution report. success=%s | commands_run=%d", success, len(results))
+
+        logger.info("=" * 80)
+        logger.info("GENERATING EXECUTION REPORT")
+        logger.info("=" * 80)
+        logger.info("Action: %s", action.get("actionName"))
+        logger.info("Overall Status: %s", "SUCCESS" if success else "FAILED")
+        logger.info("Commands Executed: %d", len(results))
+        logger.info("Commands Succeeded: %d", sum(1 for r in results if r["success"]))
+        logger.info("Commands Failed: %d", sum(1 for r in results if not r["success"]))
 
         results_text = "\n\n".join(
             f"Command: {r['command']}\n"
@@ -297,17 +376,22 @@ Execution Results:
 Cover: what was executed, whether it succeeded, any important resource identifiers created,
 and next steps if there were failures."""
 
+        logger.info("Invoking LLM to generate summary...")
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
             summary = response.content
-        except Exception:
+            logger.info("✓ LLM summary generated successfully")
+        except Exception as exc:
+            logger.warning("✗ LLM summary failed, using fallback: %s", exc)
             succeeded = sum(1 for r in results if r["success"])
             summary = (
                 f"Executed {succeeded}/{len(results)} command(s) for '{action['actionName']}'. "
                 + ("All steps completed successfully." if success else "Some commands failed — review stderr for details.")
             )
 
-        logger.info("Report generated. success=%s", success)
+        logger.info("=" * 80)
+        logger.info("REPORT GENERATION COMPLETED")
+        logger.info("=" * 80)
         return {"summary": summary}
 
     # ── Graph ──────────────────────────────────────────────────────
@@ -340,22 +424,41 @@ and next steps if there were failures."""
         self,
         action: Dict[str, Any],
         executeFolder: str,
+        executableSteps: Optional[List[Dict]] = None,
     ) -> ExecutorPipelineResponse:
-        """Run the execution pipeline end-to-end."""
+        """
+        Run the execution pipeline end-to-end.
+
+        Args:
+            action: Dict with 'actionName' and 'actionDescription'
+            executeFolder: Path to folder containing generated files
+            executableSteps: List of ordered steps from generator_agent, each with 'description' and 'command'
+                           If None, will attempt LLM-based planning from folder contents
+        """
         tid = str(uuid.uuid4())
 
-        logger.info(
-            "RunPipeline started. action=%s | folder=%s | thread_id=%s",
-            action.get("actionName"),
-            executeFolder,
-            tid,
-        )
+        logger.info("")
+        logger.info("╔" + "=" * 78 + "╗")
+        logger.info("║" + " " * 78 + "║")
+        logger.info("║ " + "EXECUTOR AGENT PIPELINE STARTED".ljust(76) + " ║")
+        logger.info("║" + " " * 78 + "║")
+        logger.info("╚" + "=" * 78 + "╝")
+        logger.info("")
+        logger.info("Action: %s", action.get("actionName"))
+        logger.info("Description: %s", action.get("actionDescription"))
+        logger.info("Execute Folder: %s", executeFolder)
+        logger.info("Executable Steps Provided: %s", "Yes" if executableSteps else "No")
+        if executableSteps:
+            logger.info("  ├─ Total Steps: %d", len(executableSteps))
+        logger.info("Thread ID: %s", tid)
+        logger.info("")
 
         try:
             final = self.Graph.invoke(
                 {
                     "action": action,
                     "executeFolder": executeFolder,
+                    "executableSteps": executableSteps,
                     "folder_contents": None,
                     "execution_plan": None,
                     "execution_results": [],
@@ -366,11 +469,23 @@ and next steps if there were failures."""
 
             results = [ExecutionResult(**r) for r in final.get("execution_results", [])]
             overall_success = final.get("success", False)
-            logger.info(
-                "RunPipeline completed. success=%s | commands=%d",
-                overall_success,
-                len(results),
-            )
+
+            logger.info("")
+            logger.info("╔" + "=" * 78 + "╗")
+            logger.info("║" + " " * 78 + "║")
+            if overall_success:
+                logger.info("║ " + "✓ PIPELINE COMPLETED SUCCESSFULLY".ljust(76) + " ║")
+            else:
+                logger.info("║ " + "✗ PIPELINE COMPLETED WITH FAILURES".ljust(76) + " ║")
+            logger.info("║" + " " * 78 + "║")
+            logger.info("╚" + "=" * 78 + "╝")
+            logger.info("")
+            logger.info("Summary Statistics:")
+            logger.info("  ├─ Total Commands: %d", len(results))
+            logger.info("  ├─ Succeeded: %d", sum(1 for r in results if r.success))
+            logger.info("  ├─ Failed: %d", sum(1 for r in results if not r.success))
+            logger.info("  └─ Overall Status: %s", "SUCCESS" if overall_success else "FAILED")
+            logger.info("")
             return ExecutorPipelineResponse(
                 statusCode=200 if overall_success else 207,
                 status="success" if overall_success else "failed",
@@ -392,18 +507,19 @@ and next steps if there were failures."""
 
 
 # if __name__ == "__main__":
-#     agent = ExecutorAgent()
-#
-#     response = agent.RunPipeline(
+#     executor = ExecutorAgent()
+
+#     response = executor.RunPipeline(
 #         action={
-#             "actionName": "Deploy SSH-Restrict Lambda via Terraform",
-#             "actionDescription": "Deploy the Lambda that removes open SSH ingress rules",
-#             "steps": [
-#                 "Run terraform init",
-#                 "Run terraform plan",
-#                 "Apply the Terraform configuration",
-#             ],
+#             "actionName": "Deploy Production RDS Instance with Terraform",
+#             "actionDescription": "Deploy a single-AZ PostgreSQL RDS instance (REL-001) tagged as production in the default VPC using Terraform. This provisions the database infrastructure with storage encryption enabled and applies production environment tags."
 #         },
-#         executeFolder="sandbox_123456",
+#         executeFolder="terraform_files",
+#         executableSteps=[
+#             {"description": "Initialize Terraform", "command": "terraform init"},
+#             {"description": "Validate Terraform configuration", "command": "terraform validate"},
+#             {"description": "Plan Terraform deployment", "command": "terraform plan -out=tfplan"},
+#             {"description": "Apply Terraform configuration", "command": "terraform apply -auto-approve tfplan"}
+#         ]
 #     )
 #     print(response.model_dump_json(indent=2))
