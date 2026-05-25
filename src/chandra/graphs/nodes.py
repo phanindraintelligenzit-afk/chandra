@@ -232,6 +232,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 status="completed",
                 finished_at=datetime.now(timezone.utc),
                 errors_json=errors,
+                bedrock_cost_usd=state.get("bedrock_cost_usd", 0.0),
             )
             sess.add(run)
         else:
@@ -239,6 +240,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
             run.status = "completed"
             run.finished_at = datetime.now(timezone.utc)
             run.errors_json = errors
+            run.bedrock_cost_usd = state.get("bedrock_cost_usd", 0.0)
 
         # Replace findings for this run to keep persist idempotent.
         sess.query(FindingRow).filter(FindingRow.run_id == run_id).delete()
