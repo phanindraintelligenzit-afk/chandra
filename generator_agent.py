@@ -98,6 +98,9 @@ class AgentState(TypedDict):
     executable_steps: List[Dict]  # List of {"description": str, "command": str}
     sandbox_path: str
     summary: str
+    existing_files: List[Dict]      # files read from input_sandbox_path
+    feedback_summary: str           # optional feedback / change instructions
+    input_sandbox_path: str         # caller-supplied sandbox to update (empty = create new)
 
 
 class GeneratorPipelineResponse(BaseModel):
@@ -128,15 +131,47 @@ class GeneratorAgent:
 
     # ── Nodes ──────────────────────────────────────────────────────
 
+    def _read_existing_node(self, state: AgentState) -> dict:
+        input_path = state.get("input_sandbox_path") or ""
+        if not input_path:
+            return {"existing_files": []}
+
+        sandbox = Path(input_path)
+        if not sandbox.exists() or not sandbox.is_dir():
+            logger.warning("sandbox_path '%s' does not exist or is not a directory", input_path)
+            return {"existing_files": []}
+
+        existing = []
+        for file_path in sorted(sandbox.rglob("*")):
+            if file_path.is_file():
+                rel = file_path.relative_to(sandbox)
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                    existing.append({"filename": str(rel).replace("\\", "/"), "content": content})
+                except Exception as exc:
+                    logger.warning("Could not read %s: %s", file_path, exc)
+
+        logger.info("Read %d existing file(s) from %s", len(existing), input_path)
+        return {"existing_files": existing}
+
     def _analyze_node(self, state: AgentState) -> dict:
         action = state["action"]
         logger.info("Analyzing action: %s", action.get("actionName"))
+
+        existing_files = state.get("existing_files") or []
+        existing_ctx = ""
+        if existing_files:
+            file_list = "\n".join(f"  - {f['filename']}" for f in existing_files)
+            existing_ctx = f"\n\nExisting sandbox files (UPDATE mode — do not create from scratch):\n{file_list}"
+
+        feedback = state.get("feedback_summary") or ""
+        feedback_ctx = f"\n\nFeedback / required changes:\n{feedback}" if feedback else ""
 
         prompt = f"""You are an AWS automation engineer. Analyze this action request and decide the best code generation strategy.
 
 Action Name: {action["actionName"]}
 Action Description: {action["actionDescription"]}
-Steps: {json.dumps(action.get("steps") or [], indent=2)}
+Steps: {json.dumps(action.get("steps") or [], indent=2)}{existing_ctx}{feedback_ctx}
 
 Determine:
 
@@ -189,7 +224,9 @@ Be conservative: only flag needs_clarification for genuinely missing blocking va
         action = state["action"]
         analysis = state["analysis"]
         clarification = state.get("clarification")
-        logger.info("Generating code. approach=%s", analysis["recommended_approach"])
+        existing_files = state.get("existing_files") or []
+        feedback = state.get("feedback_summary") or ""
+        logger.info("Generating code. approach=%s | update_mode=%s", analysis["recommended_approach"], bool(existing_files))
 
         clarification_context = ""
         if clarification:
@@ -199,13 +236,28 @@ Be conservative: only flag needs_clarification for genuinely missing blocking va
             )
             clarification_context = f"\n\nUser clarifications provided:\n{qa_pairs}"
 
-        prompt = f"""You are an AWS automation engineer. Generate complete, production-ready code for this action.
+        existing_context = ""
+        if existing_files:
+            files_dump = "\n\n".join(
+                f"=== {f['filename']} ===\n{f['content']}" for f in existing_files
+            )
+            existing_context = f"\n\nEXISTING FILES (UPDATE these — preserve structure, only change what is needed):\n{files_dump}"
+
+        feedback_context = f"\n\nFEEDBACK / REQUIRED CHANGES:\n{feedback}" if feedback else ""
+
+        mode_instruction = (
+            "UPDATE the existing files shown below — preserve their structure and only modify what is necessary to satisfy the action and feedback."
+            if existing_files
+            else "Generate complete, production-ready code for this action from scratch."
+        )
+
+        prompt = f"""You are an AWS automation engineer. {mode_instruction}
 
 Action Name: {action["actionName"]}
 Action Description: {action["actionDescription"]}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}
 Recommended approach: {analysis["recommended_approach"]}
-{clarification_context}
+{clarification_context}{existing_context}{feedback_context}
 
 Requirements:
 - ALL files must be complete and immediately runnable — zero placeholders, no TODOs
@@ -243,9 +295,15 @@ Generate ALL files needed. The code must implement the described action complete
             raise
 
     def _write_files_node(self, state: AgentState) -> dict:
-        rand_id = str(random.randint(100_000, 999_999))
-        sandbox_dir = f"sandbox_{rand_id}"
-        Path(sandbox_dir).mkdir(exist_ok=True)
+        input_path = state.get("input_sandbox_path") or ""
+        if input_path:
+            sandbox_dir = input_path
+            Path(sandbox_dir).mkdir(exist_ok=True)
+            logger.info("Updating existing sandbox %s with %d file(s)", sandbox_dir, len(state["generated_files"]))
+        else:
+            rand_id = str(random.randint(100_000, 999_999))
+            sandbox_dir = f"sandbox_{rand_id}"
+            Path(sandbox_dir).mkdir(exist_ok=True)
         logger.info("Writing %d file(s) to %s", len(state["generated_files"]), sandbox_dir)
 
         toolkit = FileManagementToolkit(root_dir=sandbox_dir)
@@ -273,12 +331,14 @@ Generate ALL files needed. The code must implement the described action complete
         logger.info("Building LangGraph pipeline")
         try:
             builder = StateGraph(AgentState)
+            builder.add_node("read_existing", self._read_existing_node)
             builder.add_node("analyze", self._analyze_node)
             builder.add_node("hitl", self._hitl_node)
             builder.add_node("generate", self._generate_node)
             builder.add_node("write_files", self._write_files_node)
 
-            builder.set_entry_point("analyze")
+            builder.set_entry_point("read_existing")
+            builder.add_edge("read_existing", "analyze")
             builder.add_conditional_edges(
                 "analyze",
                 self._route_after_analysis,
@@ -302,6 +362,8 @@ Generate ALL files needed. The code must implement the described action complete
         action: Dict[str, Any],
         thread_id: Optional[str] = None,
         answers: Optional[List[str]] = None,
+        sandbox_path: Optional[str] = None,
+        feedback_summary: Optional[str] = None,
     ) -> GeneratorPipelineResponse:
         """
         Run or resume the generation pipeline.
@@ -310,6 +372,10 @@ Generate ALL files needed. The code must implement the described action complete
         Resume call: pass the `thread_id` from the previous response and the user's `answers`.
                      `action` is retained from checkpointed state and may be omitted on resume,
                      but passing it again is harmless.
+
+        sandbox_path:    Path to an existing sandbox folder. If provided and contains files,
+                         the agent reads them and updates rather than generates from scratch.
+        feedback_summary: Optional free-text describing changes or corrections to apply.
         """
         tid = thread_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": tid}}
@@ -334,6 +400,9 @@ Generate ALL files needed. The code must implement the described action complete
                         "executable_steps": [],
                         "sandbox_path": "",
                         "summary": "",
+                        "existing_files": [],
+                        "feedback_summary": feedback_summary or "",
+                        "input_sandbox_path": sandbox_path or "",
                     },
                     config=config,
                 )

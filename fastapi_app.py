@@ -208,6 +208,14 @@ class GenerateRequest(BaseModel):
         default=None,
         description="Answers to the clarification questions, in the same order they were returned.",
     )
+    sandbox_path: Optional[str] = Field(
+        default=None,
+        description="Path to an existing sandbox folder. If provided and contains files, the agent updates them instead of generating from scratch.",
+    )
+    feedbackSummary: Optional[str] = Field(
+        default=None,
+        description="Optional free-text feedback or change instructions to apply when updating existing files.",
+    )
 
 
 @app.post("/generateCode", response_model=GeneratorPipelineResponse)
@@ -241,6 +249,8 @@ def generate_code(request: GenerateRequest):
             action=request.action.model_dump(),
             thread_id=request.thread_id,
             answers=request.answers,
+            sandbox_path=request.sandbox_path,
+            feedback_summary=request.feedbackSummary,
         )
     except Exception as exc:
         logger.exception("GeneratorAgent failed: %s", exc)

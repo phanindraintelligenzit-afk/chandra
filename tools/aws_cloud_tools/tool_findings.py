@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import logging
 import os
 import time
 from dotenv import load_dotenv
@@ -7,6 +8,8 @@ load_dotenv()
 
 import boto3
 from tools.observability_tools import DetectorContext
+
+logger = logging.getLogger(__name__)
 
 
 class ClientFactory:
@@ -26,7 +29,7 @@ _MODULES = {
 
 async def _run_one(name: str, account_id: str, regions: list) -> tuple[str, list]:
     t0 = time.perf_counter()
-    print(f"Running {name.upper()} detectors...")
+    logger.info(f"Running {name.upper()} detectors...")
     try:
         ctx = DetectorContext(
             account_id=account_id,
@@ -44,17 +47,20 @@ async def _run_one(name: str, account_id: str, regions: list) -> tuple[str, list
             findings = []
             for fn, result in zip(detectors, results):
                 if isinstance(result, Exception):
-                    print(f"  [{name.upper()}] {fn.__name__} error: {result}")
+                    logger.error(f"[{name.upper()}] {fn.__name__} error: {result}")
                 else:
                     findings.extend(result)
         else:
             findings = await asyncio.to_thread(mod.run_all, ctx)
 
         elapsed = time.perf_counter() - t0
-        print(f"  Found {len(findings)} {name} issues  ({elapsed:.1f}s)\n")
+        logger.info(f"Found {len(findings)} {name} issues ({elapsed:.1f}s)")
+        if findings:
+            for finding in findings:
+                logger.warning(f"  {name.upper()} Issue: {finding}")
         return name, findings
     except Exception as e:
-        print(f"  Skipped {name} (not found or error): {e}\n")
+        logger.exception(f"Skipped {name} (not found or error): {e}")
         return name, []
 
 
