@@ -216,7 +216,7 @@ with gr.Blocks(title="Chandra — AWS Cloud Watcher") as demo:
 
 
 if __name__ == "__main__":
-    _host = os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1")
+    _host = os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0")
     _port = int(os.environ.get("GRADIO_SERVER_PORT", "7861"))
     _in_container = os.environ.get("GRADIO_SERVER_NAME") == "0.0.0.0"
 

@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage
 from langchain_aws import ChatBedrockConverse
 from langgraph.graph import END, StateGraph
 
-from tools.jira_tools.create_jira_ticket import add_comment_to_ticket, create_jira_ticket
+from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket
 
 load_dotenv(override=True)
 
@@ -100,6 +100,8 @@ For each action below, determine:
   - MEDIUM → execute within current sprint
   - LOW    → schedule for backlog
 
+Important: any service or label values must not contain spaces — use camelCase instead (e.g. "costExplorer", "awsConfig").
+
 Actions to analyze:
 {json.dumps(actions, indent=2)}
 
@@ -130,7 +132,11 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
             summary = action["actionName"]
             description = original.get("actionDescription", "")
             steps = original.get("steps") or []
-            logger.info("Creating ticket for action='%s' priority=%s", summary, jira_priority)
+            service = original.get("service", "")
+            words = service.split()
+            camel_label = (words[0].lower() + "".join(w.capitalize() for w in words[1:])) if words else ""
+            labels = [camel_label] if camel_label else []
+            logger.info("Creating ticket for action='%s' priority=%s labels=%s", summary, jira_priority, labels)
 
             result = create_jira_ticket(
                 project_key=project_key,
@@ -138,12 +144,14 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
                 description=description,
                 issuetype="Task",
                 priority=jira_priority,
+                labels=labels,
             )
 
             if result["status"] == "success":
                 logger.info("Ticket created: %s", result["issue_key"])
                 if steps:
                     add_comment_to_ticket(result["issue_key"], steps)
+                add_approval_comment(result["issue_key"], action["HumanReviewNeeded"])
                 final_output.append({
                     "actionName": action["actionName"],
                     "severity": action["severity"],

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # Load variables from your .env file
 load_dotenv() 
 
-def create_jira_ticket(project_key: str, summary: str, description: str = "", issuetype: str = "Task", priority: str = None):
+def create_jira_ticket(project_key: str, summary: str, description: str = "", issuetype: str = "Task", priority: str = None, labels: list = None):
     """
     Checks if a Jira project exists, creates it if necessary, 
     and creates a ticket using the provided string arguments including priority.
@@ -28,9 +28,11 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
         'issuetype': {'name': issuetype}    
     }
     
-    # Add priority to fields if it was provided
     if priority:
         fields['priority'] = {'name': priority}
+
+    if labels:
+        fields['labels'] = labels
 
     try:
         # 2. Authenticate with the jira library
@@ -114,6 +116,36 @@ def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
     except Exception as e:
         print(f"Failed to add comment to {issue_key}: {e}")
         return {"status": "error", "message": str(e)}
+
+
+def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
+    """Add an approval-status comment indicating whether the action is auto-approved or awaiting human review."""
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if human_review_needed:
+        body = (
+            "⏳ *Pending human approval.* "
+            "This action requires manual review and sign-off before execution can proceed. "
+            "Please review the steps above and approve or reject accordingly."
+        )
+    else:
+        body = (
+            "✅ *Agent auto-approved this action.* "
+            "No human review is required. "
+            "Automated remediation will proceed as outlined in the steps above."
+        )
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira.add_comment(issue_key, body)
+        print(f"Approval comment added to {issue_key}")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Failed to add approval comment to {issue_key}: {e}")
+        return {"status": "error", "message": str(e)}
+
 
 # ==========================================
 # HOW TO USE THE FUNCTION:

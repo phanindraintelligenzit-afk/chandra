@@ -16,6 +16,8 @@ from observation_agent import (
     DEFAULT_REGION,
 )
 from analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
+from generator_agent import GeneratorAgent, GeneratorPipelineResponse, GeneratedFile
+from executor_agent import ExecutorAgent, ExecutorPipelineResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from copilot_agents.graph import build_graph, chat as copilot_chat
 
@@ -31,8 +33,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Built once so MemorySaver persists across requests (keyed by sessionId)
+# Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
 _copilot_agent = build_graph()
+_generator_agent = GeneratorAgent()
+_executor_agent = ExecutorAgent()
 
 
 class KRAInput(BaseModel):
@@ -67,6 +71,22 @@ async def get_cost_metrics(
 
 @app.post("/getAgentObservations", response_model=PipelineResponse)
 def run_pipeline(request: PipelineRequest):
+    """
+    Example request:
+    {
+        "region": "us-east-1",
+        "kras": [
+            {
+                "code": "KRA-01",
+                "description": "Reduce unexpected Bedrock spend by 60% through auto-remediation of untagged inference calls"
+            },
+            {
+                "code": "KRA-02",
+                "description": "Zero high-severity misconfigurations open longer than 24 hours"
+            }
+        ]
+    }
+    """
     logger.info(
         "POST /getAgentObservations called with region=%s, kras=%s",
         request.region,
@@ -102,6 +122,28 @@ class AnalyzerRequest(BaseModel):
 
 @app.post("/analyzeActions", response_model=AnalyzerPipelineResponse)
 def analyze_actions(request: AnalyzerRequest):
+    """
+    Example request:
+    {
+        "projectKey": "DEV",
+        "actions": [
+            {
+                "actionName": "Automate Bedrock inference disablement for untagged usage",
+                "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
+                "service": "Bedrock",
+                "kraCode": "KRA-01",
+                "priorityLevel": "P1",
+                "steps": [
+                    "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
+                    "Write Lambda function that checks userIdentity.principalId against allowed tag values",
+                    "If principal has no Environment=prod tag, deny the request",
+                    "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
+                    "Test by simulating an untagged Bedrock call"
+                ]
+            }
+        ]
+    }
+    """
     logger.info(
         "POST /analyzeActions called with %d actions, projectKey=%s",
         len(request.actions),
@@ -134,6 +176,13 @@ class CopilotResponse(BaseModel):
 
 @app.post("/copilot/chat", response_model=CopilotResponse)
 def copilot_chat_endpoint(request: CopilotRequest):
+    """
+    Example request:
+    {
+        "sessionId": "session-abc123",
+        "message": "What were the top 3 cost drivers in my AWS account last week?"
+    }
+    """
     logger.info("POST /copilot/chat sessionId=%s", request.sessionId)
     try:
         reply = copilot_chat(_copilot_agent, request.sessionId, request.message)
@@ -141,6 +190,118 @@ def copilot_chat_endpoint(request: CopilotRequest):
     except Exception as exc:
         logger.exception("Copilot chat failed: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+
+
+class GeneratorActionInput(BaseModel):
+    actionName: str = Field(description="Short name or title of the action")
+    actionDescription: str = Field(description="Detailed description of what needs to be done and why")
+    steps: Optional[List[str]] = Field(default=None, description="Optional ordered implementation steps")
+
+
+class GenerateRequest(BaseModel):
+    action: GeneratorActionInput = Field(description="Action to generate code for")
+    thread_id: Optional[str] = Field(
+        default=None,
+        description="Thread ID from a previous needs_clarification response. Omit on first call.",
+    )
+    answers: Optional[List[str]] = Field(
+        default=None,
+        description="Answers to the clarification questions, in the same order they were returned.",
+    )
+
+
+@app.post("/generateCode", response_model=GeneratorPipelineResponse)
+def generate_code(request: GenerateRequest):
+    """
+    Example request:
+    {
+        "action": {
+            "actionName": "Automate Bedrock inference disablement for untagged usage",
+            "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
+            "steps": [
+                "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
+                "Write Lambda function that checks userIdentity.principalId against allowed tag values",
+                "If principal has no Environment=prod tag, deny the request",
+                "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
+                "Test by simulating an untagged Bedrock call"
+            ]
+        },
+        "thread_id": null,
+        "answers": null
+    }
+    """
+    logger.info(
+        "POST /generateCode | action=%s | thread_id=%s | resuming=%s",
+        request.action.actionName,
+        request.thread_id,
+        request.answers is not None,
+    )
+    try:
+        response = _generator_agent.RunPipeline(
+            action=request.action.model_dump(),
+            thread_id=request.thread_id,
+            answers=request.answers,
+        )
+    except Exception as exc:
+        logger.exception("GeneratorAgent failed: %s", exc)
+        response = GeneratorPipelineResponse(
+            statusCode=500,
+            status="error",
+            exception=str(exc),
+        )
+
+    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
+
+class ExecuteActionInput(BaseModel):
+    actionName: str = Field(description="Short name or title of the action")
+    actionDescription: str = Field(description="Detailed description of what needs to be done and why")
+    priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
+    steps: Optional[List[str]] = Field(default=None, description="Optional ordered implementation steps")
+    executeFolder: str = Field(description="Path to the folder containing generated scripts / tf files")
+
+
+@app.post("/executeCode", response_model=ExecutorPipelineResponse)
+def execute_code(request: ExecuteActionInput):
+    """
+    Example request:
+    {
+        "actionName": "Automate Bedrock inference disablement for untagged usage",
+        "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
+        "priorityLevel": "P1",
+        "steps": [
+            "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
+            "Write Lambda function that checks userIdentity.principalId against allowed tag values",
+            "If principal has no Environment=prod tag, deny the request",
+            "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
+            "Test by simulating an untagged Bedrock call"
+        ],
+        "executeFolder": "sandbox_9876"
+    }
+    """
+    logger.info(
+        "POST /executeCode | action=%s | folder=%s",
+        request.actionName,
+        request.executeFolder,
+    )
+    try:
+        response = _executor_agent.RunPipeline(
+            action={
+                "actionName": request.actionName,
+                "actionDescription": request.actionDescription,
+                "steps": request.steps,
+            },
+            executeFolder=request.executeFolder,
+        )
+    except Exception as exc:
+        logger.exception("ExecutorAgent failed: %s", exc)
+        response = ExecutorPipelineResponse(
+            statusCode=500,
+            status="error",
+            exception=str(exc),
+        )
+
+    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
 
 
 if __name__ == "__main__":
