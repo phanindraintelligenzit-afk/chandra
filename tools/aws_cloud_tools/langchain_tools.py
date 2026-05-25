@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Callable
-
+import os
 from langchain_core.tools import tool
 
 from .tool_findings import run_all_detectors
@@ -19,6 +19,8 @@ from .health_events_fetcher import AWSHealthEventsFetcher
 from .logs_fetcher import AWSCloudWatchLogsFetcher
 from .metrics_fetcher import CloudWatchMetricsFetcher
 from .xray_tracer import AWSXRayFetcher
+from dotenv import load_dotenv
+load_dotenv()
 
 _metrics = CloudWatchMetricsFetcher()
 _alarms = AWSCloudWatchAlarmsFetcher()
@@ -211,7 +213,7 @@ def fetch_all_findings() -> dict:
 
 
 TOOLS_LIST: list[Callable[..., Any]] = [
-    fetch_metrics_summary,
+    # fetch_metrics_summary,
     fetch_alarms_summary,
     fetch_recent_events,
     fetch_budget_status,
@@ -227,13 +229,13 @@ TOOLS_LIST: list[Callable[..., Any]] = [
     fetch_all_findings,
 ]
 
-DEFAULT_REGION = "us-east-1"
+DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
 
 
 def default_tool_args(tool_name: str, region: str = DEFAULT_REGION) -> dict:
     """Default kwargs for parallel tool invocation in the observability pipeline."""
     return {
-        "fetch_metrics_summary": {"region": region, "last_hours": 1},
+        # "fetch_metrics_summary": {"region": region, "last_hours": 1},
         "fetch_alarms_summary": {"max_total_alarms": 20},
         "fetch_recent_events": {"max_results": 20},
         "fetch_budget_status": {},
