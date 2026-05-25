@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "PowerShell(Get-ChildItem -Path \"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\src\\\\chandra\" -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | ForEach-Object { $_ -replace [regex]::Escape\\(\"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\\"\\), \"\" } | Sort-Object)",
-      "PowerShell(Get-ChildItem -Path \"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\tests\" -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | ForEach-Object { $_ -replace [regex]::Escape\\(\"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\\"\\), \"\" } | Sort-Object)"
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\tests\" -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | ForEach-Object { $_ -replace [regex]::Escape\\(\"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\\"\\), \"\" } | Sort-Object)",
+      "Bash(uv run *)",
+      "Bash(uv sync *)"
     ]
   }
 }

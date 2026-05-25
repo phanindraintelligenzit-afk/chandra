@@ -81,3 +81,26 @@ class BriefingPayload(BaseModel):
     top_findings: list[AnalyzedFinding]
     all_findings: list[Finding]
     metadata: dict
+
+
+class ProposedWrite(BaseModel):
+    """A proposed action to write to AWS."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    target_arn: str
+    payload: dict
+    requested_by: str
+    justification: str
+
+
+class ApprovalDecision(BaseModel):
+    """Human decision on a proposed write."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    reviewer: str
+    reason: str
+    decided_at: datetime

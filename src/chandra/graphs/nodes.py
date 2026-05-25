@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from langgraph.types import Send
+from langgraph.types import Send, interrupt
 
 from chandra.aws.client_factory import get_default_factory
 from chandra.aws.regions import active_regions
@@ -33,7 +33,7 @@ from chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
-from chandra.briefing.schemas import AnalyzedFinding, Finding
+from chandra.briefing.schemas import AnalyzedFinding, ApprovalDecision, Finding, ProposedWrite
 from chandra.db.models import Briefing, Finding as FindingRow, Run
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
@@ -203,6 +203,26 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
         metadata=metadata,
     )
     return {"briefing_md": briefing_md, "briefing_json": briefing_json}
+
+
+# ---------------------------------------------------------------------------
+# Approval (human-in-the-loop checkpoint)
+# ---------------------------------------------------------------------------
+
+
+def approval_node(state: ChandraState) -> dict[str, Any]:
+    """Interrupt on pending writes for human approval.
+
+    If no pending writes exist, returns empty dict (no change).
+    Otherwise, emits an interrupt with pending writes; on resume,
+    creates ApprovalDecision records from the payload.
+    """
+    pending = state.get("pending_writes", []) or []
+    if not pending:
+        return {}
+
+    payload = interrupt({"pending_writes": [p.model_dump() for p in pending]})
+    return {"approvals": [ApprovalDecision(**d) for d in payload]}
 
 
 # ---------------------------------------------------------------------------

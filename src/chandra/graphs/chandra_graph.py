@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from chandra.config import settings
 from chandra.graphs.nodes import (
     analyze,
+    approval_node,
     compose_briefing,
     fanout_observers,
     observe_compliance,
@@ -70,6 +71,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("observe_reliability", observe_reliability)
     graph.add_node("analyze", analyze)
     graph.add_node("compose_briefing", compose_briefing)
+    graph.add_node("approval_node", approval_node)
     graph.add_node("persist", persist)
 
     graph.add_edge(START, "onboard_account")
@@ -90,7 +92,17 @@ def build_graph(checkpointer: Any | None = None) -> Any:
         graph.add_edge(f"observe_{kra}", "analyze")
 
     graph.add_edge("analyze", "compose_briefing")
-    graph.add_edge("compose_briefing", "persist")
+
+    def route_to_approval(state: ChandraState) -> str:
+        pending = state.get("pending_writes", []) or []
+        return "approval_node" if pending else "persist"
+
+    graph.add_conditional_edges(
+        "compose_briefing",
+        route_to_approval,
+        ["approval_node", "persist"],
+    )
+    graph.add_edge("approval_node", "persist")
     graph.add_edge("persist", END)
 
     saver = checkpointer if checkpointer is not None else _build_checkpointer()
