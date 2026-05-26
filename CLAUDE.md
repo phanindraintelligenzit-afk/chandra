@@ -1,110 +1,138 @@
-# CLAUDE.md
+# Chandra — Project context for Claude Code
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is **auto-loaded into every Claude Code session running in this repo**. Read it once at session start. Treat the rules in it as immutable — they're the architectural invariants the team agreed on, not preferences.
 
-## Commands
+---
 
-`make` targets work on Linux/macOS. On Windows, use the `uv run` equivalents below.
+## What Chandra is
+
+Chandra is a LangGraph-orchestrated autonomous agent that observes one AWS account and emits a daily Cloud Health Briefing across **five KRAs**: cost, security, compliance, performance, reliability.
+
+```
+START → onboard_account → fanout_observers
+                             ├─► observe_cost
+                             ├─► observe_security
+                             ├─► observe_compliance        → analyze (LLM rank + dedup)
+                             ├─► observe_performance         → compose_briefing (LLM narrative)
+                             └─► observe_reliability            → persist → END
+```
+
+Deterministic boto3 detectors gather findings. Claude Sonnet 4.5 (via Amazon Bedrock) ranks and narrates. Results persist to Postgres. Streamlit (today; FastAPI + Next.js per FE-01) renders the briefing.
+
+**The LLM never invents findings.** It only runs in `analyze` (ranking + rationale) and `compose_briefing` (narrative). This separation is a hard architectural invariant.
+
+---
+
+## Hard architectural rules (do not violate without explicit signoff from Phani)
+
+- **LangGraph is the only orchestration framework.** No LangChain `AgentExecutor`. No `create_react_agent`. Use `StateGraph` + `Send(...)` for fan-out.
+- **Amazon Bedrock is the only LLM provider** — specifically `langchain_aws.ChatBedrockConverse` with Sonnet 4.5. Do not import `openai`, `anthropic` direct SDK, or any other provider.
+- **Read-only by default.** Detectors never call mutating AWS APIs. Future write actions go through `HumanApprovalNode` (LG-01) and the `pending_writes` state field.
+- **`chandra.briefing.composer` is the only module that may call Bedrock.** Detector modules MUST NOT import `langchain_aws`.
+- **Postgres writes only in the `persist` node and Alembic migrations.** Nowhere else.
+- **Every boto3 list/describe call uses a paginator.** No silent truncation.
+- **AWS clients are created via `chandra.aws.client_factory.get_default_factory()`.** Never `boto3.client(...)` directly.
+- **No `# TODO: implement` in committed code.** If something is deferred, `raise NotImplementedError("<msg>; tracked in <TICKET-ID>")`.
+- **No `print()`.** Use `chandra.logging.get_logger(__name__)`.
+- **No `except Exception` without re-raising or structured logging.** Narrow exception classes only.
+
+---
+
+## How the team operates
+
+- **Single source of truth for work**: the Notion Kanban → https://www.notion.so/b67c36091c9f426ab6d49c4b6e54b789
+- **Every ticket has**: a "Why / Where / Acceptance" page body + a step-by-step engineering comment with file paths, code snippets, ETA, and dependencies.
+- **One ticket = one PR**. Keep PRs small. No week-long branches.
+- **Branch naming**: `<ticket-id-lowercase>/<short-slug>` — e.g. `lg-03/traced-node-decorator`.
+- **Commit / PR title format**: `<TICKET-ID>: <imperative summary>` — e.g. `LG-03: add @traced_node decorator (OTEL + structlog + metrics)`.
+- **PR body must include**: link to the Notion ticket, a one-paragraph "what / why", and a checklist of acceptance items from the ticket.
+- **`make check` must pass locally before opening a PR.** CI runs the same gate (`.github/workflows/check.yml`).
+- **CODEOWNERS auto-routes reviewers**. Don't self-merge.
+
+---
+
+## Quality gates
 
 ```bash
-# Setup
-cp .env.example .env          # fill in AWS_PROFILE and SYNTHETIC_ACCOUNT_ID
-make db-up                    # docker compose up -d postgres localstack
-make install                  # uv sync --all-extras
-make migrate                  # uv run alembic upgrade head
-
-# Quality gate (runs ruff + mypy --strict + pytest)
-make check
-# Windows: uv run ruff check src && uv run ruff format --check src && uv run mypy src --strict && uv run pytest -m "not integration"
-
-# Individual checks
-make fmt                      # uv run ruff format src
-make lint                     # uv run ruff check src
-make type                     # uv run mypy src --strict
-make test                     # uv run pytest -m "not integration"
-
-# Run a single test file
-uv run pytest tests/unit/test_security_tools.py -v
-
-# Run a single test by name
-uv run pytest tests/unit/test_security_tools.py::test_public_s3_bucket -v
-
-# App
-make run                      # uv run chandra run
-make eval                     # uv run python evals/harness.py
-make dashboard                # uv run streamlit run src/chandra/dashboard/app.py
-
-# Full smoke test
-make smoke                    # Linux/macOS
-make smoke-windows            # PowerShell (Windows)
-
-# IaC (real burner AWS account)
-make tf-apply                 # terraform -chdir=iac/synthetic_env apply -auto-approve
-make tf-destroy               # terraform -chdir=iac/synthetic_env destroy -auto-approve
+make install     # uv sync --all-extras
+make db-up       # docker compose up -d postgres
+make migrate     # alembic upgrade head
+make check       # ruff + mypy --strict + pytest  ← must be green before PR
+make run         # one full Chandra run (requires SYNTHETIC_ACCOUNT_ID + AWS creds)
+make eval        # eval harness against the synthetic env
+make dashboard   # streamlit on :8501
 ```
 
-## Architecture
+The first three commands need to pass on Day 1 of any new engineer's setup.
 
-Chandra is an autonomous AWS observation agent: deterministic boto3 detectors produce findings; an LLM (Claude via Bedrock) ranks and narrates them; results are persisted in Postgres and surfaced via Streamlit.
+---
 
-### LangGraph pipeline
+## CODEOWNERS — who reviews what
 
-```
-START → onboard_account → fanout_observers → [observe_cost | observe_security |
-  observe_compliance | observe_performance | observe_reliability] → analyze →
-  compose_briefing → persist → END
-```
-
-The five observer nodes run in parallel (`Send(...)` fan-out); their findings are merged back via reducers on `ChandraState`. `analyze` calls Bedrock; `compose_briefing` calls Bedrock for an executive summary; `persist` is the **only** node that writes to Postgres.
-
-### Tool-first invariant
-
-Detectors (`src/chandra/tools/`) are pure boto3 functions — they never call the LLM. The LLM never fabricates findings — it only ranks and narrates the detector output. This boundary is enforced by prompt rules and must not be crossed.
-
-### Key modules
-
-| Path | Role |
+| Path | Team / owner |
 |---|---|
-| `src/chandra/graphs/` | LangGraph state (`state.py`), nodes (`nodes.py`), compilation (`chandra_graph.py`) |
-| `src/chandra/tools/` | Detector implementations (one file per KRA); `base.py` defines `DetectorContext` and `detector_guard` |
-| `src/chandra/briefing/` | `composer.py` — Bedrock calls, scorecard math, Markdown/JSON render; `schemas.py` — Pydantic models |
-| `src/chandra/prompts/` | `observer.md`, `analyzer.md`, `briefer.md` — LLM system prompts |
-| `src/chandra/db/` | SQLAlchemy ORM (`models.py`), session (`session.py`), Alembic migrations |
-| `src/chandra/aws/` | `client_factory.py` — cached, retry-configured boto3 clients; `regions.py` — region discovery |
-| `src/chandra/config.py` | Pydantic `Settings` — all runtime config from env |
-| `src/chandra/cli.py` | Typer CLI: `run`, `eval`, `render` sub-commands |
-| `src/chandra/dashboard/app.py` | Streamlit 3-tab dashboard (no API layer — reads Postgres directly) |
-| `evals/` | `harness.py` (recall/precision scorer), `seed_manifest.yaml` (ground truth), reports |
-| `iac/synthetic_env/` | Terraform module seeding 10 known misconfigs in a burner AWS account |
+| `src/chandra/graphs/`, `briefing/`, `prompts/`, `kras.py` | LangGraph team |
+| `src/chandra/aws/`, `tools/`, `iac/`, `Dockerfile`, `docker-compose.yml` | AWS team |
+| `src/chandra/dashboard/`, `api/` | Frontend team |
+| `src/chandra/db/`, `observability.py` | AWS + LangGraph jointly |
+| `evals/`, `tests/` | LangGraph team |
+| `docs/` | Kshiraja |
+| `.github/`, `CODEOWNERS`, `pyproject.toml`, `Makefile` | Chandra leads (Phani) |
 
-### Detector pattern
+If your change touches another team's path, open a draft PR and tag them. Don't merge silently.
 
-Every detector in `src/chandra/tools/` accepts `DetectorContext` and returns `list[Finding]`. Errors are appended to `context.errors` and swallowed — detectors must never raise. Use `@detector_guard` from `tools/base.py`.
+---
 
-### Config reference (`.env` / environment)
+## Team
 
-| Variable | Default | Purpose |
+| Person | Role | Workstream |
 |---|---|---|
-| `AWS_PROFILE` | — | boto3 credential profile |
-| `AWS_DEFAULT_REGION` | `us-east-1` | fallback region |
-| `BEDROCK_MODEL_ID` | `anthropic.claude-sonnet-4-5-20250929-v1:0` | LLM |
-| `POSTGRES_URL` | `postgresql+psycopg://chandra:chandra@localhost:5432/chandra` | state DB |
-| `SYNTHETIC_ACCOUNT_ID` | — | burner account for eval |
-| `CHANDRA_STALE_KEY_DAYS_OVERRIDE` | — | override 90-day threshold for SEC-003 (demo use) |
-| `LOG_LEVEL` | `INFO` | structlog level |
+| **Maheshwar** | AWS Engineer | AWS infra, IaC, CI |
+| **Siva** | LangGraph Engineer | Graph core, Cost/Performance KRA workers, observability primitives |
+| **Nagendra** | LangGraph Engineer | Security/Compliance KRA workers, eval harness, fixture-replay |
+| **Aishani** | Frontend Engineer | Streamlit dashboard today, FastAPI + Next.js next |
+| **Kshiraja** | Intern | Docs, demo runbook, fixtures, well-scoped starter tickets |
+| **Phani** | PM / LangGraph reviewer | Project lead, escalation, decision authority on Coordination |
+| **PVR** | CEO | Product norms, escalation |
 
-### Severity scoring
+---
 
-Per-KRA score = `max(0, 100 − min(100, sum(severity_weights) × 5))` where weights are critical=10, high=5, medium=2, low=1, info=0. Deterministic ranking: severity weight → KRA order (security > compliance > reliability > performance > cost) → detector_id → resource_arn.
+## Norms (set by PVR — non-negotiable)
 
-### Testing
+- **Full-code only.** No low-code, no drag-and-drop. Streamlit is a temporary placeholder.
+- **Ship every day.** Small PRs. Fast review.
+- **State lives in Notion + repo. Not in DMs.**
+- **Push back if a plan has a flaw.** Don't hedge to be polite.
+- **Building-in-public is OFF.** Internal-only until PVR explicitly green-lights.
 
-- Unit tests use moto (`@mock_aws`) — no real AWS calls.
-- CI skips integration tests (`-m "not integration"`) — no Postgres or AWS creds in CI.
-- `tests/conftest.py` provides shared fixtures: `aws_context`, `client_factory`, `detector_context`, and per-service boto3 clients.
-- The eval harness (`evals/harness.py`) exits non-zero if `recall_overall < 0.80` or any per-KRA recall `< 0.70`.
+---
 
-### CI
+## When you (Claude) are stuck or unsure
 
-- **check.yml** — every PR/push to main: ruff + mypy + pytest (unit only).
-- **eval-offline.yml** — nightly: offline eval against `evals/fixtures/baseline_v1.jsonl` (gated until that fixture exists).
+- **Ambiguous spec**: comment on the Notion ticket; Phani clarifies. Don't guess.
+- **Architecture question**: the rules above are the source of truth. If you think a rule is wrong, raise it explicitly — don't quietly route around it.
+- **Test failure**: run the affected test with `-v` and read the trace. If it's a flake, document it; don't paper over.
+- **Bedrock unavailable / throttling**: the composer's deterministic fallback exists for exactly this (see `composer.py:103`). Confirm it's hit (look for `llm.bedrock_unavailable_fallback_to_deterministic` log entries) and continue.
+
+---
+
+## What NOT to do
+
+- Don't merge your own PRs.
+- Don't push directly to `main`.
+- Don't modify `CODEOWNERS`, `.github/workflows/*`, `pyproject.toml`, or `Makefile` without flagging Phani first.
+- Don't touch GitHub repo settings, branch protection, or security configurations.
+- Don't add new third-party dependencies without justifying in the PR description.
+- Don't refactor outside the scope of your current ticket — open a separate ticket for it.
+- Don't import any LLM provider other than `langchain_aws` (no `openai`, `anthropic`, `cohere`, etc.).
+- Don't instantiate `boto3.client(...)` directly — always go through `AwsClientFactory`.
+
+---
+
+## Reference links
+
+- **Kanban (live)**: https://www.notion.so/b67c36091c9f426ab6d49c4b6e54b789
+- **Onboarding Resource Pack**: https://www.notion.so/3604baec816581b1910dff95427c76be
+- **Latest project status report (for PVR)**: https://www.notion.so/3674baec8165810fbf1af038d9607f93
+- **GitHub repo**: https://github.com/phanindraintelligenzit-afk/chandra
+- **Engineer master prompts**: `docs/agent-prompts/` (paste the relevant one at session start)
