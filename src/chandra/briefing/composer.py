@@ -41,6 +41,9 @@ KRA_TIE_BREAK_ORDER = {
     "cost": 4,
 }
 
+# Load KRA context once at module initialization
+_KRA_CONTEXT = (PROMPTS_DIR / "kra_context.md").read_text(encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # Scorecard
@@ -109,7 +112,8 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             # temperature=0.0,
             # max_tokens=2048,
         )
-        system = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
+        analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
+        system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
         payload = [
             {
                 "detector_id": f.detector_id,
@@ -194,7 +198,8 @@ def compose_executive_summary(
             # temperature=0.2,
             # max_tokens=512,
         )
-        system = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
+        briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
+        system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
         top = [
             {
                 "rank": a.rank,
