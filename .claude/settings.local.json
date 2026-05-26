@@ -9,7 +9,9 @@
       "Bash(tee /tmp/test_output.txt)",
       "Bash(python *)",
       "Bash(python -m pytest tests/unit/test_observation_ingestion.py -v)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import langgraph; print\\(dir\\(langgraph\\)\\)\")",
+      "Bash(dir \".venv\\\\Lib\\\\site-packages\\\\\" | findstr langgraph 2>&1 | head -10)"
     ]
   }
 }

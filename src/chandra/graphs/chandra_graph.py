@@ -9,11 +9,12 @@ from langgraph.graph import END, START, StateGraph
 
 from chandra.config import settings
 from chandra.graphs.nodes import (
+    _route_kra_workers,
     analyze,
     approval_node,
     compose_briefing,
-    fanout_observers,
     ingest_observations,
+    kra_supervisor,
     observe_compliance,
     observe_cost,
     observe_performance,
@@ -66,6 +67,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
 
     graph.add_node("onboard_account", onboard_account)
     graph.add_node("ingest_observations", ingest_observations)
+    graph.add_node("kra_supervisor", kra_supervisor)
     graph.add_node("observe_cost", observe_cost)
     graph.add_node("observe_security", observe_security)
     graph.add_node("observe_compliance", observe_compliance)
@@ -78,9 +80,10 @@ def build_graph(checkpointer: Any | None = None) -> Any:
 
     graph.add_edge(START, "onboard_account")
     graph.add_edge("onboard_account", "ingest_observations")
+    graph.add_edge("ingest_observations", "kra_supervisor")
     graph.add_conditional_edges(
-        "ingest_observations",
-        fanout_observers,
+        "kra_supervisor",
+        _route_kra_workers,
         [
             "observe_cost",
             "observe_security",

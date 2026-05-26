@@ -78,21 +78,36 @@ def onboard_account(state: ChandraState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Fanout router
+# KRA Supervisor + Workers
 # ---------------------------------------------------------------------------
 
+KRAS_TO_RUN: tuple[str, ...] = (
+    "cost",
+    "security",
+    "compliance",
+    "performance",
+    "reliability",
+)
 
-def fanout_observers(state: ChandraState) -> list[Send]:
-    """Emit one ``Send(...)`` per KRA so observers run concurrently.
 
-    LangGraph's parallel-branch primitive. Each observer receives the same
-    state snapshot; their partial returns are merged by the reducers defined
-    in :mod:`chandra.graphs.state`.
+def kra_supervisor(state: ChandraState) -> dict[str, Any]:
+    """Supervisor node: dispatches to all KRA worker nodes.
+
+    Routes to the 5 KRA worker nodes (observe_cost, observe_security, etc.)
+    in parallel. Routing logic lives here so future iterations can skip or
+    re-order KRAs without touching the graph topology.
     """
-    return [
-        Send(f"observe_{kra}", state)
-        for kra in ("cost", "security", "compliance", "performance", "reliability")
-    ]
+    logger.info(
+        "graph.kra_supervisor",
+        run_id=state["run_id"],
+        kras=list(KRAS_TO_RUN),
+    )
+    return {}
+
+
+def _route_kra_workers(state: ChandraState) -> list[Send]:
+    """Route to all KRA worker nodes in parallel."""
+    return [Send(f"observe_{kra}", state) for kra in KRAS_TO_RUN]
 
 
 # ---------------------------------------------------------------------------
