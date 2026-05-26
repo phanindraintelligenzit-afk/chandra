@@ -33,6 +33,7 @@ from chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
+from chandra.observability import traced_node
 from chandra.briefing.schemas import (
     AnalyzedFinding,
     ApprovalDecision,
@@ -66,6 +67,7 @@ ESCALATE_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def decision_router(state: ChandraState) -> dict[str, Any]:
     """Classify each AnalyzedFinding as low-risk (auto-fix) or high-risk (escalate).
 
@@ -110,6 +112,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def onboard_account(state: ChandraState) -> dict[str, Any]:
     """Validate the run, resolve regions, and seed the inventory."""
     factory = get_default_factory()
@@ -142,6 +145,7 @@ KRAS_TO_RUN: tuple[str, ...] = (
 )
 
 
+@traced_node
 def kra_supervisor(state: ChandraState) -> dict[str, Any]:
     """Supervisor node: dispatches to all KRA worker nodes.
 
@@ -188,22 +192,27 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     }
 
 
+@traced_node
 def observe_cost(state: ChandraState) -> dict[str, Any]:
     return _run_observer("cost", state)
 
 
+@traced_node
 def observe_security(state: ChandraState) -> dict[str, Any]:
     return _run_observer("security", state)
 
 
+@traced_node
 def observe_compliance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("compliance", state)
 
 
+@traced_node
 def observe_performance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("performance", state)
 
 
+@traced_node
 def observe_reliability(state: ChandraState) -> dict[str, Any]:
     return _run_observer("reliability", state)
 
@@ -213,6 +222,7 @@ def observe_reliability(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def ingest_observations(state: ChandraState) -> dict[str, Any]:
     """Ingest CloudWatch alarms and EventBridge rules into state.observations."""
     ctx = DetectorContext(
@@ -283,6 +293,7 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def analyze(state: ChandraState) -> dict[str, Any]:
     """Rank + dedup findings and compute the per-KRA scorecard.
 
@@ -314,6 +325,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def compose_briefing(state: ChandraState) -> dict[str, Any]:
     """Render the markdown + JSON briefing for the run."""
     analyzed = state.get("analyzed_findings", []) or []
@@ -347,6 +359,7 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def approval_node(state: ChandraState) -> dict[str, Any]:
     """Interrupt on pending writes for human approval.
 
@@ -367,6 +380,7 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def persist(state: ChandraState) -> dict[str, Any]:
     """Write run, findings and briefing rows. Idempotent on (run_id)."""
     run_id = state["run_id"]
