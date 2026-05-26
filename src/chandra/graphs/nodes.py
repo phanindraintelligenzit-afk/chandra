@@ -21,7 +21,7 @@ Topology:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
 
@@ -33,7 +33,13 @@ from chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
-from chandra.briefing.schemas import AnalyzedFinding, ApprovalDecision, Finding, Observation
+from chandra.briefing.schemas import (
+    AnalyzedFinding,
+    ApprovalDecision,
+    Finding,
+    Observation,
+    ProposedWrite,
+)
 from chandra.db.models import Briefing, Finding as FindingRow, Run
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
@@ -51,6 +57,52 @@ KRA_RUNNERS = {
     "performance": performance.run_all,
     "reliability": reliability.run_all,
 }
+
+ESCALATE_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
+
+
+# ---------------------------------------------------------------------------
+# Decision Router (low-risk auto-fix vs high-risk escalate)
+# ---------------------------------------------------------------------------
+
+
+def decision_router(state: ChandraState) -> dict[str, Any]:
+    """Classify each AnalyzedFinding as low-risk (auto-fix) or high-risk (escalate).
+
+    High-risk findings (critical/high severity) are added to pending_writes,
+    triggering the approval_node interrupt for human review.
+    Low-risk findings (medium/low/info severity) are added to auto_fixed —
+    flagged for a future executor node, no human interrupt.
+    """
+    analyzed = state.get("analyzed_findings", []) or []
+    pending: list[ProposedWrite] = []
+    auto_fixed: list[ProposedWrite] = []
+
+    for af in analyzed:
+        f = af.finding
+        risk: Literal["low", "high"] = (
+            "high" if f.severity in ESCALATE_SEVERITIES else "low"
+        )
+        write = ProposedWrite(
+            action=f"remediate_{f.detector_id}",
+            target_arn=f.resource_arn,
+            payload={"recommendation": f.recommendation},
+            requested_by="decision_router",
+            justification=af.rationale or f.recommendation,
+            risk_level=risk,
+        )
+        if risk == "high":
+            pending.append(write)
+        else:
+            auto_fixed.append(write)
+
+    logger.info(
+        "graph.decision_router",
+        run_id=state["run_id"],
+        escalated=len(pending),
+        auto_fixed=len(auto_fixed),
+    )
+    return {"pending_writes": pending, "auto_fixed": auto_fixed}
 
 
 # ---------------------------------------------------------------------------

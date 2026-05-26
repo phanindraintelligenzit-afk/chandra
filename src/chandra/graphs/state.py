@@ -58,4 +58,5 @@ class ChandraState(TypedDict, total=False):
     briefing_json: dict[str, Any]
     errors: Annotated[list[dict[str, Any]], add]
     pending_writes: Annotated[list[ProposedWrite], add]
+    auto_fixed: Annotated[list[ProposedWrite], add]
     approvals: Annotated[list[ApprovalDecision], add]

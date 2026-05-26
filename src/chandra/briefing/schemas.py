@@ -93,6 +93,7 @@ class ProposedWrite(BaseModel):
     payload: dict
     requested_by: str
     justification: str
+    risk_level: Literal["low", "high"] = "high"
 
 
 class ApprovalDecision(BaseModel):

@@ -13,6 +13,7 @@ from chandra.graphs.nodes import (
     analyze,
     approval_node,
     compose_briefing,
+    decision_router,
     ingest_observations,
     kra_supervisor,
     observe_compliance,
@@ -74,6 +75,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("observe_performance", observe_performance)
     graph.add_node("observe_reliability", observe_reliability)
     graph.add_node("analyze", analyze)
+    graph.add_node("decision_router", decision_router)
     graph.add_node("compose_briefing", compose_briefing)
     graph.add_node("approval_node", approval_node)
     graph.add_node("persist", persist)
@@ -97,7 +99,8 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     for kra in ("cost", "security", "compliance", "performance", "reliability"):
         graph.add_edge(f"observe_{kra}", "analyze")
 
-    graph.add_edge("analyze", "compose_briefing")
+    graph.add_edge("analyze", "decision_router")
+    graph.add_edge("decision_router", "compose_briefing")
 
     def route_to_approval(state: ChandraState) -> str:
         pending = state.get("pending_writes", []) or []
