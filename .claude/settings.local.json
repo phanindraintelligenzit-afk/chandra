@@ -4,7 +4,12 @@
       "PowerShell(Get-ChildItem -Path \"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\src\\\\chandra\" -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | ForEach-Object { $_ -replace [regex]::Escape\\(\"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\\"\\), \"\" } | Sort-Object)",
       "PowerShell(Get-ChildItem -Path \"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\tests\" -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | ForEach-Object { $_ -replace [regex]::Escape\\(\"D:\\\\Projects\\\\original_chandra\\\\chandra\\\\\"\\), \"\" } | Sort-Object)",
       "Bash(uv run *)",
-      "Bash(uv sync *)"
+      "Bash(uv sync *)",
+      "Bash(python -m pytest tests/unit/test_observation_ingestion.py::TestIngestObservations::test_empty_account_no_observations -v)",
+      "Bash(tee /tmp/test_output.txt)",
+      "Bash(python *)",
+      "Bash(python -m pytest tests/unit/test_observation_ingestion.py -v)",
+      "Read(//tmp/**)"
     ]
   }
 }

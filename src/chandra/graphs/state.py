@@ -10,7 +10,13 @@ from __future__ import annotations
 from operator import add
 from typing import Annotated, Any, TypedDict
 
-from chandra.briefing.schemas import AnalyzedFinding, ApprovalDecision, Finding, ProposedWrite
+from chandra.briefing.schemas import (
+    AnalyzedFinding,
+    ApprovalDecision,
+    Finding,
+    Observation,
+    ProposedWrite,
+)
 
 
 def merge_raw_findings(
@@ -45,6 +51,7 @@ class ChandraState(TypedDict, total=False):
     regions: list[str]
     inventory: Annotated[dict[str, list[dict[str, Any]]], merge_inventory]
     raw_findings: Annotated[dict[str, list[Finding]], merge_raw_findings]
+    observations: Annotated[list[Observation], add]
     analyzed_findings: list[AnalyzedFinding]
     scorecard: dict[str, int]
     briefing_md: str

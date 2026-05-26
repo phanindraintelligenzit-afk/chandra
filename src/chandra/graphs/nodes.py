@@ -33,13 +33,13 @@ from chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
-from chandra.briefing.schemas import AnalyzedFinding, ApprovalDecision, Finding
+from chandra.briefing.schemas import AnalyzedFinding, ApprovalDecision, Finding, Observation
 from chandra.db.models import Briefing, Finding as FindingRow, Run
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
 from chandra.logging import get_logger
 from chandra.tools import compliance, cost, performance, reliability, security
-from chandra.tools.base import DetectorContext
+from chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
 
@@ -139,6 +139,76 @@ def observe_performance(state: ChandraState) -> dict[str, Any]:
 
 def observe_reliability(state: ChandraState) -> dict[str, Any]:
     return _run_observer("reliability", state)
+
+
+# ---------------------------------------------------------------------------
+# Ingest observations (CloudWatch + EventBridge)
+# ---------------------------------------------------------------------------
+
+
+def ingest_observations(state: ChandraState) -> dict[str, Any]:
+    """Ingest CloudWatch alarms and EventBridge rules into state.observations."""
+    ctx = DetectorContext(
+        run_id=state["run_id"],
+        account_id=state["account_id"],
+        regions=list(state.get("regions", [])),
+    )
+    observations: list[Observation] = []
+
+    for region in ctx.regions:
+        # CloudWatch alarms
+        with detector_guard(ctx, detector_id="OBS-cloudwatch-alarms", region=region):
+            cw = ctx.factory.client("cloudwatch", region=region)
+            for page in paginate(cw, "describe_alarms"):
+                for alarm in page.get("MetricAlarms", []):
+                    observations.append(
+                        Observation(
+                            source="cloudwatch_alarm",
+                            resource_arn=alarm["AlarmArn"],
+                            region=region,
+                            name=alarm["AlarmName"],
+                            state=alarm["StateValue"],
+                            observed_at=alarm.get(
+                                "StateUpdatedTimestamp", datetime.now(timezone.utc)
+                            ),
+                            raw={
+                                "namespace": alarm.get("Namespace", ""),
+                                "metric_name": alarm.get("MetricName", ""),
+                                "threshold": alarm.get("Threshold"),
+                                "comparison_operator": alarm.get("ComparisonOperator", ""),
+                            },
+                        )
+                    )
+
+        # EventBridge rules
+        with detector_guard(ctx, detector_id="OBS-eventbridge-rules", region=region):
+            eb = ctx.factory.client("events", region=region)
+            for page in paginate(eb, "list_rules"):
+                for rule in page.get("Rules", []):
+                    observations.append(
+                        Observation(
+                            source="eventbridge_rule",
+                            resource_arn=rule["Arn"],
+                            region=region,
+                            name=rule["Name"],
+                            state=rule["State"],
+                            observed_at=datetime.now(timezone.utc),
+                            raw={
+                                "event_bus_name": rule.get("EventBusName", "default"),
+                                "schedule_expression": rule.get("ScheduleExpression", ""),
+                                "event_pattern": rule.get("EventPattern", ""),
+                                "description": rule.get("Description", ""),
+                            },
+                        )
+                    )
+
+    logger.info(
+        "graph.ingest_observations",
+        run_id=state["run_id"],
+        count=len(observations),
+        errors=len(ctx.errors),
+    )
+    return {"observations": observations, "errors": ctx.errors}
 
 
 # ---------------------------------------------------------------------------

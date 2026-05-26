@@ -13,6 +13,7 @@ from chandra.graphs.nodes import (
     approval_node,
     compose_briefing,
     fanout_observers,
+    ingest_observations,
     observe_compliance,
     observe_cost,
     observe_performance,
@@ -64,6 +65,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph: StateGraph[ChandraState] = StateGraph(ChandraState)
 
     graph.add_node("onboard_account", onboard_account)
+    graph.add_node("ingest_observations", ingest_observations)
     graph.add_node("observe_cost", observe_cost)
     graph.add_node("observe_security", observe_security)
     graph.add_node("observe_compliance", observe_compliance)
@@ -75,8 +77,9 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("persist", persist)
 
     graph.add_edge(START, "onboard_account")
+    graph.add_edge("onboard_account", "ingest_observations")
     graph.add_conditional_edges(
-        "onboard_account",
+        "ingest_observations",
         fanout_observers,
         [
             "observe_cost",

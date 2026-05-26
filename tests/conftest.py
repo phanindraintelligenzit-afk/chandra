@@ -72,3 +72,13 @@ def rds(aws: None) -> object:
 @pytest.fixture
 def cloudtrail(aws: None) -> object:
     return boto3.client("cloudtrail", region_name="us-east-1")
+
+
+@pytest.fixture
+def cloudwatch(aws: None) -> object:
+    return boto3.client("cloudwatch", region_name="us-east-1")
+
+
+@pytest.fixture
+def events(aws: None) -> object:
+    return boto3.client("events", region_name="us-east-1")

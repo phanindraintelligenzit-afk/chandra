@@ -104,3 +104,20 @@ class ApprovalDecision(BaseModel):
     reviewer: str
     reason: str
     decided_at: datetime
+
+
+ObservationSource = Literal["cloudwatch_alarm", "eventbridge_rule"]
+
+
+class Observation(BaseModel):
+    """Live AWS event state snapshot — alarm or rule status at observation time."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: ObservationSource
+    resource_arn: str = Field(min_length=1)
+    region: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    observed_at: datetime
+    raw: dict = Field(default_factory=dict)
