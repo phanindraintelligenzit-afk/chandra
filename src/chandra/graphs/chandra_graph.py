@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from chandra.config import settings
 from chandra.graphs.nodes import (
+    action_executor_node,
     _route_kra_workers,
     analyze,
     approval_node,
@@ -79,6 +80,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("compose_briefing", compose_briefing)
     graph.add_node("approval_node", approval_node)
     graph.add_node("persist", persist)
+    graph.add_node("action_executor", action_executor_node)
 
     graph.add_edge(START, "onboard_account")
     graph.add_edge("onboard_account", "ingest_observations")
@@ -99,6 +101,9 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     for kra in ("cost", "security", "compliance", "performance", "reliability"):
         graph.add_edge(f"observe_{kra}", "analyze")
 
+    graph.add_edge("analyze", "action_executor")
+    graph.add_edge("action_executor", "compose_briefing")
+    graph.add_edge("compose_briefing", "persist")
     graph.add_edge("analyze", "decision_router")
     graph.add_edge("decision_router", "compose_briefing")
 
