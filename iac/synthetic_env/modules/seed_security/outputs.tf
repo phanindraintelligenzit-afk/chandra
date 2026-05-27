@@ -1,8 +1,9 @@
-output "seeds" {
-  value = {
-    "SEC-001-public-s3"     = aws_s3_bucket.leaky.arn
-    "SEC-002-open-sg-ssh"   = aws_security_group.open_ssh.arn
-    "SEC-003-stale-key"     = aws_iam_user.stale.arn
-    "SEC-004-wildcard-iam"  = aws_iam_policy.wildcard.arn
-  }
+output "active_fixtures" {
+  description = "Array of active KRA-02 Security & IAM Drift fixture IDs currently deployed."
+  value = compact([
+    var.inject_sg_open_ssh_world ? "CHANDRA-KRA02-051" : "",
+    var.inject_unencrypted_rds ? "CHANDRA-KRA02-052" : "",
+    var.inject_cloudtrail_stop_logging ? "CHANDRA-KRA02-053" : "",
+    var.inject_ec2_no_ssm_coverage ? "CHANDRA-KRA02-054" : ""
+  ])
 }
