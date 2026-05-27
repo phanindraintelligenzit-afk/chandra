@@ -3,7 +3,7 @@
 Subcommands:
 
 * ``chandra run``    — execute the LangGraph pipeline end-to-end against an account.
-* ``chandra eval``   — run the eval harness against the synthetic env.
+* ``chandra eval``   — run the eval harness against the synthetic env or offline fixture.
 * ``chandra render`` — re-render the most recent briefing for an account from Postgres.
 """
 
@@ -100,11 +100,17 @@ def run(
 @app.command("eval")
 def eval_cmd(
     account: str = typer.Option(
-        ...,
+        None,
         "--account",
         "-a",
         help="AWS account id of the synthetic env.",
         envvar="SYNTHETIC_ACCOUNT_ID",
+    ),
+    fixture: str = typer.Option(
+        None,
+        "--fixture",
+        "-f",
+        help="Path to JSONL fixture file for offline eval (no AWS needed).",
     ),
     manifest: Path = typer.Option(
         Path("evals/seed_manifest.yaml"),
@@ -123,11 +129,19 @@ def eval_cmd(
         help="Where to write the eval report.",
     ),
 ) -> None:
-    """Run the eval harness against the synthetic env."""
+    """Run the eval harness against the synthetic env or offline fixture.
+    
+    OFFLINE MODE (no AWS needed):
+        chandra eval --fixture evals/fixtures/baseline_v1.jsonl
+    
+    LIVE MODE (requires AWS account):
+        chandra eval --account 123456789 --apply
+    """
     from evals.harness import run_eval  # local import: harness pulls in heavy deps
 
     exit_code = run_eval(
         account_id=account,
+        fixture_path=fixture,
         manifest_path=manifest,
         apply_terraform=apply_terraform,
         report_dir=report_dir,
