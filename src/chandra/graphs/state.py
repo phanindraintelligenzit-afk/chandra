@@ -10,7 +10,13 @@ from __future__ import annotations
 from operator import add
 from typing import Annotated, Any, TypedDict
 
-from chandra.briefing.schemas import AnalyzedFinding, Finding
+from chandra.briefing.schemas import (
+    AnalyzedFinding,
+    ApprovalDecision,
+    Finding,
+    Observation,
+    ProposedWrite,
+)
 
 
 def merge_raw_findings(
@@ -39,12 +45,14 @@ def merge_inventory(
 
 class ChandraState(TypedDict, total=False):
     """Full graph state. ``total=False`` so partial node returns are legal."""
+    assume_role_arn: str | None = None
 
     run_id: str
     account_id: str
     regions: list[str]
     inventory: Annotated[dict[str, list[dict[str, Any]]], merge_inventory]
     raw_findings: Annotated[dict[str, list[Finding]], merge_raw_findings]
+    observations: Annotated[list[Observation], add]
     analyzed_findings: list[AnalyzedFinding]
     scorecard: dict[str, int]
     briefing_md: str

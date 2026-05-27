@@ -1,4 +1,4 @@
-.PHONY: help install fmt lint type test check run eval dashboard tf-apply tf-destroy db-up db-down migrate smoke clean
+.PHONY: help install fmt lint type test check run eval dashboard tf-apply tf-destroy db-up db-down migrate smoke clean eval-offline
 
 PYTHON ?= python
 UV ?= uv
@@ -79,3 +79,6 @@ uv run pytest -m integration tests/integration/test_chaos.py -v
 # Chaos resilience tests (nightly only)
 chaos:
 uv run pytest -m integration tests/integration/test_chaos.py -v
+# Offline eval - no AWS, no Terraform required
+eval-offline:
+	$(UV) run python -m chandra.cli eval --fixture evals/fixtures/baseline_v1.jsonl

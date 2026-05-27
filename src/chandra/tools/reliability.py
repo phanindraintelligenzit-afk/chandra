@@ -10,6 +10,7 @@ Detector IDs:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from chandra.briefing.schemas import Finding
@@ -225,8 +226,14 @@ ALL_DETECTORS = (
 )
 
 
-def run_all(ctx: DetectorContext) -> list[Finding]:
+async def _run_all_async(ctx: DetectorContext) -> list[Finding]:
+    tasks = [asyncio.to_thread(fn, ctx) for fn in ALL_DETECTORS]
+    results = await asyncio.gather(*tasks)
     out: list[Finding] = []
-    for fn in ALL_DETECTORS:
-        out.extend(fn(ctx))
+    for result in results:
+        out.extend(result)
     return out
+
+
+def run_all(ctx: DetectorContext) -> list[Finding]:
+    return asyncio.run(_run_all_async(ctx))
