@@ -10,9 +10,13 @@ from langgraph.graph import END, START, StateGraph
 from chandra.config import settings
 from chandra.graphs.nodes import (
     action_executor_node,
+    _route_kra_workers,
     analyze,
+    approval_node,
     compose_briefing,
-    fanout_observers,
+    decision_router,
+    ingest_observations,
+    kra_supervisor,
     observe_compliance,
     observe_cost,
     observe_performance,
@@ -64,20 +68,26 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph: StateGraph[ChandraState] = StateGraph(ChandraState)
 
     graph.add_node("onboard_account", onboard_account)
+    graph.add_node("ingest_observations", ingest_observations)
+    graph.add_node("kra_supervisor", kra_supervisor)
     graph.add_node("observe_cost", observe_cost)
     graph.add_node("observe_security", observe_security)
     graph.add_node("observe_compliance", observe_compliance)
     graph.add_node("observe_performance", observe_performance)
     graph.add_node("observe_reliability", observe_reliability)
     graph.add_node("analyze", analyze)
+    graph.add_node("decision_router", decision_router)
     graph.add_node("compose_briefing", compose_briefing)
+    graph.add_node("approval_node", approval_node)
     graph.add_node("persist", persist)
     graph.add_node("action_executor", action_executor_node)
 
     graph.add_edge(START, "onboard_account")
+    graph.add_edge("onboard_account", "ingest_observations")
+    graph.add_edge("ingest_observations", "kra_supervisor")
     graph.add_conditional_edges(
-        "onboard_account",
-        fanout_observers,
+        "kra_supervisor",
+        _route_kra_workers,
         [
             "observe_cost",
             "observe_security",
@@ -94,6 +104,19 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("analyze", "action_executor")
     graph.add_edge("action_executor", "compose_briefing")
     graph.add_edge("compose_briefing", "persist")
+    graph.add_edge("analyze", "decision_router")
+    graph.add_edge("decision_router", "compose_briefing")
+
+    def route_to_approval(state: ChandraState) -> str:
+        pending = state.get("pending_writes", []) or []
+        return "approval_node" if pending else "persist"
+
+    graph.add_conditional_edges(
+        "compose_briefing",
+        route_to_approval,
+        ["approval_node", "persist"],
+    )
+    graph.add_edge("approval_node", "persist")
     graph.add_edge("persist", END)
 
     saver = checkpointer if checkpointer is not None else _build_checkpointer()

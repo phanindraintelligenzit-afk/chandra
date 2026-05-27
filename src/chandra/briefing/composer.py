@@ -28,6 +28,7 @@ from chandra.briefing.schemas import (
 )
 from chandra.config import settings
 from chandra.logging import get_logger
+from chandra.observability.callbacks import UsageCapture
 
 logger = get_logger(__name__)
 
@@ -40,6 +41,9 @@ KRA_TIE_BREAK_ORDER = {
     "performance": 3,
     "cost": 4,
 }
+
+# Load KRA context once at module initialization
+_KRA_CONTEXT = (PROMPTS_DIR / "kra_context.md").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +110,11 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         llm = ChatBedrockConverse(
             model=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
-            temperature=0.0,
-            max_tokens=2048,
+            # temperature=0.0,
+            # max_tokens=2048,
         )
-        system = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
+        analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
+        system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
         payload = [
             {
                 "detector_id": f.detector_id,
@@ -123,11 +128,13 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             }
             for f in findings
         ]
+        cb = UsageCapture()
         response = llm.invoke(
             [
                 ("system", system),
                 ("user", json.dumps({"findings": payload}, default=str)),
-            ]
+            ],
+            config={"callbacks": [cb]}
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         ranked = json.loads(text).get("ranked", [])
@@ -191,10 +198,11 @@ def compose_executive_summary(
         llm = ChatBedrockConverse(
             model=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
-            temperature=0.2,
-            max_tokens=512,
+            # temperature=0.2,
+            # max_tokens=512,
         )
-        system = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
+        briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
+        system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
         top = [
             {
                 "rank": a.rank,
@@ -211,11 +219,13 @@ def compose_executive_summary(
             "top_findings": top,
             "total_findings": len(analyzed),
         }
+        cb = UsageCapture()
         response = llm.invoke(
             [
                 ("system", system),
                 ("user", json.dumps(user_payload, default=str)),
-            ]
+            ],
+            config={"callbacks": [cb]}
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         bullets = [

@@ -14,15 +14,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential libpq-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-WORKDIR /build
-COPY pyproject.toml README.md ./
-COPY src ./src
+WORKDIR /app
 
-RUN uv venv /opt/venv \
-    && . /opt/venv/bin/activate \
-    && uv pip install --no-cache .
+# Copy dependency manifests first (layer-cache friendly)
+COPY pyproject.toml uv.lock README.md ./
+
+# Install only third-party dependencies; skip building the local package
+# (project uses a flat layout, no src/chandra package to install)
+RUN uv sync --frozen --no-dev --no-install-project
 
 ############################
 # Stage 2 — runtime
@@ -31,7 +33,9 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:${PATH}"
+    # Gradio config
+    GRADIO_SERVER_NAME=0.0.0.0 \
+    GRADIO_SERVER_PORT=7861
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq5 ca-certificates \
@@ -39,15 +43,24 @@ RUN apt-get update \
     && groupadd --gid 10001 chandra \
     && useradd  --uid 10001 --gid chandra --home /home/chandra --create-home --shell /bin/bash chandra
 
-COPY --from=builder /opt/venv /opt/venv
-COPY --chown=chandra:chandra src /app/src
-COPY --chown=chandra:chandra iac /app/iac
-COPY --chown=chandra:chandra evals /app/evals
+# Copy uv binary so we can use `uv run` at container start
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Copy venv from builder
+COPY --from=builder /app/.venv /app/.venv
+
+# Copy all project files
+COPY . /app/
 
 WORKDIR /app
 USER chandra
 
-ENV PYTHONPATH=/app/src
+ENV PYTHONPATH=/app \
+    PATH="/app/.venv/bin:${PATH}" \
+    GRADIO_SERVER_NAME=0.0.0.0 \
+    GRADIO_SERVER_PORT=7861
 
-ENTRYPOINT ["chandra"]
-CMD ["--help"]
+EXPOSE 7861
+EXPOSE 6001
+
+CMD ["/app/start.sh"]

@@ -42,6 +42,9 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    otel_endpoint: str | None = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")
+    otel_environment: str = Field(default="production", alias="OTEL_ENVIRONMENT")
+
     synthetic_account_id: str | None = Field(default=None, alias="SYNTHETIC_ACCOUNT_ID")
 
     boto_max_attempts: int = Field(default=10, alias="BOTO_MAX_ATTEMPTS")

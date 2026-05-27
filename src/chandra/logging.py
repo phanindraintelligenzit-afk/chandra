@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-
+import json
 import structlog
 
 from chandra.config import settings
@@ -12,7 +12,7 @@ from chandra.config import settings
 _configured = False
 
 
-def configure_logging() -> None:
+def configure_logging(log_level: str | None = None) -> None:
     """Idempotent global structlog configuration.
 
     Called automatically the first time ``get_logger`` is invoked.
@@ -21,7 +21,8 @@ def configure_logging() -> None:
     if _configured:
         return
 
-    level = getattr(logging, settings.log_level, logging.INFO)
+    level_str = log_level or settings.log_level
+    level = getattr(logging, level_str, logging.INFO)
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stderr,
@@ -49,3 +50,14 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog bound logger."""
     configure_logging()
     return structlog.get_logger(name)  # type: ignore[no-any-return]
+
+def audit_log(agent, action, output):
+ 
+    log = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "agent_id": agent,
+        "action": action,
+        "output": output
+    }
+
+    logger.info(json.dumps(log))

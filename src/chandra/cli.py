@@ -3,7 +3,7 @@
 Subcommands:
 
 * ``chandra run``    — execute the LangGraph pipeline end-to-end against an account.
-* ``chandra eval``   — run the eval harness against the synthetic env.
+* ``chandra eval``   — run the eval harness against the synthetic env or offline fixture.
 * ``chandra render`` — re-render the most recent briefing for an account from Postgres.
 """
 
@@ -23,6 +23,7 @@ from chandra.db.models import Briefing, Run
 from chandra.db.session import session_scope
 from chandra.graphs.chandra_graph import build_graph
 from chandra.logging import get_logger
+from chandra.observability import configure_observability
 
 app = typer.Typer(
     name="chandra",
@@ -99,11 +100,17 @@ def run(
 @app.command("eval")
 def eval_cmd(
     account: str = typer.Option(
-        ...,
+        None,
         "--account",
         "-a",
         help="AWS account id of the synthetic env.",
         envvar="SYNTHETIC_ACCOUNT_ID",
+    ),
+    fixture: str = typer.Option(
+        None,
+        "--fixture",
+        "-f",
+        help="Path to JSONL fixture file for offline eval (no AWS needed).",
     ),
     manifest: Path = typer.Option(
         Path("evals/seed_manifest.yaml"),
@@ -122,11 +129,19 @@ def eval_cmd(
         help="Where to write the eval report.",
     ),
 ) -> None:
-    """Run the eval harness against the synthetic env."""
+    """Run the eval harness against the synthetic env or offline fixture.
+    
+    OFFLINE MODE (no AWS needed):
+        chandra eval --fixture evals/fixtures/baseline_v1.jsonl
+    
+    LIVE MODE (requires AWS account):
+        chandra eval --account 123456789 --apply
+    """
     from evals.harness import run_eval  # local import: harness pulls in heavy deps
 
     exit_code = run_eval(
         account_id=account,
+        fixture_path=fixture,
         manifest_path=manifest,
         apply_terraform=apply_terraform,
         report_dir=report_dir,
@@ -178,6 +193,11 @@ def _print_scorecard(scorecard: dict[str, int]) -> None:
 
 def main() -> None:
     """Console-script entrypoint."""
+    configure_observability(
+        otel_endpoint=settings.otel_endpoint,
+        log_level=settings.log_level,
+        environment=settings.otel_environment,
+    )
     if settings.log_level == "DEBUG":
         logger.debug("cli.start", argv=sys.argv)
     app()
