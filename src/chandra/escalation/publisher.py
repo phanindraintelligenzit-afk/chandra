@@ -1,6 +1,6 @@
 import json
-import boto3
 
+from chandra.aws.client_factory import get_default_factory
 from chandra.escalation.schemas import (
     EscalationPayload,
     EscalationResult,
@@ -9,9 +9,10 @@ from chandra.escalation.formatter import format_escalation_message
 
 
 class SNSPublisher:
-    def __init__(self, topic_arn: str):
+    def __init__(self, topic_arn: str, region: str = "us-east-1"):
         self.topic_arn = topic_arn
-        self.client = boto3.client("sns")
+        factory = get_default_factory()
+        self.client = factory.client("sns", region=region)
 
     def publish(self, payload: EscalationPayload) -> EscalationResult:
         try:

@@ -8,27 +8,31 @@ Handles dry-run mode, audit logging, and error handling.
 import logging
 from datetime import datetime
 from typing import Any, Dict
- 
-import boto3
- 
-logger = logging.getLogger(__name__)
- 
- 
+
+from chandra.aws.client_factory import get_default_factory
+from chandra.logging import get_logger
+
+logger = get_logger(__name__)
+
+
 class ActionExecutor:
     """Executes AWS remediation actions."""
- 
-    def __init__(self, dry_run: bool = True):
+
+    def __init__(self, dry_run: bool = True, region: str = "us-east-1"):
         """
         Initialize the executor.
- 
+
         Args:
             dry_run: If True, show what would happen without doing it.
                      If False, actually make changes.
+            region: AWS region for the executor.
         """
         self.dry_run = dry_run
-        self.s3_client = boto3.client("s3")
-        self.iam_client = boto3.client("iam")
-        self.ec2_client = boto3.client("ec2")
+        self.region = region
+        factory = get_default_factory()
+        self.s3_client = factory.client("s3", region=region)
+        self.iam_client = factory.client("iam", region=region)
+        self.ec2_client = factory.client("ec2", region=region)
  
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -138,9 +142,10 @@ class ActionExecutor:
 # LangGraph node function
 def action_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node that executes remediation actions."""
-    executor = ActionExecutor(dry_run=state.get("dry_run", True))
+    region = state.get("region", "us-east-1")
+    executor = ActionExecutor(dry_run=state.get("dry_run", True), region=region)
     result = executor.run(state)
-    
+
     return {
         "action_result": result,
         "action_executed": result["action_executed"]

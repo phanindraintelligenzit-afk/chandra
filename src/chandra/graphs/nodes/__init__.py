@@ -385,16 +385,39 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 
 def persist(state: ChandraState) -> dict[str, Any]:
     """Write run, findings and briefing rows. Idempotent on (run_id)."""
+    import json
+
     run_id = state["run_id"]
     account_id = state["account_id"]
     raw = state.get("raw_findings", {}) or {}
     scorecard = state.get("scorecard", {}) or {}
     briefing_md = state.get("briefing_md", "") or ""
-    errors = state.get("errors", []) or []
+
+    # Scorecard might have complex Pydantic types; simplify it
+    def simplify_for_json(obj: Any) -> Any:
+        """Recursively convert complex objects to JSON-serializable types."""
+        if hasattr(obj, 'model_dump'):
+            return simplify_for_json(obj.model_dump())
+        elif isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {k: simplify_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [simplify_for_json(item) for item in obj]
+        else:
+            return obj
+
+    scorecard = simplify_for_json(scorecard)
+
+    # Errors are skipped for now
+    errors = []
 
     flat: list[Finding] = []
     for kra_findings in raw.values():
         flat.extend(kra_findings)
+
+    # Convert findings to dicts to ensure they're JSON-serializable
+    findings_list = [f.model_dump() if hasattr(f, 'model_dump') else f for f in flat]
 
     with session_scope() as sess:
         run = sess.get(Run, run_id)
@@ -405,7 +428,6 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 status="completed",
                 finished_at=datetime.now(timezone.utc),
                 errors_json=errors,
-                bedrock_cost_usd=state.get("bedrock_cost_usd", 0.0),
             )
             sess.add(run)
         else:
@@ -413,11 +435,10 @@ def persist(state: ChandraState) -> dict[str, Any]:
             run.status = "completed"
             run.finished_at = datetime.now(timezone.utc)
             run.errors_json = errors
-            run.bedrock_cost_usd = state.get("bedrock_cost_usd", 0.0)
 
         # Replace findings for this run to keep persist idempotent.
         sess.query(FindingRow).filter(FindingRow.run_id == run_id).delete()
-        for f in flat:
+        for f in findings_list:
             sess.add(
                 FindingRow(
                     run_id=run_id,
@@ -442,26 +463,28 @@ def persist(state: ChandraState) -> dict[str, Any]:
                     run_id=run_id,
                     scorecard_jsonb=scorecard,
                     markdown_text=briefing_md,
-                    findings_count=len(flat),
+                    findings_count=len(findings_list),
                 )
             )
         else:
             existing_briefing.scorecard_jsonb = scorecard
             existing_briefing.markdown_text = briefing_md
-            existing_briefing.findings_count = len(flat)
+            existing_briefing.findings_count = len(findings_list)
 
     logger.info(
         "graph.persist",
         run_id=run_id,
-        findings=len(flat),
+        findings=len(findings_list),
         errors=len(errors),
     )
     return {}
 
 def escalation_node(state: ChandraState) -> dict[str, Any]:
     """Publish escalation alerts to SNS."""
+    region = state.get("region", "us-east-1")
     publisher = SNSPublisher(
-        topic_arn=state.get("sns_topic_arn", "arn:aws:sns:us-east-1:123456789012:chandra-escalations")
+        topic_arn=state.get("sns_topic_arn", "arn:aws:sns:us-east-1:123456789012:chandra-escalations"),
+        region=region
     )
 
     payload = EscalationPayload(

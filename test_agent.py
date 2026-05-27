@@ -256,22 +256,22 @@ class OrchestratorAgent:
 
 # ── Entry point ────────────────────────────────────────────────────
 
-# if __name__ == "__main__":
-#     orchestrator = OrchestratorAgent(max_iterations=5)
+if __name__ == "__main__":
+    orchestrator = OrchestratorAgent(max_iterations=5)
 
-#     action_payload = {
-#         "actionName": "Deploy Production RDS Instance with Terraform",
-#         "actionDescription": (
-#             "Deploy a single-AZ PostgreSQL RDS instance (REL-001) tagged as production "
-#             "in the default VPC using Terraform. This provisions the database infrastructure "
-#             "with storage encryption enabled and applies production environment tags."
-#         ),
-#         "steps": [],
-#     }
+    action_payload = {
+        "actionName": "Deploy Production RDS Instance with Terraform",
+        "actionDescription": (
+            "Deploy a single-AZ PostgreSQL RDS instance (REL-001) tagged as production "
+            "in the default VPC using Terraform. This provisions the database infrastructure "
+            "with storage encryption enabled and applies production environment tags."
+        ),
+        "steps": [],
+    }
 
-#     response = orchestrator.RunPipeline(
-#         action=action_payload,
-#         reference_folder="reference_aws",        # ← Set your reference folder here
-#         command_timeout=1600,                    # Increased for Terraform operations
-#     )
-#     print(response.model_dump_json(indent=2))
+    response = orchestrator.RunPipeline(
+        action=action_payload,
+        reference_folder="iac",        # ← Set your reference folder here
+        command_timeout=1600,                    # Increased for Terraform operations
+    )
+    print(response.model_dump_json(indent=2))
