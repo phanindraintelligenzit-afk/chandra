@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-
+import json
 import structlog
 
 from chandra.config import settings
@@ -50,3 +50,14 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog bound logger."""
     configure_logging()
     return structlog.get_logger(name)  # type: ignore[no-any-return]
+
+def audit_log(agent, action, output):
+ 
+    log = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "agent_id": agent,
+        "action": action,
+        "output": output
+    }
+
+    logger.info(json.dumps(log))

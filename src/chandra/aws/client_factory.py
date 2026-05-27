@@ -29,11 +29,18 @@ class AwsClientFactory:
         default_region: str | None = None,
         max_attempts: int | None = None,
         retry_mode: str | None = None,
+        fast: bool = False,
     ) -> None:
         self._profile = profile or settings.aws_profile
         self._default_region = default_region or settings.aws_default_region
-        self._max_attempts = max_attempts or settings.boto_max_attempts
-        self._retry_mode = retry_mode or settings.boto_retry_mode
+        self._fast = fast
+
+        if fast:
+            self._max_attempts = 1
+            self._retry_mode = "legacy"
+        else:
+            self._max_attempts = max_attempts or settings.boto_max_attempts
+            self._retry_mode = retry_mode or settings.boto_retry_mode
 
         self._lock = threading.Lock()
         self._session: boto3.session.Session | None = None
@@ -57,6 +64,9 @@ class AwsClientFactory:
         return self._session
 
     def _boto_config(self) -> Config:
+        if self._fast:
+            return Config(user_agent_extra="chandra/0.1")
+
         return Config(
             retries={"max_attempts": self._max_attempts, "mode": self._retry_mode},
             user_agent_extra="chandra/0.1",
@@ -71,7 +81,7 @@ class AwsClientFactory:
             with self._lock:
                 client = self._clients.get(key)
                 if client is None:
-                    client = self.session.client(
+                    client = boto3.client(
                         service_name=service,
                         region_name=region,
                         config=self._boto_config(),

@@ -19,6 +19,7 @@ from digitalworker_agents.analyzer_agent import AnalyzerAgent, AnalyzerPipelineR
 from digitalworker_agents.generator_agent import GeneratorAgent, GeneratorPipelineResponse
 from digitalworker_agents.executor_agent import ExecutorAgent, ExecutorPipelineResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
+from tools.aws_cloud_tools.tool_findings import run_all_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
 
 logging.basicConfig(
@@ -53,6 +54,23 @@ class PipelineRequest(BaseModel):
 def health():
     return {"status": "ok"}
 
+@app.get("/getDetectorIssues")
+async def get_detector_issues():
+    logger.info("GET /getDetectorIssues called")
+    try:
+        findings = await run_all_detectors()
+        if isinstance(findings, dict):
+            total_issues = sum(len(group) for group in findings.values())
+            output = findings
+        else:
+            total_issues = len(findings)
+            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
+
+        logger.info("Completed detectors: Found %d total issues", total_issues)
+        return JSONResponse(status_code=200, content={"status": "success", "output": output})
+    except Exception as exc:
+        logger.exception("Detector execution failed: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 @app.get("/getCostMetrics")
 async def get_cost_metrics(

@@ -1,91 +1,130 @@
-import asyncio
-import importlib
-import logging
+#!/usr/bin/env python3
+"""Ultra Simple + Full Compliance Runner (All KRAs) - Asyncio Optimized with JSON Export"""
+
 import os
-import time
+import sys
+import json
+import asyncio
+from pathlib import Path
+from dataclasses import asdict
+from collections import defaultdict
+from uuid import uuid4
+from src.chandra.briefing.schemas import Finding
+from src.chandra.logging import get_logger
+from src.chandra.tools.base import DetectorContext, detector_guard, paginate
+from src.chandra.aws.client_factory import AwsClientFactory
+
+logger = get_logger(__name__)
+
+logger.info("Script started")
 from dotenv import load_dotenv
 load_dotenv()
+logger.info("Env loaded")
 
 import boto3
-from tools.observability_tools import DetectorContext
 
-logger = logging.getLogger(__name__)
-
-
-class ClientFactory:
-    def client(self, service_name, region=None):
-        kwargs = {"region_name": region} if region else {}
-        return boto3.client(service_name, **kwargs)
+# ==================== ADD PROJECT ROOT TO PATH ====================
+project_root = str(Path(__file__).parent.resolve())
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 
-_MODULES = {
-    "compliance": "tools.observability_tools.compliance",
-    "security": "tools.observability_tools.security",
-    "reliability": "tools.observability_tools.reliability",
-    "performance": "tools.observability_tools.performance",
-    "cost": "tools.observability_tools.cost",
-}
-
-
-async def _run_one(name: str, account_id: str, regions: list) -> tuple[str, list]:
-    t0 = time.perf_counter()
-    logger.info(f"Running {name.upper()} detectors...")
+# ==================== ASYNC MODULE RUNNER ====================
+async def run_module(module_name: str, ctx: DetectorContext) -> list:
+    """Imports and runs a single module's run_all function in a background thread."""
+    logger.info("Starting %s detectors...", module_name.upper())
     try:
-        ctx = DetectorContext(
-            account_id=account_id,
-            regions=regions,
-            factory=ClientFactory(),
-        )
-        mod = importlib.import_module(_MODULES[name])
-        detectors = getattr(mod, "ALL_DETECTORS", None)
-
-        if detectors:
-            results = await asyncio.gather(
-                *[asyncio.to_thread(fn, ctx) for fn in detectors],
-                return_exceptions=True,
-            )
-            findings = []
-            for fn, result in zip(detectors, results):
-                if isinstance(result, Exception):
-                    logger.error(f"[{name.upper()}] {fn.__name__} error: {result}")
-                else:
-                    findings.extend(result)
+        # 1. Dynamically import the required module
+        if module_name == "compliance":
+            from src.chandra.tools.compliance import run_all
+        elif module_name == "cost":
+            from src.chandra.tools.cost import run_all
+        elif module_name == "performance":
+            from src.chandra.tools.performance import run_all
+        elif module_name == "reliability":
+            from src.chandra.tools.reliability import run_all
+        elif module_name == "security":
+            from src.chandra.tools.security import run_all
         else:
-            findings = await asyncio.to_thread(mod.run_all, ctx)
+            return []
 
-        elapsed = time.perf_counter() - t0
-        logger.info(f"Found {len(findings)} {name} issues ({elapsed:.1f}s)")
-        if findings:
-            for finding in findings:
-                logger.warning(f"  {name.upper()} Issue: {finding}")
-        return name, findings
+        # 2. Run the blocking, synchronous run_all function in a separate thread
+        findings = await asyncio.to_thread(run_all, ctx)
+        logger.info("Finished %s: Found %d issues", module_name.upper(), len(findings))
+        return findings
+
     except Exception as e:
-        logger.exception(f"Skipped {name} (not found or error): {e}")
-        return name, []
+        logger.exception("Skipped %s (not found or error)", module_name.upper())
+        return []
 
 
-def _fetch_enabled_regions() -> list[str]:
-    ec2 = boto3.client("ec2", region_name="us-east-1")
-    response = ec2.describe_regions(AllRegions=False)
-    return sorted(r["RegionName"] for r in response.get("Regions", []))
+async def run_all_detectors_async(ctx: DetectorContext) -> list:
+    """Creates concurrent tasks for all modules and gathers the results."""
+    modules = ["compliance", "security", "reliability", "performance", "cost"]
+    
+    # Create a list of concurrent tasks
+    tasks = [run_module(mod, ctx) for mod in modules]
+    
+    # Wait for all tasks to complete in parallel
+    results = await asyncio.gather(*tasks)
+    
+    # Flatten the list of lists into a single list of findings
+    all_findings = [finding for module_findings in results for finding in module_findings]
+    return all_findings
 
 
-async def run_all_detectors() -> list:
+# ==================== MAIN ====================
+async def run_all_detectors():
     account_id = os.getenv("SYNTHETIC_ACCOUNT_ID")
-    regions = await asyncio.to_thread(_fetch_enabled_regions)
+    if not account_id:
+        logger.error("SYNTHETIC_ACCOUNT_ID not found in .env")
+        sys.exit(1)
 
-    results = await asyncio.gather(
-        *[_run_one(name, account_id, regions) for name in _MODULES]
+    logger.info("Using Account ID: %s", account_id)
+
+    ctx = DetectorContext(
+        run_id=str(uuid4()),
+        account_id=account_id,
+        regions=[os.getenv("AWS_DEFAULT_REGION")],          # Add more regions if needed
+        factory=AwsClientFactory(fast=True)
     )
 
-    return [finding for _, findings in results for finding in findings]
+    # FIX: Await the coroutine directly instead of trying to start a new event loop
+    findings = await run_all_detectors_async(ctx)
 
+    logger.info("Total findings across all KRAs: %d", len(findings))
 
-# def main():
-#     findings = asyncio.run(run_all_detectors())
-#     print(findings)
+    # --- ROBUST JSON EXPORT LOGIC ---
+    if findings:
+        grouped_findings = defaultdict(list)
+        for finding in findings:
+            # Safely serialize regardless of whether it's Pydantic, a Dataclass, or a Dict
+            if hasattr(finding, "model_dump"):        # Pydantic v2
+                finding_dict = finding.model_dump()
+            elif hasattr(finding, "dict"):            # Pydantic v1
+                finding_dict = finding.dict()
+            elif hasattr(finding, "__dataclass_fields__"): # Standard python dataclass
+                finding_dict = asdict(finding)
+            elif isinstance(finding, dict):           # Already a dictionary
+                finding_dict = finding
+            else:                                     # Standard python object
+                finding_dict = vars(finding)
+                
+            # Safely get the KRA name for grouping
+            kra_key = finding_dict.get("kra", "unknown") if isinstance(finding_dict, dict) else getattr(finding, "kra", "unknown")
+            
+            # --- NEW: Filter out the evidence field ---
+            finding_dict.pop("evidence", None)
+            
+            grouped_findings[kra_key].append(finding_dict)
 
+        logger.info("Successfully grouped findings by KRA")
+        return grouped_findings
+    else:
+        logger.info("No findings generated to save.")
+        return {}
 
 # if __name__ == "__main__":
-#     main()
-#     print("\n=== SCRIPT FINISHED SUCCESSFULLY ===")
+#     asyncio.run(run_all_detectors())
+#     logger.info("Script finished successfully")
+    

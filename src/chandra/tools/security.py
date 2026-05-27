@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+import asyncio
 from typing import Any
 
 from chandra.briefing.schemas import Finding
@@ -575,6 +576,49 @@ def find_guardduty_threats(ctx: DetectorContext) -> list[Finding]:
 # SEC-008  IAM Access Analyzer active findings
 # ---------------------------------------------------------------------------
 
+def _paginate_list_findings_v2(aa: Any, analyzer_arn: str) -> Any:
+    if aa.can_paginate("list_findings_v2"):
+        yield from paginate(
+            aa,
+            "list_findings_v2",
+            analyzerArn=analyzer_arn,
+            filter={"status": {"eq": ["ACTIVE"]}},
+        )
+        return
+
+    next_token: str | None = None
+    while True:
+        kwargs = {
+            "analyzerArn": analyzer_arn,
+            "filter": {"status": {"eq": ["ACTIVE"]}},
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        resp = aa.list_findings_v2(**kwargs)
+        yield resp
+        next_token = resp.get("nextToken")
+        if not next_token:
+            break
+
+
+def _access_analyzer_findings_pages(aa: Any, analyzer_arn: str) -> Any:
+    try:
+        yield from paginate(
+            aa,
+            "list_findings",
+            analyzerArn=analyzer_arn,
+            filter={"status": {"eq": ["ACTIVE"]}},
+        )
+    except Exception as exc:
+        error_code = None
+        if hasattr(exc, "response"):
+            error_code = exc.response.get("Error", {}).get("Code")
+        if error_code == "ValidationException" and "ListFindingsV2" in str(exc):
+            yield from _paginate_list_findings_v2(aa, analyzer_arn)
+        else:
+            raise
+
+
 def find_access_analyzer_findings(ctx: DetectorContext) -> list[Finding]:
     """Surface ACTIVE findings from all IAM Access Analyzers in the account.
 
@@ -594,12 +638,7 @@ def find_access_analyzer_findings(ctx: DetectorContext) -> list[Finding]:
         analyzer_arn = analyzer["arn"]
         analyzer_name = analyzer["name"]
         with detector_guard(ctx, detector_id=detector_id, resource_arn=analyzer_arn):
-            for page in paginate(
-                aa,
-                "list_findings",
-                analyzerArn=analyzer_arn,
-                filter={"status": {"eq": ["ACTIVE"]}},
-            ):
+            for page in _access_analyzer_findings_pages(aa, analyzer_arn):
                 for aa_finding in page.get("findings", []):
                     finding_id = aa_finding.get("id", "unknown")
                     resource_arn = aa_finding.get("resource", finding_id)
@@ -834,9 +873,15 @@ ALL_DETECTORS = (
 )
 
 
+async def _run_all_async(ctx: DetectorContext) -> list[Finding]:
+    tasks = [asyncio.to_thread(fn, ctx) for fn in ALL_DETECTORS]
+    results = await asyncio.gather(*tasks)
+    out: list[Finding] = []
+    for result in results:
+        out.extend(result)
+    return out
+
+
 def run_all(ctx: DetectorContext) -> list[Finding]:
     """Run every security detector and concatenate findings."""
-    out: list[Finding] = []
-    for fn in ALL_DETECTORS:
-        out.extend(fn(ctx))
-    return out
+    return asyncio.run(_run_all_async(ctx))
