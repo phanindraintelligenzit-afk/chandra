@@ -1,0 +1,173 @@
+﻿{
+  "widgets": [
+    {
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 2,
+      "properties": {
+        "markdown": "# Chandra — Digital Cloud Engineer Dashboard\n[Open Chandra UI](https://chandra-ui.example.com)"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 3,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "TaskCompletionRate" ]
+        ],
+        "view": "singleValue",
+        "region": "us-east-1",
+        "title": "Task Completion Rate",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 6,
+      "y": 3,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "RecommendationAccuracy" ]
+        ],
+        "view": "singleValue",
+        "region": "us-east-1",
+        "title": "Recommendation Accuracy",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 3,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "MeanTimeToResolution" ]
+        ],
+        "view": "singleValue",
+        "region": "us-east-1",
+        "title": "Mean Time to Resolution (min)",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 1000
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 18,
+      "y": 3,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "ToolCallEfficiency" ]
+        ],
+        "view": "singleValue",
+        "region": "us-east-1",
+        "title": "Tool Call Efficiency",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 8,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "NodeLatency", { "stat": "p50" } ],
+          [ "...", { "stat": "p95" } ]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Node Latency (p50/p95)",
+        "yAxis": {
+          "left": {
+            "label": "Milliseconds"
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 8,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "TokensConsumed" ]
+        ],
+        "view": "timeSeries",
+        "stacked": true,
+        "region": "us-east-1",
+        "title": "Tokens Consumed (by Model)"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 15,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "NodeErrors" ]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Node Errors"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 15,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "Chandra", "CostPerRun" ]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Cost Per Run (7 days)",
+        "yAxis": {
+          "left": {
+            "label": "USD"
+          }
+        }
+      }
+    }
+  ]
+}

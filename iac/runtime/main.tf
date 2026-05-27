@@ -1,3 +1,5 @@
+﻿terraform {
+  required_version = ">= 1.0"
 terraform {
   required_version = ">= 1.5.0"
 
@@ -10,6 +12,13 @@ terraform {
 }
 
 provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_cloudwatch_dashboard" "chandra" {
+  dashboard_name = "Chandra"
+
+  dashboard_body = file("iac/{path.module}/dashboards/chandra.json")
   region = var.aws_region
 }
 
