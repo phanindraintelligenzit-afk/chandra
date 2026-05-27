@@ -50,6 +50,8 @@ from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
 from chandra.graphs.nodes.action_executor import action_executor_node
 from chandra.logging import get_logger
+from chandra.escalation.publisher import SNSPublisher
+from chandra.escalation.schemas import EscalationPayload
 from chandra.tools import compliance, cost, performance, reliability, security
 from chandra.tools.base import DetectorContext
  
@@ -461,4 +463,27 @@ def persist(state: ChandraState) -> dict[str, Any]:
         findings=len(flat),
         errors=len(errors),
     )
+    return {}
+
+def escalation_node(state: ChandraState) -> dict[str, Any]:
+    """Publish escalation alerts to SNS."""
+    publisher = SNSPublisher(
+        topic_arn=state.get("sns_topic_arn", "arn:aws:sns:us-east-1:123456789012:chandra-escalations")
+    )
+
+    payload = EscalationPayload(
+        finding_id=state.get("finding_id", "unknown"),
+        resource_id=state.get("resource_id", "unknown"),
+        severity=state.get("severity", "medium"),
+        service=state.get("service", "aws"),
+        region=state.get("region", "us-east-1"),
+        summary=state.get("summary", "Security finding"),
+        recommended_action=state.get("recommended_action", "Review and remediate"),
+    )
+
+    result = publisher.publish(payload)
+
+    return {
+        "escalation_result": result.model_dump()
+    }
     return {}
