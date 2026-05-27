@@ -1,0 +1,12 @@
+[
+  {"detector_id": "SEC-001-public-s3", "kra": "security"},
+  {"detector_id": "SEC-002-open-sg-ssh", "kra": "security"},
+  {"detector_id": "SEC-003-stale-key", "kra": "security"},
+  {"detector_id": "SEC-004-wildcard-iam", "kra": "security"},
+  {"detector_id": "COST-001-idle-ec2", "kra": "cost"},
+  {"detector_id": "COST-002-unattached-ebs", "kra": "cost"},
+  {"detector_id": "COMP-001-rds-unencrypted", "kra": "compliance"},
+  {"detector_id": "COMP-002-no-cloudtrail", "kra": "compliance"},
+  {"detector_id": "PERF-001-no-asg", "kra": "performance"},
+  {"detector_id": "REL-001-rds-single-az", "kra": "reliability"}
+]

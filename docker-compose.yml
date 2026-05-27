@@ -1,35 +1,21 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: chandra-postgres
-    environment:
-      POSTGRES_USER: chandra
-      POSTGRES_PASSWORD: chandra
-      POSTGRES_DB: chandra
-    ports:
-      - "5432:5432"
-    volumes:
-      - chandra-pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chandra -d chandra"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
-  localstack:
-    image: localstack/localstack:3.5
-    container_name: chandra-localstack
-    environment:
-      SERVICES: s3,ec2,iam,rds,cloudtrail,config,cloudwatch,autoscaling,backup,dlm,sts
-      DEBUG: 0
-      PERSISTENCE: 0
-      DOCKER_HOST: unix:///var/run/docker.sock
+  fastapi:
+    build: .
+    image: chandra-app
+    command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001"]
     ports:
-      - "4566:4566"
-    volumes:
-      - chandra-lsdata:/var/lib/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "6001:6001"
+    env_file: .env
+    restart: unless-stopped
 
-volumes:
-  chandra-pgdata:
-  chandra-lsdata:
+  gradio:
+    image: chandra-app
+    command: ["uv", "run", "app.py"]
+    ports:
+      - "7861:7861"
+    env_file: .env
+    depends_on:
+      fastapi:
+        condition: service_started
+    restart: unless-stopped

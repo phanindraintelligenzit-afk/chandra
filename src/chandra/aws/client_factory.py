@@ -11,6 +11,7 @@ rather than calling ``boto3.client`` directly. This guarantees:
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 import boto3
@@ -18,6 +19,9 @@ from botocore.client import BaseClient
 from botocore.config import Config
 
 from chandra.config import settings
+
+# Module-level cache for assumed-role factories, keyed by (role_arn, session_name).
+_ASSUME_ROLE_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 class AwsClientFactory:
@@ -29,11 +33,18 @@ class AwsClientFactory:
         default_region: str | None = None,
         max_attempts: int | None = None,
         retry_mode: str | None = None,
+        fast: bool = False,
     ) -> None:
         self._profile = profile or settings.aws_profile
         self._default_region = default_region or settings.aws_default_region
-        self._max_attempts = max_attempts or settings.boto_max_attempts
-        self._retry_mode = retry_mode or settings.boto_retry_mode
+        self._fast = fast
+
+        if fast:
+            self._max_attempts = 1
+            self._retry_mode = "legacy"
+        else:
+            self._max_attempts = max_attempts or settings.boto_max_attempts
+            self._retry_mode = retry_mode or settings.boto_retry_mode
 
         self._lock = threading.Lock()
         self._session: boto3.session.Session | None = None
@@ -57,6 +68,9 @@ class AwsClientFactory:
         return self._session
 
     def _boto_config(self) -> Config:
+        if self._fast:
+            return Config(user_agent_extra="chandra/0.1")
+
         return Config(
             retries={"max_attempts": self._max_attempts, "mode": self._retry_mode},
             user_agent_extra="chandra/0.1",
@@ -71,13 +85,58 @@ class AwsClientFactory:
             with self._lock:
                 client = self._clients.get(key)
                 if client is None:
-                    client = self.session.client(
+                    client = boto3.client(
                         service_name=service,
                         region_name=region,
                         config=self._boto_config(),
                     )
                     self._clients[key] = client
         return client
+
+    def assume_role(
+        self,
+        role_arn: str,
+        session_name: str,
+        duration_s: int = 3600,
+    ) -> "AwsClientFactory":
+        """Return a factory whose clients operate under the given assumed role.
+
+        Results are cached for the lifetime of the credentials minus a 60-second
+        safety buffer, so repeated calls within the same session are free.
+        """
+        cache_key = (role_arn, session_name)
+        now = time.time()
+
+        cached = _ASSUME_ROLE_CACHE.get(cache_key)
+        if cached and cached["expiry"] > now:
+            return cached["factory"]
+
+        sts = self.client("sts")
+        resp = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName=session_name,
+            DurationSeconds=duration_s,
+        )
+        c = resp["Credentials"]
+
+        new = AwsClientFactory(
+            profile=None,
+            default_region=self._default_region,
+            max_attempts=self._max_attempts,
+            retry_mode=self._retry_mode,
+        )
+        new._session = boto3.session.Session(
+            aws_access_key_id=c["AccessKeyId"],
+            aws_secret_access_key=c["SecretAccessKey"],
+            aws_session_token=c["SessionToken"],
+            region_name=self._default_region,
+        )
+
+        _ASSUME_ROLE_CACHE[cache_key] = {
+            "factory": new,
+            "expiry": now + duration_s - 60,
+        }
+        return new
 
     def account_id(self) -> str:
         """Resolve the current AWS account id via STS."""

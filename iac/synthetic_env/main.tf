@@ -65,3 +65,61 @@ module "seed_reliability" {
   prefix = local.prefix
   region = var.region
 }
+###################################
+# IAM
+###################################
+
+module "iam" {
+  source = "./modules/iam"
+}
+
+###################################
+# SNS
+###################################
+
+module "sns" {
+  source = "./modules/sns"
+
+  email = var.alert_email
+}
+
+###################################
+# ECS
+###################################
+
+module "ecs" {
+  source = "./modules/ecs"
+
+  cluster_name        = "chandra-cluster"
+  service_name        = "chandra-service"
+  image_url           = var.image_url
+  execution_role_arn  = module.iam.execution_role_arn
+  task_role_arn       = module.iam.task_role_arn
+  sns_topic_arn       = module.sns.topic_arn
+}
+
+###################################
+# EventBridge
+###################################
+
+module "eventbridge" {
+  source = "./modules/eventbridge"
+
+  cluster_arn       = module.ecs.cluster_arn
+  task_definition   = module.ecs.task_definition_arn
+  subnet_ids        = module.ecs.subnet_ids
+  security_group_id = module.ecs.security_group_id
+}
+# CloudWatch Audit module
+###################################
+
+module "cloudwatch_audit" {
+
+  source = "./modules/cloudwatch_audit"
+
+  project_name = var.project_name
+
+  environment = var.environment
+
+  retention_days = 14
+}
