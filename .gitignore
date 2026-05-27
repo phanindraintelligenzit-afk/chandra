@@ -7,6 +7,11 @@ dist/
 build/
 .venv/
 venv/
+node_modules/
+.next/
+out/
+dist/
+build/
 .python-version
 
 # Tooling caches

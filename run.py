@@ -16,6 +16,4 @@ final_state = graph.invoke(
     },
     config={"configurable": {"thread_id": run_id}},
 )
-
-print(final_state["briefing_md"])
-print(final_state["scorecard"])
+print(final_state)
