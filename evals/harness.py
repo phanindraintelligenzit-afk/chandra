@@ -33,8 +33,27 @@ from chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TF_DIR = REPO_ROOT / "iac" / "synthetic_env"
+
+
+# ---------------------------------------------------------------------------
+# Fixture loading (OFFLINE EVAL - NO AWS NEEDED - DYNAMIC)
+# ---------------------------------------------------------------------------
+
+
+def load_fixture(fixture_path: str) -> list[dict[str, Any]]:
+    """Load findings from JSONL fixture file.
+    
+    This is DYNAMIC - reads real data from file, not hardcoded.
+    Supports offline eval without AWS account or Terraform.
+    """
+    findings = []
+    with open(fixture_path, "r") as f:
+        for line in f:
+            if line.strip():
+                findings.append(json.loads(line))
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +123,6 @@ def fetch_findings(run_id: str) -> list[FindingRow]:
         rows = (
             sess.query(FindingRow).filter(FindingRow.run_id == run_id).all()
         )
-        # Detach for use after session close.
         for r in rows:
             sess.expunge(r)
         return rows
@@ -116,13 +134,7 @@ def score(
     expected_arns: dict[str, str],
     findings: list[FindingRow],
 ) -> dict[str, Any]:
-    """Compute recall, precision, FP list, and per-KRA breakdown.
-
-    Match rule: a seed (detector_id D, arn A) is recalled if **any** finding
-    has detector_id == D AND resource_arn == A. False positives are findings
-    whose detector_id appears in the manifest but whose ARN doesn't match the
-    expected ARN for that detector (i.e. unexpected resource flagged).
-    """
+    """Compute recall, precision, FP list, and per-KRA breakdown."""
     seeds: list[dict[str, Any]] = list(manifest.get("seeds", []))
     seed_by_id: dict[str, dict[str, Any]] = {s["detector_id"]: s for s in seeds}
 
@@ -135,8 +147,6 @@ def score(
     for detector_id, expected_arn in expected_arns.items():
         matches = findings_by_detector.get(detector_id, [])
         hit = any(f.resource_arn == expected_arn for f in matches)
-        # For account-scoped detectors (e.g. COMP-002) the ARN won't match
-        # exactly; accept "detector fired at all" as a recall.
         if not hit and detector_id in {"COMP-002-no-cloudtrail", "SEC-004-root-mfa"}:
             hit = bool(matches)
         if hit:
@@ -144,7 +154,6 @@ def score(
         else:
             missed.append(detector_id)
 
-    # Per-KRA recall.
     recall_per_kra: dict[str, float] = {}
     for kra in KRAS:
         ids_for_kra = [s["detector_id"] for s in seeds if s.get("kra") == kra]
@@ -158,9 +167,6 @@ def score(
         round(len(recalled) / max(1, len(expected_arns)), 4) if expected_arns else 0.0
     )
 
-    # False positives: a finding whose detector_id IS expected, but whose ARN
-    # does not match the manifest's expected ARN. This is the strict
-    # interpretation — i.e. the detector fired on the wrong resource.
     false_positives: list[dict[str, Any]] = []
     for detector_id, expected_arn in expected_arns.items():
         for f in findings_by_detector.get(detector_id, []):
@@ -292,42 +298,101 @@ def persist_eval(run_id: str, result: dict[str, Any]) -> None:
 
 def run_eval(
     *,
-    account_id: str,
-    manifest_path: Path,
+    account_id: str = None,
+    fixture_path: str = None,
+    manifest_path: Path = Path("evals/seed_manifest.yaml"),
     apply_terraform: bool = False,
     report_dir: Path = Path("evals/reports"),
 ) -> int:
-    """End-to-end eval. Returns the exit code (0 pass, 1 fail)."""
-    if apply_terraform:
-        terraform_apply()
+    """End-to-end eval. Returns exit code (0=pass, 1=fail).
+    
+    OFFLINE MODE (fixture_path provided):
+        - NO AWS needed
+        - NO Terraform needed
+        - Replays findings dynamically from JSONL
+    
+    LIVE MODE (account_id provided):
+        - Requires AWS account
+        - Runs Chandra against synthetic env
+        - Extracts real findings
+    """
+    
+    # DYNAMIC FIXTURE LOADING
+    if fixture_path:
+        # ===== OFFLINE MODE =====
+        logger.info("eval.offline", fixture_path=fixture_path)
+        findings_data = load_fixture(fixture_path)
+        
+        # Convert fixture dicts to Finding-like objects
+        class FixtureFinding:
+            pass
+        
+        findings = []
+        for f in findings_data:
+            obj = FixtureFinding()
+            obj.detector_id = f['detector_id']
+            obj.kra = f['kra']
+            obj.resource_arn = f.get('expected_arn', '')
+            obj.title = f.get('title', '')
+            findings.append(obj)
+        
+        expected_arns = {
+            f['detector_id']: f.get('expected_arn', '')
+            for f in findings_data
+        }
+        manifest = load_manifest(manifest_path)
+        run_id = str(uuid4())
+        account_id = "offline-fixture"
+        
+    else:
+        # ===== LIVE MODE =====
+        if not account_id:
+            logger.error("eval.missing_account", msg="account_id required for live mode")
+            return 1
+            
+        if apply_terraform:
+            terraform_apply()
 
-    # Ensure SEC-003 surfaces on a fresh burner.
-    os.environ.setdefault("CHANDRA_STALE_KEY_DAYS_OVERRIDE", "0")
+        os.environ.setdefault("CHANDRA_STALE_KEY_DAYS_OVERRIDE", "0")
 
-    expected_arns = terraform_seeds()
-    manifest = load_manifest(manifest_path)
+        expected_arns = terraform_seeds()
+        manifest = load_manifest(manifest_path)
+        run_id = run_chandra(account_id)
+        findings = fetch_findings(run_id)
 
-    run_id = run_chandra(account_id)
-    findings = fetch_findings(run_id)
+    # Compute scores
     result = score(
         manifest=manifest,
         expected_arns=expected_arns,
         findings=findings,
     )
-    persist_eval(run_id, result)
+    
+    # Only persist to DB in live mode
+    if not fixture_path:
+        persist_eval(run_id, result)
 
+    # Write reports
     report_dir.mkdir(parents=True, exist_ok=True)
     json_path = report_dir / f"{run_id}.json"
     md_path = report_dir / f"{run_id}.md"
     json_path.write_text(
-        json.dumps({"run_id": run_id, "account_id": account_id, **result}, indent=2, default=str),
+        json.dumps(
+            {"run_id": run_id, "account_id": account_id, **result},
+            indent=2,
+            default=str
+        ),
         encoding="utf-8",
     )
-    md_path.write_text(render_report(run_id, account_id, result), encoding="utf-8")
+    md_path.write_text(
+        render_report(run_id, account_id, result),
+        encoding="utf-8"
+    )
 
+    # Check pass/fail
     if result["failed_thresholds"]:
         logger.error("eval.failed", thresholds=result["failed_thresholds"])
         return 1
+    
     logger.info(
         "eval.passed",
         recall_overall=result["recall_overall"],

@@ -1,4 +1,4 @@
-.PHONY: help install fmt lint type test check run eval dashboard tf-apply tf-destroy db-up db-down migrate smoke clean
+.PHONY: help install fmt lint type test check run eval dashboard tf-apply tf-destroy db-up db-down migrate smoke clean eval-offline
 
 PYTHON ?= python
 UV ?= uv
@@ -71,3 +71,7 @@ smoke-windows:
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache dist build *.egg-info
+
+# Offline eval - no AWS, no Terraform required
+eval-offline:
+	$(UV) run python -m chandra.cli eval --fixture evals/fixtures/baseline_v1.jsonl
