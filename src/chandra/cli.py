@@ -23,6 +23,7 @@ from chandra.db.models import Briefing, Run
 from chandra.db.session import session_scope
 from chandra.graphs.chandra_graph import build_graph
 from chandra.logging import get_logger
+from chandra.observability import configure_observability
 
 app = typer.Typer(
     name="chandra",
@@ -192,6 +193,11 @@ def _print_scorecard(scorecard: dict[str, int]) -> None:
 
 def main() -> None:
     """Console-script entrypoint."""
+    configure_observability(
+        otel_endpoint=settings.otel_endpoint,
+        log_level=settings.log_level,
+        environment=settings.otel_environment,
+    )
     if settings.log_level == "DEBUG":
         logger.debug("cli.start", argv=sys.argv)
     app()
