@@ -110,7 +110,7 @@ export type CopilotChatResponse = {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEV_PROXY_PREFIX = "/api/backend";
-const DEFAULT_API_URL = "http://184.72.96.181:6002";
+const DEFAULT_API_URL = "http://0.0.0.0:6001";
 
 function isBrowserDev(): boolean {
   return typeof window !== "undefined" && process.env.NODE_ENV === "development";

@@ -355,6 +355,12 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
         all_findings=flat,
         metadata=metadata,
     )
+    logger.info(
+        "graph.compose_briefing",
+        run_id=state["run_id"],
+        analyzed_findings=len(analyzed),
+        briefing_length=len(briefing_md),
+    )
     return {"briefing_md": briefing_md, "briefing_json": briefing_json}
 
 
@@ -372,8 +378,18 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
     """
     pending = state.get("pending_writes", []) or []
     if not pending:
+        logger.info(
+            "graph.approval",
+            run_id=state.get("run_id"),
+            pending_writes=0,
+        )
         return {}
 
+    logger.info(
+        "graph.approval",
+        run_id=state.get("run_id"),
+        pending_writes=len(pending),
+    )
     payload = interrupt({"pending_writes": [p.model_dump() for p in pending]})
     return {"approvals": [ApprovalDecision(**d) for d in payload]}
 
@@ -416,8 +432,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
     for kra_findings in raw.values():
         flat.extend(kra_findings)
 
-    # Convert findings to dicts to ensure they're JSON-serializable
-    findings_list = [f.model_dump() if hasattr(f, 'model_dump') else f for f in flat]
+    findings_list = flat
 
     with session_scope() as sess:
         run = sess.get(Run, run_id)
@@ -499,6 +514,13 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
 
     result = publisher.publish(payload)
 
+    logger.info(
+        "graph.escalation",
+        run_id=state.get("run_id", "unknown"),
+        severity=payload.severity,
+        finding_id=payload.finding_id,
+        message_id=result.message_id if hasattr(result, 'message_id') else None,
+    )
     return {
         "escalation_result": result.model_dump()
     }

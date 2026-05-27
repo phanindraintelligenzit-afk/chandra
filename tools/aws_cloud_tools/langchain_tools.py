@@ -226,7 +226,7 @@ TOOLS_LIST: list[Callable[..., Any]] = [
     check_recorder_status,
     fetch_recent_changes,
     fetch_global_xray_summary,
-    fetch_all_findings,
+    # fetch_all_findings,
 ]
 
 DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
@@ -248,5 +248,5 @@ def default_tool_args(tool_name: str, region: str = DEFAULT_REGION) -> dict:
         "check_recorder_status": {},
         "fetch_recent_changes": {"hours_lookback": 12, "max_total_results": 15},
         "fetch_global_xray_summary": {"hours_lookback": 8, "max_traces_total": 20},
-        "fetch_all_findings": {},
+        # "fetch_all_findings": {},
     }.get(tool_name, {})

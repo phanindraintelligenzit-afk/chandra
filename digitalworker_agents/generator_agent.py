@@ -232,6 +232,10 @@ IMPORTANT: Follow the coding style, structure, variable naming, and best practic
             qa = "\n".join(f"Q: {q}\nA: {a}" for q, a in zip(clarification["questions"], clarification["answers"]))
             clarification_context = f"\n\nCLARIFICATIONS:\n{qa}"
 
+        feedback_context = ""
+        if feedback:
+            feedback_context = f"\n\nPREVIOUS EXECUTION FEEDBACK (MUST FIX):\n{feedback}"
+
         mode_instruction = (
             "UPDATE the existing files shown below while preserving their structure."
             if existing_files
@@ -244,7 +248,7 @@ Action Name: {action["actionName"]}
 Action Description: {action["actionDescription"]}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}
 Recommended approach: {analysis["recommended_approach"]}
-{reference_context}{clarification_context}{existing_context}
+{reference_context}{clarification_context}{feedback_context}{existing_context}
 
 Requirements:
 - All files must be complete and runnable
@@ -252,6 +256,7 @@ Requirements:
 - Python: use boto3 + argparse
 - Terraform: proper module structure with variables
 - Include all necessary executable steps
+- CRITICAL: If feedback mentions a specific error or fix, apply it immediately
 
 Generate the complete set of files."""
 
@@ -281,8 +286,15 @@ Generate the complete set of files."""
         write_tool = {t.name: t for t in toolkit.get_tools()}["write_file"]
 
         for file_info in state["generated_files"]:
-            write_tool.invoke({"file_path": file_info["filename"], "text": file_info["content"]})
-            logger.info("Wrote %s", file_info["filename"])
+            filename = file_info["filename"]
+
+            # Validate Terraform filenames for common typos
+            if filename.endswith(".tfvars"):
+                if "terrafor" in filename.lower() and filename.lower() != "terraform.tfvars":
+                    logger.warning("Detected potential filename typo: '%s' → will be written as-is but may cause issues", filename)
+
+            write_tool.invoke({"file_path": filename, "text": file_info["content"]})
+            logger.info("Wrote %s", filename)
 
         return {"sandbox_path": sandbox_dir}
 

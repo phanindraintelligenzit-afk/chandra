@@ -18,6 +18,7 @@ from digitalworker_agents.observation_agent import (
 from digitalworker_agents.analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
 from digitalworker_agents.generator_agent import GeneratorAgent, GeneratorPipelineResponse
 from digitalworker_agents.executor_agent import ExecutorAgent, ExecutorPipelineResponse
+from digitalworker_agents.orchestrator_agent import OrchestratorAgent, OrchestratorResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from tools.aws_cloud_tools.tool_findings import run_all_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
@@ -38,6 +39,7 @@ app = FastAPI(
 _copilot_agent = build_graph()
 _generator_agent = GeneratorAgent()
 _executor_agent = ExecutorAgent()
+_orchestrator_agent = OrchestratorAgent()
 
 
 class KRAInput(BaseModel):
@@ -331,6 +333,90 @@ def execute_code(request: ExecuteActionInput):
             statusCode=500,
             status="error",
             exception=str(exc),
+        )
+
+    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
+
+class OrchestrateRequest(BaseModel):
+    action: GeneratorActionInput = Field(description="Action to generate and execute")
+    sandbox_path: Optional[str] = Field(
+        default=None,
+        description="Path to an existing sandbox folder. If provided, the orchestrator updates existing files.",
+    )
+    reference_folder: Optional[str] = Field(
+        default=None,
+        description="Path to folder containing reference code (style, patterns, best practices) for consistent code generation.",
+    )
+    thread_id: Optional[str] = Field(
+        default=None,
+        description="Thread ID from a previous needs_clarification response.",
+    )
+    answers: Optional[List[str]] = Field(
+        default=None,
+        description="Answers to clarification questions from a previous response.",
+    )
+    generator_thread_id: Optional[str] = Field(
+        default=None,
+        description="Generator thread ID for resuming HITL.",
+    )
+    command_timeout: int = Field(
+        default=300,
+        description="Per-command timeout in seconds (default: 300 = 5 minutes).",
+    )
+    jira_issue_key: Optional[str] = Field(
+        default=None,
+        description="Jira issue key to post final summary comment to after orchestration completes.",
+    )
+    max_iterations: int = Field(
+        default=5,
+        description="Maximum number of generate-execute iterations (default: 5).",
+    )
+
+
+@app.post("/orchestrate", response_model=OrchestratorResponse)
+def orchestrate_action(request: OrchestrateRequest):
+    """
+    Generate and execute an action in a self-healing loop until success or max_iterations.
+
+    Example request:
+    {
+        "action": {
+            "actionName": "Deploy RDS Instance with Terraform",
+            "actionDescription": "Deploy a production PostgreSQL RDS instance with encryption enabled.",
+            "steps": ["Create IAM role", "Configure Terraform", "Apply infrastructure"]
+        },
+        "reference_folder": "iac/reference",
+        "command_timeout": 600,
+        "jira_issue_key": "DEV-123",
+        "max_iterations": 5
+    }
+    """
+    logger.info(
+        "POST /orchestrate | action=%s | jira_issue_key=%s | max_iterations=%d",
+        request.action.actionName,
+        request.jira_issue_key or "None",
+        request.max_iterations,
+    )
+    try:
+        orchestrator = OrchestratorAgent(max_iterations=request.max_iterations)
+        response = orchestrator.RunPipeline(
+            action=request.action.model_dump(),
+            sandbox_path=request.sandbox_path,
+            reference_folder=request.reference_folder,
+            thread_id=request.thread_id,
+            answers=request.answers,
+            generator_thread_id=request.generator_thread_id,
+            command_timeout=request.command_timeout,
+            jira_issue_key=request.jira_issue_key,
+        )
+    except Exception as exc:
+        logger.exception("OrchestratorAgent failed: %s", exc)
+        response = OrchestratorResponse(
+            statusCode=500,
+            status="error",
+            exception=str(exc),
+            thread_id="error",
         )
 
     return JSONResponse(status_code=response.statusCode, content=response.model_dump())

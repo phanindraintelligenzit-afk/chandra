@@ -9,7 +9,9 @@ Now supports reference_folder for consistent code style across generations.
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -18,6 +20,7 @@ from dotenv import load_dotenv
 # ── Import both agents ─────────────────────────────────────────────
 from digitalworker_agents.generator_agent import GeneratorAgent, GeneratorPipelineResponse
 from digitalworker_agents.executor_agent import ExecutorAgent, ExecutorPipelineResponse
+from tools.jira_tools.create_jira_ticket import add_comment_to_ticket
 
 load_dotenv(override=True)
 
@@ -75,6 +78,15 @@ class OrchestratorAgent:
         logger.info(text)
         logger.info(char * width)
 
+    @staticmethod
+    def _cleanup_sandbox(sandbox_path: Optional[str]) -> None:
+        if sandbox_path and Path(sandbox_path).exists():
+            try:
+                shutil.rmtree(sandbox_path)
+                logger.info("Cleaned up sandbox: %s", sandbox_path)
+            except Exception as exc:
+                logger.warning("Failed to clean up sandbox %s: %s", sandbox_path, exc)
+
     def _log_iteration_header(self, iteration: int, feedback: Optional[str]) -> None:
         self._banner(
             f"ORCHESTRATOR — ITERATION {iteration}/{self.max_iterations}"
@@ -87,11 +99,12 @@ class OrchestratorAgent:
         self,
         action: Dict[str, Any],
         sandbox_path: Optional[str] = None,
-        reference_folder: Optional[str] = None,      # ← NEW
+        reference_folder: Optional[str] = None,
         thread_id: Optional[str] = None,
         answers: Optional[List[str]] = None,
         generator_thread_id: Optional[str] = None,
         command_timeout: int = 300,
+        jira_issue_key: Optional[str] = None,
     ) -> OrchestratorResponse:
         """
         Run the generate → execute loop until success or max_iterations.
@@ -113,6 +126,7 @@ class OrchestratorAgent:
         logger.info("Reference Folder       : %s", reference_folder or "None (no style reference)")
         logger.info("Max Iterations         : %d", self.max_iterations)
         logger.info("Command Timeout        : %ds per command", command_timeout)
+        logger.info("Jira Issue Key         : %s", jira_issue_key or "None (no ticket)")
         logger.info("")
 
         for iteration in range(1, self.max_iterations + 1):
@@ -211,7 +225,7 @@ class OrchestratorAgent:
                     f"✓ ORCHESTRATOR COMPLETED SUCCESSFULLY on iteration {iteration}",
                     char="═",
                 )
-                return OrchestratorResponse(
+                response = OrchestratorResponse(
                     statusCode=200,
                     status="success",
                     thread_id=orch_tid,
@@ -221,6 +235,11 @@ class OrchestratorAgent:
                     final_executor_response=exec_response.model_dump(),
                     summary=exec_response.summary,
                 )
+                if jira_issue_key and response.summary:
+                    add_comment_to_ticket(jira_issue_key, response.summary)
+                    logger.info("Added final success comment to Jira ticket %s", jira_issue_key)
+                self._cleanup_sandbox(current_sandbox)
+                return response
 
             # Execution failed → prepare feedback
             logger.warning(
@@ -239,7 +258,7 @@ class OrchestratorAgent:
             char="═",
         )
         last_exec = exec_response
-        return OrchestratorResponse(
+        response = OrchestratorResponse(
             statusCode=207,
             status="failed",
             thread_id=orch_tid,
@@ -252,6 +271,11 @@ class OrchestratorAgent:
                 f"{self.max_iterations} iterations. Last error: {last_exec.summary}"
             ),
         )
+        if jira_issue_key and response.summary:
+            add_comment_to_ticket(jira_issue_key, response.summary)
+            logger.info("Added final failure comment to Jira ticket %s", jira_issue_key)
+        self._cleanup_sandbox(current_sandbox)
+        return response
 
 
 # ── Entry point ────────────────────────────────────────────────────
@@ -271,7 +295,8 @@ class OrchestratorAgent:
 
 #     response = orchestrator.RunPipeline(
 #         action=action_payload,
-#         reference_folder="reference_aws",        # ← Set your reference folder here
-#         command_timeout=1600,                    # Increased for Terraform operations
+#         reference_folder="iac/synthetic_env/modules_1",        # ← Set your reference folder here
+#         command_timeout=1600,   
+#         jira_issue_key="DEV-81"                 # Increased for Terraform operations
 #     )
 #     print(response.model_dump_json(indent=2))

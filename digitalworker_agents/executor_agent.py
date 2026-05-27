@@ -241,6 +241,25 @@ Only include commands that are needed based on the actual files present."""
             logger.exception("✗ Execution planning failed: %s", exc)
             raise
 
+    def _validate_command(self, command: str, execute_folder: str) -> tuple[bool, str]:
+        """
+        Validate command syntax before execution.
+        Returns (is_valid, error_message).
+        """
+        base_path = Path(execute_folder).resolve()
+
+        # Check for file references that don't exist
+        if "-var-file=" in command:
+            import re
+            match = re.search(r'-var-file="?([^"\s]+)"?', command)
+            if match:
+                var_file = match.group(1)
+                full_path = base_path / var_file
+                if not full_path.exists():
+                    return False, f"Variable file does not exist: {var_file}"
+
+        return True, ""
+
     def _execute_node(self, state: AgentState) -> dict:
         execute_folder = state["executeFolder"]
         plan = state["execution_plan"]
@@ -274,6 +293,34 @@ Only include commands that are needed based on the actual files present."""
             cwd = (base_path / relative_dir).resolve()
             if not cwd.exists():
                 cwd = base_path
+
+            # Pre-execution validation
+            is_valid, error_msg = self._validate_command(command, str(cwd))
+            if not is_valid:
+                logger.warning(
+                    "[%d/%d] ✗ VALIDATION FAILED: %s",
+                    idx, total_commands, description or command,
+                )
+                logger.warning("        Validation Error: %s", error_msg)
+                result = {
+                    "command": command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "",
+                    "stderr": f"Pre-execution validation failed: {error_msg}",
+                    "return_code": -1,
+                    "success": False,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                }
+                results.append(result)
+                logger.error("=" * 80)
+                logger.error(
+                    "EXECUTION HALTED (VALIDATION FAILED): stopping remaining %d command(s)",
+                    total_commands - idx,
+                )
+                logger.error("=" * 80)
+                break
 
             logger.info("-" * 80)
             logger.info("[%d/%d] EXECUTING: %s", idx, total_commands, description or command)
@@ -322,12 +369,19 @@ Only include commands that are needed based on the actual files present."""
                     raise  # re-raise so the outer except subprocess.TimeoutExpired block handles it
 
                 success = proc.returncode == 0
+
+                # Log full output if truncated (for debugging)
+                if stdout_data and len(stdout_data) > 10000:
+                    logger.debug(f"Full stdout (first 20KB): {stdout_data[:20000]}")
+                if stderr_data and len(stderr_data) > 5000:
+                    logger.debug(f"Full stderr (first 10KB): {stderr_data[:10000]}")
+
                 result = {
                     "command": command,
                     "description": description,
                     "working_dir": str(cwd),
-                    "stdout": (stdout_data or "")[:5000],
-                    "stderr": (stderr_data or "")[:2000],
+                    "stdout": (stdout_data or "")[:10000],  # Increased from 5000
+                    "stderr": (stderr_data or "")[:5000],   # Increased from 2000
                     "return_code": proc.returncode,
                     "success": success,
                     "timed_out": False,

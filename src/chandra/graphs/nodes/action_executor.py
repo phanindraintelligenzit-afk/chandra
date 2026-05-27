@@ -146,6 +146,12 @@ def action_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     executor = ActionExecutor(dry_run=state.get("dry_run", True), region=region)
     result = executor.run(state)
 
+    logger.info(
+        "graph.action_executor",
+        run_id=state.get("run_id"),
+        action_executed=result.get("action_executed", False),
+        status=result.get("status", "unknown"),
+    )
     return {
         "action_result": result,
         "action_executed": result["action_executed"]
