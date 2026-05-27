@@ -110,3 +110,16 @@ module "eventbridge" {
   subnet_ids        = module.ecs.subnet_ids
   security_group_id = module.ecs.security_group_id
 }
+# CloudWatch Audit module
+###################################
+
+module "cloudwatch_audit" {
+
+  source = "./modules/cloudwatch_audit"
+
+  project_name = var.project_name
+
+  environment = var.environment
+
+  retention_days = 14
+}
