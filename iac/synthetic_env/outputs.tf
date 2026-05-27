@@ -101,3 +101,10 @@ output "execution_role_arn" {
 
   value = module.iam.execution_role_arn
 }
+
+#############
+#cloudwatch output
+output "chandra_log_group" {
+
+  value = module.cloudwatch_audit.log_group_name
+}

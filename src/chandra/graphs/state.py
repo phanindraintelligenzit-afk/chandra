@@ -45,6 +45,7 @@ def merge_inventory(
 
 class ChandraState(TypedDict, total=False):
     """Full graph state. ``total=False`` so partial node returns are legal."""
+    assume_role_arn: str | None = None
 
     run_id: str
     account_id: str
