@@ -28,6 +28,7 @@ from chandra.briefing.schemas import (
 )
 from chandra.config import settings
 from chandra.logging import get_logger
+from chandra.observability.callbacks import UsageCapture
 
 logger = get_logger(__name__)
 
@@ -127,11 +128,13 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             }
             for f in findings
         ]
+        cb = UsageCapture()
         response = llm.invoke(
             [
                 ("system", system),
                 ("user", json.dumps({"findings": payload}, default=str)),
-            ]
+            ],
+            config={"callbacks": [cb]}
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         ranked = json.loads(text).get("ranked", [])
@@ -216,11 +219,13 @@ def compose_executive_summary(
             "top_findings": top,
             "total_findings": len(analyzed),
         }
+        cb = UsageCapture()
         response = llm.invoke(
             [
                 ("system", system),
                 ("user", json.dumps(user_payload, default=str)),
-            ]
+            ],
+            config={"callbacks": [cb]}
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         bullets = [

@@ -19,8 +19,12 @@ Topology:
 """
 
 from __future__ import annotations
-
+ 
 from datetime import datetime, timezone
+from typing import Any
+ 
+from langgraph.types import Send
+ 
 from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
@@ -44,8 +48,14 @@ from chandra.briefing.schemas import (
 from chandra.db.models import Briefing, Finding as FindingRow, Run
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
+from chandra.graphs.nodes.action_executor import action_executor_node
 from chandra.logging import get_logger
+from chandra.observability import traced_node
+from chandra.escalation.publisher import SNSPublisher
+from chandra.escalation.schemas import EscalationPayload
 from chandra.tools import compliance, cost, performance, reliability, security
+from chandra.tools.base import DetectorContext
+ 
 from chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
@@ -192,14 +202,31 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     }
 
 
+@traced_node("observe_cost", timeout_s=90)
 @traced_node
 def observe_cost(state: ChandraState) -> dict[str, Any]:
     return _run_observer("cost", state)
 
 
+@traced_node("observe_security", timeout_s=90)
 @traced_node
 def observe_security(state: ChandraState) -> dict[str, Any]:
     return _run_observer("security", state)
+
+
+@traced_node("observe_compliance", timeout_s=90)
+def observe_compliance(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("compliance", state)
+
+
+@traced_node("observe_performance", timeout_s=90)
+def observe_performance(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("performance", state)
+
+
+@traced_node("observe_reliability", timeout_s=90)
+def observe_reliability(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("reliability", state)
 
 
 @traced_node
@@ -403,6 +430,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 status="completed",
                 finished_at=datetime.now(timezone.utc),
                 errors_json=errors,
+                bedrock_cost_usd=state.get("bedrock_cost_usd", 0.0),
             )
             sess.add(run)
         else:
@@ -410,6 +438,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
             run.status = "completed"
             run.finished_at = datetime.now(timezone.utc)
             run.errors_json = errors
+            run.bedrock_cost_usd = state.get("bedrock_cost_usd", 0.0)
 
         # Replace findings for this run to keep persist idempotent.
         sess.query(FindingRow).filter(FindingRow.run_id == run_id).delete()
@@ -452,4 +481,27 @@ def persist(state: ChandraState) -> dict[str, Any]:
         findings=len(flat),
         errors=len(errors),
     )
+    return {}
+
+def escalation_node(state: ChandraState) -> dict[str, Any]:
+    """Publish escalation alerts to SNS."""
+    publisher = SNSPublisher(
+        topic_arn=state.get("sns_topic_arn", "arn:aws:sns:us-east-1:123456789012:chandra-escalations")
+    )
+
+    payload = EscalationPayload(
+        finding_id=state.get("finding_id", "unknown"),
+        resource_id=state.get("resource_id", "unknown"),
+        severity=state.get("severity", "medium"),
+        service=state.get("service", "aws"),
+        region=state.get("region", "us-east-1"),
+        summary=state.get("summary", "Security finding"),
+        recommended_action=state.get("recommended_action", "Review and remediate"),
+    )
+
+    result = publisher.publish(payload)
+
+    return {
+        "escalation_result": result.model_dump()
+    }
     return {}
