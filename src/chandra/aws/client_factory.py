@@ -22,6 +22,52 @@ from chandra.config import settings
 
 class AwsClientFactory:
     """Cached boto3 client factory with retry/backoff baked in."""
+    def assume_role(
+    self,
+    role_arn: str,
+    session_name: str,
+    duration_s: int = 3600
+) -> "AwsClientFactory":
+
+    cache_key = (role_arn, session_name)
+
+    now = time.time()
+
+    cached = _ASSUME_ROLE_CACHE.get(cache_key)
+
+    if cached and cached["expiry"] > now:
+        return cached["factory"]
+
+    sts = self.client("sts")
+
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=session_name,
+        DurationSeconds=duration_s
+    )
+
+    c = resp["Credentials"]
+
+    new = AwsClientFactory(
+        profile=None,
+        default_region=self._default_region,
+        max_attempts=self._max_attempts,
+        retry_mode=self._retry_mode
+    )
+
+    new._session = boto3.session.Session(
+        aws_access_key_id=c["AccessKeyId"],
+        aws_secret_access_key=c["SecretAccessKey"],
+        aws_session_token=c["SessionToken"],
+        region_name=self._default_region,
+    )
+
+    _ASSUME_ROLE_CACHE[cache_key] = {
+        "factory": new,
+        "expiry": now + duration_s - 60
+    }
+
+    return new
 
     def __init__(
         self,
