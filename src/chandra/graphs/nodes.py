@@ -50,6 +50,7 @@ from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
 from chandra.graphs.nodes.action_executor import action_executor_node
 from chandra.logging import get_logger
+from chandra.observability import traced_node
 from chandra.escalation.publisher import SNSPublisher
 from chandra.escalation.schemas import EscalationPayload
 from chandra.tools import compliance, cost, performance, reliability, security
@@ -201,14 +202,31 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     }
 
 
+@traced_node("observe_cost", timeout_s=90)
 @traced_node
 def observe_cost(state: ChandraState) -> dict[str, Any]:
     return _run_observer("cost", state)
 
 
+@traced_node("observe_security", timeout_s=90)
 @traced_node
 def observe_security(state: ChandraState) -> dict[str, Any]:
     return _run_observer("security", state)
+
+
+@traced_node("observe_compliance", timeout_s=90)
+def observe_compliance(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("compliance", state)
+
+
+@traced_node("observe_performance", timeout_s=90)
+def observe_performance(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("performance", state)
+
+
+@traced_node("observe_reliability", timeout_s=90)
+def observe_reliability(state: ChandraState) -> dict[str, Any]:
+    return _run_observer("reliability", state)
 
 
 @traced_node
