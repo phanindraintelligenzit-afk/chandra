@@ -81,3 +81,44 @@ class BriefingPayload(BaseModel):
     top_findings: list[AnalyzedFinding]
     all_findings: list[Finding]
     metadata: dict
+
+
+class ProposedWrite(BaseModel):
+    """A proposed action to write to AWS."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    target_arn: str
+    payload: dict
+    requested_by: str
+    justification: str
+    risk_level: Literal["low", "high"] = "high"
+
+
+class ApprovalDecision(BaseModel):
+    """Human decision on a proposed write."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    reviewer: str
+    reason: str
+    decided_at: datetime
+
+
+ObservationSource = Literal["cloudwatch_alarm", "eventbridge_rule"]
+
+
+class Observation(BaseModel):
+    """Live AWS event state snapshot — alarm or rule status at observation time."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: ObservationSource
+    resource_arn: str = Field(min_length=1)
+    region: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    observed_at: datetime
+    raw: dict = Field(default_factory=dict)

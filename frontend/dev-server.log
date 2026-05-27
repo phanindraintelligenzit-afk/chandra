@@ -1,0 +1,671 @@
+﻿
+> chandra-digital-worker-demo@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.16:3000
+- Environments: .env.local
+✓ Ready in 285ms
+- Experiments (use with caution):
+  · proxyTimeout: 180000
+
+ GET / 200 in 2.6s (next.js: 934ms, application-code: 1643ms)
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 891ms (next.js: 211ms, application-code: 681ms)
+ GET / 200 in 764ms (next.js: 33ms, application-code: 731ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 539ms (next.js: 40ms, application-code: 499ms)
+ GET / 200 in 563ms (next.js: 41ms, application-code: 522ms)
+ GET /onboarding 200 in 486ms (next.js: 30ms, application-code: 455ms)
+ GET / 200 in 544ms (next.js: 23ms, application-code: 521ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 499ms (next.js: 30ms, application-code: 469ms)
+ GET / 200 in 494ms (next.js: 32ms, application-code: 462ms)
+ GET /onboarding 200 in 418ms (next.js: 18ms, application-code: 400ms)
+ GET / 200 in 503ms (next.js: 34ms, application-code: 469ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 492ms (next.js: 19ms, application-code: 472ms)
+ GET / 200 in 482ms (next.js: 17ms, application-code: 465ms)
+ GET /onboarding 200 in 405ms (next.js: 20ms, application-code: 385ms)
+ GET / 200 in 433ms (next.js: 27ms, application-code: 406ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 500ms (next.js: 25ms, application-code: 475ms)
+ GET / 200 in 551ms (next.js: 14ms, application-code: 537ms)
+ GET /onboarding 200 in 457ms (next.js: 23ms, application-code: 435ms)
+ GET / 200 in 492ms (next.js: 32ms, application-code: 460ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 543ms (next.js: 35ms, application-code: 509ms)
+ GET / 200 in 542ms (next.js: 32ms, application-code: 510ms)
+ GET /onboarding 200 in 455ms (next.js: 20ms, application-code: 435ms)
+ GET / 200 in 464ms (next.js: 15ms, application-code: 450ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 399ms (next.js: 16ms, application-code: 383ms)
+ GET / 200 in 424ms (next.js: 21ms, application-code: 404ms)
+ GET /onboarding 200 in 439ms (next.js: 23ms, application-code: 415ms)
+ GET / 200 in 455ms (next.js: 27ms, application-code: 427ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 449ms (next.js: 22ms, application-code: 427ms)
+ GET / 200 in 375ms (next.js: 15ms, application-code: 360ms)
+ GET /onboarding 200 in 422ms (next.js: 15ms, application-code: 407ms)
+ GET / 200 in 512ms (next.js: 49ms, application-code: 463ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 443ms (next.js: 23ms, application-code: 420ms)
+ GET / 200 in 417ms (next.js: 21ms, application-code: 396ms)
+ GET /onboarding 200 in 435ms (next.js: 23ms, application-code: 412ms)
+ GET / 200 in 458ms (next.js: 12ms, application-code: 446ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 497ms (next.js: 19ms, application-code: 478ms)
+ GET / 200 in 425ms (next.js: 28ms, application-code: 397ms)
+ GET /onboarding 200 in 371ms (next.js: 24ms, application-code: 347ms)
+ GET / 200 in 382ms (next.js: 25ms, application-code: 357ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 413ms (next.js: 16ms, application-code: 398ms)
+ GET / 200 in 442ms (next.js: 40ms, application-code: 403ms)
+ GET /onboarding 200 in 438ms (next.js: 22ms, application-code: 415ms)
+ GET / 200 in 398ms (next.js: 27ms, application-code: 371ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 1454ms (next.js: 23ms, application-code: 1431ms)
+ GET / 200 in 1302ms (next.js: 47ms, application-code: 1255ms)
+ GET /onboarding 200 in 359ms (next.js: 10ms, application-code: 349ms)
+ GET / 200 in 347ms (next.js: 25ms, application-code: 322ms)
+ GET /onboarding 200 in 454ms (next.js: 14ms, application-code: 440ms)
+ GET / 200 in 522ms (next.js: 18ms, application-code: 504ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 439ms (next.js: 38ms, application-code: 402ms)
+ GET / 200 in 418ms (next.js: 38ms, application-code: 381ms)
+ GET /onboarding 200 in 382ms (next.js: 20ms, application-code: 362ms)
+ GET / 200 in 333ms (next.js: 34ms, application-code: 299ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 196ms (next.js: 17ms, application-code: 179ms)
+ GET / 200 in 368ms (next.js: 20ms, application-code: 348ms)
+ GET /onboarding 200 in 416ms (next.js: 20ms, application-code: 396ms)
+ GET / 200 in 378ms (next.js: 35ms, application-code: 343ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 422ms (next.js: 17ms, application-code: 405ms)
+ GET / 200 in 393ms (next.js: 25ms, application-code: 368ms)
+ GET /onboarding 200 in 509ms (next.js: 13ms, application-code: 496ms)
+ GET / 200 in 496ms (next.js: 14ms, application-code: 482ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 349ms (next.js: 15ms, application-code: 334ms)
+ GET / 200 in 301ms (next.js: 18ms, application-code: 283ms)
+ GET /onboarding 200 in 358ms (next.js: 20ms, application-code: 337ms)
+ GET / 200 in 326ms (next.js: 13ms, application-code: 313ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 357ms (next.js: 31ms, application-code: 326ms)
+ GET / 200 in 332ms (next.js: 24ms, application-code: 308ms)
+ GET /onboarding 200 in 439ms (next.js: 19ms, application-code: 420ms)
+ GET / 200 in 517ms (next.js: 18ms, application-code: 499ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20Failed%20to%20write%20app%20endpoint%20%2Fpage&body=Turbopack%20version%3A%20%6
+0ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0AFailed%20to%20write%20app%20end
+point%20%2Fpage%0A%0ACaused%20by%3A%0A-%20Next.js%20package%20not%20found%0A%0ADebug%20info%3A%0A-%20Execution%20of%20P
+roject%3A%3Ahmr_version_state%20failed%0A-%20Execution%20of%20hmr_version_operation%20failed%0A-%20Execution%20of%20Ver
+sionedContentMap%3A%3Aget%20failed%0A-%20Execution%20of%20VersionedContentMap%3A%3Aget_asset%20failed%0A-%20Execution%2
+0of%20VersionedContentMap%3A%3Acompute_entry%20failed%0A-%20Execution%20of%20%2Aemit_assets%20failed%0A-%20Execution%20
+of%20all_assets_from_entries_operation%20failed%0A-%20Execution%20of%20%2Aall_assets_from_entries%20failed%0A-%20Execut
+ion%20of%20endpoint_output_assets_operation%20failed%0A-%20Execution%20of%20%3CAppEndpoint%20as%20Endpoint%3E%3A%3Aoutp
+ut%20failed%0A-%20Failed%20to%20write%20app%20endpoint%20%2Fpage%0A-%20Execution%20of%20%2Aall_asset_paths%20failed%0A-
+%20Execution%20of%20%2AAppEndpointOutput%3A%3Aoutput_assets%20failed%0A-%20Execution%20of%20AppEndpoint%3A%3Aoutput%20f
+ailed%0A-%20Execution%20of%20AppEndpoint%3A%3Aapp_page_entry%20failed%0A-%20Execution%20of%20%2Aget_app_page_entry%20fa
+iled%0A-%20Execution%20of%20AppProject%3A%3Arsc_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A
+%3Anew%20failed%0A-%20Execution%20of%20%2AAppProject%3A%3Aget_rsc_transitions%20failed%0A-%20Execution%20of%20AppProjec
+t%3A%3Aecmascript_client_reference_transition%20failed%0A-%20Execution%20of%20%2ANextEcmascriptClientReferenceTransitio
+n%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_transition%20failed%0A-%20Execution%20of%20%2AFullContex
+tTransition%3A%3Anew%20failed%0A-%20Execution%20of%20AppProject%3A%3Assr_module_context%20failed%0A-%20Execution%20of%2
+0AppProject%3A%3Ashared_transition%20failed%0A-%20Execution%20of%20%2AFullContextTransition%3A%3Anew%20failed%0A-%20Exe
+cution%20of%20AppProject%3A%3Ashared_module_context%20failed%0A-%20Execution%20of%20%2AModuleAssetContext%3A%3Anew%20fa
+iled%0A-%20Execution%20of%20get_server_resolve_options_context%20failed%0A-%20Execution%20of%20get_next_server_import_m
+ap%20failed%0A-%20Next.js%20package%20not%20found%0A%60%60%60&labels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+ GET /onboarding 200 in 156ms (next.js: 15ms, application-code: 142ms)
+
+-----
+[1m[31mFATAL[39m[0m: An unexpected Turbopack error occurred. A panic log has been written to 
+C:\Users\chaga\AppData\Local\Temp\next-panic-8ab2064eb7f70acffe50c6914448b7c7.log.
+
+To help make Turbopack better, report this error by clicking here: https://bugs.nextjs.org/search?category=turbopack-er
+ror-report&title=Turbopack%20Error%3A%20failed%20to%20write%20to%20%22C%3A%5C%5CUsers%5C%5Cchaga%5C%5COneDrive%5C%5CDes
+ktop%5C%5Cchandra_demo_extended%5C%5C.next%5C%5Cdev%5C%5Cserver%5C%5Cpages%5C%5C_app%5C%5Cbuild-manifest.json%22&body=T
+urbopack%20version%3A%20%60ee6e79b1%60%0ANext.js%20version%3A%20%600.0.0%60%0A%0AError%20message%3A%0A%60%60%60%0Afaile
+d%20to%20write%20to%20%22C%3A%5C%5CUsers%5C%5Cchaga%5C%5COneDrive%5C%5CDesktop%5C%5Cchandra_demo_extended%5C%5C.next%5C
+%5Cdev%5C%5Cserver%5C%5Cpages%5C%5C_app%5C%5Cbuild-manifest.json%22%0A%0ACaused%20by%3A%0A-%20The%20process%20cannot%20
+access%20the%20file%20because%20it%20is%20being%20used%20by%20another%20process.%20%28os%20error%2032%29%0A%60%60%60&la
+bels=Turbopack,Turbopack%20Panic%20Backtrace
+-----
+
+[Server HMR] Subscription error: Error [TurbopackInternalError]: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_app\\build-manifest.json"
+
+Caused by:
+- The process cannot access the file because it is being used by another process. (os error 32)
+    at <unknown> (TurbopackInternalError: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_app\\build-manifest.json") {
+  location: undefined
+}
+[Server HMR] Subscription error: Error [TurbopackInternalError]: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json"
+
+Caused by:
+- The process cannot access the file because it is being used by another process. (os error 32)
+    at <unknown> (TurbopackInternalError: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json") {
+  location: undefined
+}
+[Server HMR] Subscription error: Error [TurbopackInternalError]: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json"
+
+Caused by:
+- The process cannot access the file because it is being used by another process. (os error 32)
+    at <unknown> (TurbopackInternalError: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json") {
+  location: undefined
+}
+[Server HMR] Subscription error: Error [TurbopackInternalError]: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json"
+
+Caused by:
+- The process cannot access the file because it is being used by another process. (os error 32)
+    at <unknown> (TurbopackInternalError: failed to write to 
+"C:\\Users\\chaga\\OneDrive\\Desktop\\chandra_demo_extended\\.next\\dev\\server\\pages\\_error\\build-manifest.json") {
+  location: undefined
+}

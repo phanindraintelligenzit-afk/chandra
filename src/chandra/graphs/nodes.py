@@ -25,15 +25,26 @@ from typing import Any
  
 from langgraph.types import Send
  
+from typing import Any, Literal
+
+from langgraph.types import Send, interrupt
+
 from chandra.aws.client_factory import get_default_factory
 from chandra.aws.regions import active_regions
 from chandra.briefing.composer import (
     compose_executive_summary,
-    deterministic_rank,
+    llm_rank,
     render_markdown,
     score_findings,
 )
-from chandra.briefing.schemas import AnalyzedFinding, Finding
+from chandra.observability import traced_node
+from chandra.briefing.schemas import (
+    AnalyzedFinding,
+    ApprovalDecision,
+    Finding,
+    Observation,
+    ProposedWrite,
+)
 from chandra.db.models import Briefing, Finding as FindingRow, Run
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
@@ -44,6 +55,8 @@ from chandra.escalation.schemas import EscalationPayload
 from chandra.tools import compliance, cost, performance, reliability, security
 from chandra.tools.base import DetectorContext
  
+from chandra.tools.base import DetectorContext, detector_guard, paginate
+
 logger = get_logger(__name__)
 
 
@@ -55,12 +68,60 @@ KRA_RUNNERS = {
     "reliability": reliability.run_all,
 }
 
+ESCALATE_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
+
+
+# ---------------------------------------------------------------------------
+# Decision Router (low-risk auto-fix vs high-risk escalate)
+# ---------------------------------------------------------------------------
+
+
+@traced_node
+def decision_router(state: ChandraState) -> dict[str, Any]:
+    """Classify each AnalyzedFinding as low-risk (auto-fix) or high-risk (escalate).
+
+    High-risk findings (critical/high severity) are added to pending_writes,
+    triggering the approval_node interrupt for human review.
+    Low-risk findings (medium/low/info severity) are added to auto_fixed —
+    flagged for a future executor node, no human interrupt.
+    """
+    analyzed = state.get("analyzed_findings", []) or []
+    pending: list[ProposedWrite] = []
+    auto_fixed: list[ProposedWrite] = []
+
+    for af in analyzed:
+        f = af.finding
+        risk: Literal["low", "high"] = (
+            "high" if f.severity in ESCALATE_SEVERITIES else "low"
+        )
+        write = ProposedWrite(
+            action=f"remediate_{f.detector_id}",
+            target_arn=f.resource_arn,
+            payload={"recommendation": f.recommendation},
+            requested_by="decision_router",
+            justification=af.rationale or f.recommendation,
+            risk_level=risk,
+        )
+        if risk == "high":
+            pending.append(write)
+        else:
+            auto_fixed.append(write)
+
+    logger.info(
+        "graph.decision_router",
+        run_id=state["run_id"],
+        escalated=len(pending),
+        auto_fixed=len(auto_fixed),
+    )
+    return {"pending_writes": pending, "auto_fixed": auto_fixed}
+
 
 # ---------------------------------------------------------------------------
 # Node: onboard_account
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def onboard_account(state: ChandraState) -> dict[str, Any]:
     """Validate the run, resolve regions, and seed the inventory."""
     factory = get_default_factory()
@@ -81,21 +142,37 @@ def onboard_account(state: ChandraState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Fanout router
+# KRA Supervisor + Workers
 # ---------------------------------------------------------------------------
 
+KRAS_TO_RUN: tuple[str, ...] = (
+    "cost",
+    "security",
+    "compliance",
+    "performance",
+    "reliability",
+)
 
-def fanout_observers(state: ChandraState) -> list[Send]:
-    """Emit one ``Send(...)`` per KRA so observers run concurrently.
 
-    LangGraph's parallel-branch primitive. Each observer receives the same
-    state snapshot; their partial returns are merged by the reducers defined
-    in :mod:`chandra.graphs.state`.
+@traced_node
+def kra_supervisor(state: ChandraState) -> dict[str, Any]:
+    """Supervisor node: dispatches to all KRA worker nodes.
+
+    Routes to the 5 KRA worker nodes (observe_cost, observe_security, etc.)
+    in parallel. Routing logic lives here so future iterations can skip or
+    re-order KRAs without touching the graph topology.
     """
-    return [
-        Send(f"observe_{kra}", state)
-        for kra in ("cost", "security", "compliance", "performance", "reliability")
-    ]
+    logger.info(
+        "graph.kra_supervisor",
+        run_id=state["run_id"],
+        kras=list(KRAS_TO_RUN),
+    )
+    return {}
+
+
+def _route_kra_workers(state: ChandraState) -> list[Send]:
+    """Route to all KRA worker nodes in parallel."""
+    return [Send(f"observe_{kra}", state) for kra in KRAS_TO_RUN]
 
 
 # ---------------------------------------------------------------------------
@@ -124,24 +201,100 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     }
 
 
+@traced_node
 def observe_cost(state: ChandraState) -> dict[str, Any]:
     return _run_observer("cost", state)
 
 
+@traced_node
 def observe_security(state: ChandraState) -> dict[str, Any]:
     return _run_observer("security", state)
 
 
+@traced_node
 def observe_compliance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("compliance", state)
 
 
+@traced_node
 def observe_performance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("performance", state)
 
 
+@traced_node
 def observe_reliability(state: ChandraState) -> dict[str, Any]:
     return _run_observer("reliability", state)
+
+
+# ---------------------------------------------------------------------------
+# Ingest observations (CloudWatch + EventBridge)
+# ---------------------------------------------------------------------------
+
+
+@traced_node
+def ingest_observations(state: ChandraState) -> dict[str, Any]:
+    """Ingest CloudWatch alarms and EventBridge rules into state.observations."""
+    ctx = DetectorContext(
+        run_id=state["run_id"],
+        account_id=state["account_id"],
+        regions=list(state.get("regions", [])),
+    )
+    observations: list[Observation] = []
+
+    for region in ctx.regions:
+        # CloudWatch alarms
+        with detector_guard(ctx, detector_id="OBS-cloudwatch-alarms", region=region):
+            cw = ctx.factory.client("cloudwatch", region=region)
+            for page in paginate(cw, "describe_alarms"):
+                for alarm in page.get("MetricAlarms", []):
+                    observations.append(
+                        Observation(
+                            source="cloudwatch_alarm",
+                            resource_arn=alarm["AlarmArn"],
+                            region=region,
+                            name=alarm["AlarmName"],
+                            state=alarm["StateValue"],
+                            observed_at=alarm.get(
+                                "StateUpdatedTimestamp", datetime.now(timezone.utc)
+                            ),
+                            raw={
+                                "namespace": alarm.get("Namespace", ""),
+                                "metric_name": alarm.get("MetricName", ""),
+                                "threshold": alarm.get("Threshold"),
+                                "comparison_operator": alarm.get("ComparisonOperator", ""),
+                            },
+                        )
+                    )
+
+        # EventBridge rules
+        with detector_guard(ctx, detector_id="OBS-eventbridge-rules", region=region):
+            eb = ctx.factory.client("events", region=region)
+            for page in paginate(eb, "list_rules"):
+                for rule in page.get("Rules", []):
+                    observations.append(
+                        Observation(
+                            source="eventbridge_rule",
+                            resource_arn=rule["Arn"],
+                            region=region,
+                            name=rule["Name"],
+                            state=rule["State"],
+                            observed_at=datetime.now(timezone.utc),
+                            raw={
+                                "event_bus_name": rule.get("EventBusName", "default"),
+                                "schedule_expression": rule.get("ScheduleExpression", ""),
+                                "event_pattern": rule.get("EventPattern", ""),
+                                "description": rule.get("Description", ""),
+                            },
+                        )
+                    )
+
+    logger.info(
+        "graph.ingest_observations",
+        run_id=state["run_id"],
+        count=len(observations),
+        errors=len(ctx.errors),
+    )
+    return {"observations": observations, "errors": ctx.errors}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +302,7 @@ def observe_reliability(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def analyze(state: ChandraState) -> dict[str, Any]:
     """Rank + dedup findings and compute the per-KRA scorecard.
 
@@ -160,7 +314,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
     for kra_findings in raw.values():
         flat.extend(kra_findings)
 
-    analyzed: list[AnalyzedFinding] = deterministic_rank(flat)
+    analyzed: list[AnalyzedFinding] = llm_rank(flat)
     scorecard = score_findings(raw)
 
     logger.info(
@@ -180,6 +334,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def compose_briefing(state: ChandraState) -> dict[str, Any]:
     """Render the markdown + JSON briefing for the run."""
     analyzed = state.get("analyzed_findings", []) or []
@@ -209,10 +364,32 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Approval (human-in-the-loop checkpoint)
+# ---------------------------------------------------------------------------
+
+
+@traced_node
+def approval_node(state: ChandraState) -> dict[str, Any]:
+    """Interrupt on pending writes for human approval.
+
+    If no pending writes exist, returns empty dict (no change).
+    Otherwise, emits an interrupt with pending writes; on resume,
+    creates ApprovalDecision records from the payload.
+    """
+    pending = state.get("pending_writes", []) or []
+    if not pending:
+        return {}
+
+    payload = interrupt({"pending_writes": [p.model_dump() for p in pending]})
+    return {"approvals": [ApprovalDecision(**d) for d in payload]}
+
+
+# ---------------------------------------------------------------------------
 # Persist (only node allowed to write to Postgres outside migrations)
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def persist(state: ChandraState) -> dict[str, Any]:
     """Write run, findings and briefing rows. Idempotent on (run_id)."""
     run_id = state["run_id"]
@@ -235,6 +412,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 status="completed",
                 finished_at=datetime.now(timezone.utc),
                 errors_json=errors,
+                bedrock_cost_usd=state.get("bedrock_cost_usd", 0.0),
             )
             sess.add(run)
         else:
@@ -242,6 +420,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
             run.status = "completed"
             run.finished_at = datetime.now(timezone.utc)
             run.errors_json = errors
+            run.bedrock_cost_usd = state.get("bedrock_cost_usd", 0.0)
 
         # Replace findings for this run to keep persist idempotent.
         sess.query(FindingRow).filter(FindingRow.run_id == run_id).delete()
@@ -307,3 +486,4 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
     return {
         "escalation_result": result.model_dump()
     }
+    return {}

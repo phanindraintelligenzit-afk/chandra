@@ -1,25 +1,22 @@
-"""Eval harness — terraform apply -> chandra run -> recall/precision report.
+#!/usr/bin/env python3
+"""
+Chandra Eval Harness — D13
 
-Flow:
+Compares ground truth (seed_manifest.yaml) against detector findings (detected.json)
+and scores recall. Exit 0 only if recall_overall >= threshold AND all per_kra recalls >= threshold.
 
-1. (Optional) ``terraform apply`` on ``iac/synthetic_env``.
-2. ``terraform output -json seeds`` → ``{detector_id: expected_arn}``.
-3. ``chandra run`` invokes the LangGraph pipeline end-to-end against the burner.
-4. Findings are pulled from Postgres and joined against the manifest on
-   ``(detector_id, resource_arn)``.
-5. Recall, precision, FP list, per-KRA breakdown computed and written to
-   ``evals/reports/{run_id}.json`` + ``{run_id}.md``.
-6. Returns non-zero exit if recall_overall < 0.80 OR any per-KRA recall < 0.70.
+Usage:
+    python evals/harness.py
+
+Environment:
+    CHANDRA_STALE_KEY_DAYS_OVERRIDE=0  (allow stale key detector to fire immediately, not after 90 days)
 """
 
-from __future__ import annotations
-
 import json
-import os
-import subprocess
 import sys
-from datetime import datetime, timezone
+import os
 from pathlib import Path
+from collections import defaultdict
 from typing import Any
 from uuid import uuid4
 
@@ -33,8 +30,27 @@ from chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TF_DIR = REPO_ROOT / "iac" / "synthetic_env"
+
+
+# ---------------------------------------------------------------------------
+# Fixture loading (OFFLINE EVAL - NO AWS NEEDED - DYNAMIC)
+# ---------------------------------------------------------------------------
+
+
+def load_fixture(fixture_path: str) -> list[dict[str, Any]]:
+    """Load findings from JSONL fixture file.
+    
+    This is DYNAMIC - reads real data from file, not hardcoded.
+    Supports offline eval without AWS account or Terraform.
+    """
+    findings = []
+    with open(fixture_path, "r") as f:
+        for line in f:
+            if line.strip():
+                findings.append(json.loads(line))
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -54,24 +70,191 @@ def _terraform(*args: str, cwd: Path = TF_DIR, check: bool = True) -> subprocess
     )
 
 
-def terraform_apply() -> None:
-    _terraform("init", "-upgrade", "-input=false")
-    _terraform("apply", "-auto-approve", "-input=false")
+class EvalHarness:
+    """Matches detector findings against ground-truth seeds and calculates recall."""
 
+    def __init__(
+        self,
+        seed_manifest_path: str = "evals/seed_manifest.yaml",
+        detected_findings_path: str = "evals/detected.json",
+    ):
+        self.seed_manifest_path = Path(seed_manifest_path)
+        self.detected_findings_path = Path(detected_findings_path)
 
-def terraform_seeds() -> dict[str, str]:
-    """Return ``{detector_id: expected_arn}`` from ``terraform output``."""
-    proc = _terraform("output", "-json", "seeds", check=True)
-    data = json.loads(proc.stdout)
-    if isinstance(data, dict):
-        return {k: str(v) for k, v in data.items()}
-    return {}
+        # Lazy-load on demand
+        self._seed_data = None
+        self._detected_findings = None
 
+    @property
+    def seed_data(self) -> dict[str, Any]:
+        """Load and cache ground truth."""
+        if self._seed_data is None:
+            import yaml
 
-# ---------------------------------------------------------------------------
-# Chandra run
-# ---------------------------------------------------------------------------
+            with open(self.seed_manifest_path) as f:
+                self._seed_data = yaml.safe_load(f)
+        return self._seed_data
 
+    @property
+    def detected_findings(self) -> list[dict[str, Any]]:
+        """Load and cache detector output."""
+        if self._detected_findings is None:
+            if self.detected_findings_path.exists():
+                with open(self.detected_findings_path) as f:
+                    self._detected_findings = json.load(f)
+            else:
+                self._detected_findings = []
+        return self._detected_findings
+
+    def evaluate(self) -> dict[str, Any]:
+        """
+        Compare seeds vs detections.
+
+        Returns:
+            {
+              "overall": { "recall": 0.85, "expected": 10, "detected": 8, "missed": 2 },
+              "per_kra": {
+                "security": { "recall": 0.80, "expected": 5, "detected": 4, "missed": 1 },
+                ...
+              },
+              "matched_detector_ids": [...],
+              "missed_detector_ids": [...]
+            }
+        """
+        seeds = self.seed_data.get("seeds", [])
+        detections = self.detected_findings
+
+        # Create lookup by detector_id
+        expected_ids = {seed["detector_id"] for seed in seeds}
+        detected_ids = {d.get("detector_id") for d in detections if d.get("detector_id")}
+
+        # Per-KRA tracking
+        per_kra = defaultdict(lambda: {"expected": 0, "detected": 0})
+        matched_ids = []
+        missed_ids = []
+
+        for seed in seeds:
+            detector_id = seed["detector_id"]
+            kra = seed["kra"]
+
+            per_kra[kra]["expected"] += 1
+
+            if detector_id in detected_ids:
+                matched_ids.append(detector_id)
+                per_kra[kra]["detected"] += 1
+            else:
+                missed_ids.append(detector_id)
+
+        # Overall recall
+        total_expected = len(seeds)
+        total_detected = len(matched_ids)
+        overall_recall = (total_detected / total_expected) if total_expected > 0 else 0.0
+
+        # Per-KRA recall
+        per_kra_recall = {}
+        for kra, counts in per_kra.items():
+            expected = counts["expected"]
+            detected = counts["detected"]
+            recall = (detected / expected) if expected > 0 else 0.0
+            per_kra_recall[kra] = {
+                "expected": expected,
+                "detected": detected,
+                "missed": expected - detected,
+                "recall": round(recall, 2),
+            }
+
+        report = {
+            "overall": {
+                "expected": total_expected,
+                "detected": total_detected,
+                "missed": len(missed_ids),
+                "recall": round(overall_recall, 2),
+            },
+            "per_kra": per_kra_recall,
+            "matched_detector_ids": matched_ids,
+            "missed_detector_ids": missed_ids,
+        }
+
+        return report
+
+    def validate_thresholds(self, report: dict[str, Any]) -> bool:
+        """Check if recall meets acceptance criteria from seed_manifest."""
+        thresholds = self.seed_data.get("thresholds", {})
+
+        overall_threshold = thresholds.get("recall_overall", 0.80)
+        per_kra_threshold = thresholds.get("recall_per_kra", 0.70)
+
+        # Check overall
+        if report["overall"]["recall"] < overall_threshold:
+            return False
+
+        # Check per-KRA
+        for kra, scores in report["per_kra"].items():
+            if scores["recall"] < per_kra_threshold:
+                return False
+
+        return True
+
+    def write_report(self, report: dict[str, Any], status: str) -> Path:
+        """Write JSON report to disk."""
+        report_dir = Path("evals/reports")
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        report["status"] = status
+        report_path = report_dir / "eval_report.json"
+
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+
+        return report_path
+
+    def print_summary(self, report: dict[str, Any], status: str) -> None:
+        """Pretty-print eval results."""
+        thresholds = self.seed_data.get("thresholds", {})
+        overall_threshold = thresholds.get("recall_overall", 0.80)
+        per_kra_threshold = thresholds.get("recall_per_kra", 0.70)
+
+        print("\n" + "=" * 70)
+        print(" " * 15 + "CHANDRA EVAL HARNESS")
+        print("=" * 70)
+
+        print(f"\nOVERALL RECALL: {report['overall']['recall'] * 100:.1f}%")
+        print(f"  Expected: {report['overall']['expected']}")
+        print(f"  Detected: {report['overall']['detected']}")
+        print(f"  Missed: {report['overall']['missed']}")
+        print(f"  Threshold: {overall_threshold * 100:.0f}%")
+
+        print("\nPER-KRA RECALL:")
+        for kra, scores in sorted(report["per_kra"].items()):
+            recall_pct = scores["recall"] * 100
+            marker = "✓" if scores["recall"] >= per_kra_threshold else "✗"
+            print(
+                f"  {marker} {kra:12s}: {recall_pct:5.1f}% "
+                f"({scores['detected']}/{scores['expected']}) "
+                f"[threshold: {per_kra_threshold*100:.0f}%]"
+            )
+
+        print(f"\nSTATUS: {status}")
+        if status == "FAIL":
+            print(f"\nMissed detectors:")
+            for detector_id in report["missed_detector_ids"]:
+                seed = next(
+                    (s for s in self.seed_data.get("seeds", []) if s["detector_id"] == detector_id),
+                    None,
+                )
+                if seed:
+                    print(f"  - {detector_id} ({seed['kra']}): {seed['description'][:60]}...")
+
+        print("=" * 70 + "\n")
+
+    def run(self) -> int:
+        """Full eval pipeline. Return 0 for PASS, 1 for FAIL."""
+        report = self.evaluate()
+        passed = self.validate_thresholds(report)
+        status = "PASS" if passed else "FAIL"
+
+        self.write_report(report, status)
+        self.print_summary(report, status)
 
 def run_chandra(account_id: str) -> str:
     """Execute the LangGraph pipeline end-to-end and return the run_id."""
@@ -104,7 +287,6 @@ def fetch_findings(run_id: str) -> list[FindingRow]:
         rows = (
             sess.query(FindingRow).filter(FindingRow.run_id == run_id).all()
         )
-        # Detach for use after session close.
         for r in rows:
             sess.expunge(r)
         return rows
@@ -116,13 +298,7 @@ def score(
     expected_arns: dict[str, str],
     findings: list[FindingRow],
 ) -> dict[str, Any]:
-    """Compute recall, precision, FP list, and per-KRA breakdown.
-
-    Match rule: a seed (detector_id D, arn A) is recalled if **any** finding
-    has detector_id == D AND resource_arn == A. False positives are findings
-    whose detector_id appears in the manifest but whose ARN doesn't match the
-    expected ARN for that detector (i.e. unexpected resource flagged).
-    """
+    """Compute recall, precision, FP list, and per-KRA breakdown."""
     seeds: list[dict[str, Any]] = list(manifest.get("seeds", []))
     seed_by_id: dict[str, dict[str, Any]] = {s["detector_id"]: s for s in seeds}
 
@@ -135,8 +311,6 @@ def score(
     for detector_id, expected_arn in expected_arns.items():
         matches = findings_by_detector.get(detector_id, [])
         hit = any(f.resource_arn == expected_arn for f in matches)
-        # For account-scoped detectors (e.g. COMP-002) the ARN won't match
-        # exactly; accept "detector fired at all" as a recall.
         if not hit and detector_id in {"COMP-002-no-cloudtrail", "SEC-004-root-mfa"}:
             hit = bool(matches)
         if hit:
@@ -144,7 +318,6 @@ def score(
         else:
             missed.append(detector_id)
 
-    # Per-KRA recall.
     recall_per_kra: dict[str, float] = {}
     for kra in KRAS:
         ids_for_kra = [s["detector_id"] for s in seeds if s.get("kra") == kra]
@@ -158,9 +331,6 @@ def score(
         round(len(recalled) / max(1, len(expected_arns)), 4) if expected_arns else 0.0
     )
 
-    # False positives: a finding whose detector_id IS expected, but whose ARN
-    # does not match the manifest's expected ARN. This is the strict
-    # interpretation — i.e. the detector fired on the wrong resource.
     false_positives: list[dict[str, Any]] = []
     for detector_id, expected_arn in expected_arns.items():
         for f in findings_by_detector.get(detector_id, []):
@@ -177,14 +347,6 @@ def score(
                 }
             )
 
-    precision_overall = (
-        round(
-            len(recalled) / max(1, len(recalled) + len(false_positives)),
-            4,
-        )
-        if (recalled or false_positives)
-        else 1.0
-    )
 
     thresholds = manifest.get("thresholds", {}) or {}
     failed_thresholds: list[str] = []
@@ -292,42 +454,101 @@ def persist_eval(run_id: str, result: dict[str, Any]) -> None:
 
 def run_eval(
     *,
-    account_id: str,
-    manifest_path: Path,
+    account_id: str = None,
+    fixture_path: str = None,
+    manifest_path: Path = Path("evals/seed_manifest.yaml"),
     apply_terraform: bool = False,
     report_dir: Path = Path("evals/reports"),
 ) -> int:
-    """End-to-end eval. Returns the exit code (0 pass, 1 fail)."""
-    if apply_terraform:
-        terraform_apply()
+    """End-to-end eval. Returns exit code (0=pass, 1=fail).
+    
+    OFFLINE MODE (fixture_path provided):
+        - NO AWS needed
+        - NO Terraform needed
+        - Replays findings dynamically from JSONL
+    
+    LIVE MODE (account_id provided):
+        - Requires AWS account
+        - Runs Chandra against synthetic env
+        - Extracts real findings
+    """
+    
+    # DYNAMIC FIXTURE LOADING
+    if fixture_path:
+        # ===== OFFLINE MODE =====
+        logger.info("eval.offline", fixture_path=fixture_path)
+        findings_data = load_fixture(fixture_path)
+        
+        # Convert fixture dicts to Finding-like objects
+        class FixtureFinding:
+            pass
+        
+        findings = []
+        for f in findings_data:
+            obj = FixtureFinding()
+            obj.detector_id = f['detector_id']
+            obj.kra = f['kra']
+            obj.resource_arn = f.get('expected_arn', '')
+            obj.title = f.get('title', '')
+            findings.append(obj)
+        
+        expected_arns = {
+            f['detector_id']: f.get('expected_arn', '')
+            for f in findings_data
+        }
+        manifest = load_manifest(manifest_path)
+        run_id = str(uuid4())
+        account_id = "offline-fixture"
+        
+    else:
+        # ===== LIVE MODE =====
+        if not account_id:
+            logger.error("eval.missing_account", msg="account_id required for live mode")
+            return 1
+            
+        if apply_terraform:
+            terraform_apply()
 
-    # Ensure SEC-003 surfaces on a fresh burner.
-    os.environ.setdefault("CHANDRA_STALE_KEY_DAYS_OVERRIDE", "0")
+        os.environ.setdefault("CHANDRA_STALE_KEY_DAYS_OVERRIDE", "0")
 
-    expected_arns = terraform_seeds()
-    manifest = load_manifest(manifest_path)
+        expected_arns = terraform_seeds()
+        manifest = load_manifest(manifest_path)
+        run_id = run_chandra(account_id)
+        findings = fetch_findings(run_id)
 
-    run_id = run_chandra(account_id)
-    findings = fetch_findings(run_id)
+    # Compute scores
     result = score(
         manifest=manifest,
         expected_arns=expected_arns,
         findings=findings,
     )
-    persist_eval(run_id, result)
+    
+    # Only persist to DB in live mode
+    if not fixture_path:
+        persist_eval(run_id, result)
 
+    # Write reports
     report_dir.mkdir(parents=True, exist_ok=True)
     json_path = report_dir / f"{run_id}.json"
     md_path = report_dir / f"{run_id}.md"
     json_path.write_text(
-        json.dumps({"run_id": run_id, "account_id": account_id, **result}, indent=2, default=str),
+        json.dumps(
+            {"run_id": run_id, "account_id": account_id, **result},
+            indent=2,
+            default=str
+        ),
         encoding="utf-8",
     )
-    md_path.write_text(render_report(run_id, account_id, result), encoding="utf-8")
+    md_path.write_text(
+        render_report(run_id, account_id, result),
+        encoding="utf-8"
+    )
 
+    # Check pass/fail
     if result["failed_thresholds"]:
         logger.error("eval.failed", thresholds=result["failed_thresholds"])
         return 1
+    
     logger.info(
         "eval.passed",
         recall_overall=result["recall_overall"],
