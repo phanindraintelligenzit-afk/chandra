@@ -23,6 +23,9 @@ type ExecutingAction = {
   errorMessage?: string;
   progress?: number;
   jobMessage?: string;
+  questions?: string[];
+  generatorThreadId?: string;
+  sandboxPath?: string;
 };
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -194,7 +197,10 @@ export const WorkerActionExecutionCenter = forwardRef<
                     logs: actionLogs.length > 0 ? actionLogs : a.logs,
                     errorMessage: errorMsg,
                     progress: 100,
-                    jobMessage: jobStatus.message
+                    jobMessage: jobStatus.message,
+                    questions: result?.questions || [],
+                    generatorThreadId: result?.generator_thread_id || "",
+                    sandboxPath: result?.sandbox_path || ""
                   }
                 : a
             )
@@ -229,6 +235,82 @@ export const WorkerActionExecutionCenter = forwardRef<
     }, 2000);
 
     pollIntervalsRef.current.set(actionId, interval);
+  };
+
+
+  const submitAnswers = async (actionId: string) => {
+    const action = executingActions.find((a) => a.id === actionId);
+    if (!action || !action.questions) return;
+
+    // Collect answers from DOM
+    const answers: string[] = [];
+    for (let i = 0; i < action.questions.length; i++) {
+      const el = document.getElementById(`input-${actionId}-${i}`) as HTMLInputElement;
+      answers.push(el?.value || "");
+    }
+
+    // Reset status to running and clear completedAt
+    setExecutingActions((current) =>
+      current.map((a) =>
+        a.id === actionId
+          ? {
+              ...a,
+              status: "running",
+              completedAt: undefined,
+              progress: 5,
+              jobMessage: "Resuming orchestration with answers...",
+              errorMessage: ""
+            }
+          : a
+      )
+    );
+
+    try {
+      // Re-call orchestrateAction
+      const jobResponse = await orchestrateAction({
+        action: {
+          actionName: action.actionName,
+          actionDescription: action.actionDescription,
+          steps: action.steps
+        },
+        jira_issue_key: action.jiraKey,
+        command_timeout: 300,
+        max_iterations: 5,
+        thread_id: action.threadId,
+        generator_thread_id: action.generatorThreadId,
+        sandbox_path: action.sandboxPath,
+        answers: answers
+      });
+
+      const jobId = jobResponse.job_id;
+      setExecutingActions((current) =>
+        current.map((a) =>
+          a.id === actionId
+            ? {
+                ...a,
+                jobId,
+                jobMessage: jobResponse.message || "Job resumed..."
+              }
+            : a
+        )
+      );
+
+      startPolling(actionId, jobId, Date.now(), action.jiraKey);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setExecutingActions((current) =>
+        current.map((a) =>
+          a.id === actionId
+            ? {
+                ...a,
+                status: "failed",
+                errorMessage: errorMessage,
+                jobMessage: "Failed to resume job"
+              }
+            : a
+        )
+      );
+    }
   };
 
 
@@ -442,6 +524,31 @@ export const WorkerActionExecutionCenter = forwardRef<
                         <div className="mb-3 rounded-lg border border-signal/30 bg-signal/10 p-2">
                           <div className="text-[0.6rem] uppercase tracking-[0.18em] text-signal mb-1 font-semibold">ERROR</div>
                           <div className="text-[0.65rem] text-signal/90">{action.errorMessage}</div>
+                        </div>
+                      )}
+
+                      {action.status === "awaiting_input" && action.questions && action.questions.length > 0 && (
+                        <div className="mb-3 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3">
+                          <div className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-300 mb-2 font-semibold">AGENT NEEDS INPUT</div>
+                          <div className="space-y-3">
+                            {action.questions.map((q, qIdx) => (
+                              <div key={qIdx}>
+                                <div className="text-[0.65rem] text-frost mb-1.5">{q}</div>
+                                <input
+                                  type="text"
+                                  placeholder="Type your answer here..."
+                                  className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-blue-400/50 transition"
+                                  id={`input-${action.id}-${qIdx}`}
+                                />
+                              </div>
+                            ))}
+                            <button
+                              onClick={() => submitAnswers(action.id)}
+                              className="mt-2 w-full rounded border border-blue-400/40 bg-blue-400/20 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-blue-200 hover:bg-blue-400/30 transition"
+                            >
+                              Submit Responses
+                            </button>
+                          </div>
                         </div>
                       )}
 

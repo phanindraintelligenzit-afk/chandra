@@ -51,6 +51,7 @@ class OrchestratorResponse(BaseModel):
     final_executor_response: Optional[Dict[str, Any]] = None
     summary: Optional[str] = None
     questions: Optional[List[str]] = None
+    generator_thread_id: Optional[str] = None
 
 
 # ── Orchestrator ───────────────────────────────────────────────────
@@ -160,6 +161,7 @@ class OrchestratorAgent:
                     iterations_used=iteration,
                     iterations=records,
                     questions=gen_response.questions,
+                    generator_thread_id=gen_response.thread_id,
                     summary=(
                         f"GeneratorAgent needs clarification (thread_id={gen_response.thread_id}). "
                         "Re-call OrchestratorAgent.RunPipeline with answers= and "
