@@ -8,6 +8,6 @@ project_name = "chandra"
 
 environment  = "dev"
 
-slack_workspace_id = "T123456"
+slack_workspace_id = "T0B2U1M5HHN"
 
-slack_channel_id = "C123456"
+slack_channel_id = "C0B23B3RRPE"
