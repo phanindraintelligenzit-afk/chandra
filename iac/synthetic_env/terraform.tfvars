@@ -7,3 +7,7 @@ alert_email = "dummy.intelligenzit@gmail.com"
 project_name = "chandra"
 
 environment  = "dev"
+
+slack_workspace_id = "T0B2U1M5HHN"
+
+slack_channel_id = "C0B23B3RRPE"

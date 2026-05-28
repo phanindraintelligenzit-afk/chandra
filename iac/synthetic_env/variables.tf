@@ -78,3 +78,18 @@ variable "project_name" {
 variable "environment" {
   type = string
 }
+########################################
+# SNS variables
+########################################
+
+variable "project_name" {
+  description = "Project name"
+  type        = string
+  default     = "chandra"
+}
+
+variable "sns_email" {
+  description = "Email for SNS alerts"
+  type        = string
+  default     = "dummy.intelligenzit@gmail.com"
+}

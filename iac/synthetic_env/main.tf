@@ -123,3 +123,43 @@ module "cloudwatch_audit" {
 
   retention_days = 14
 }
+########################################
+# SNS TOPICS
+########################################
+
+resource "aws_sns_topic" "critical" {
+  name              = "${var.project_name}-escalation-critical"
+  kms_master_key_id = "alias/aws/sns"
+}
+
+resource "aws_sns_topic" "high" {
+  name              = "${var.project_name}-escalation-high"
+  kms_master_key_id = "alias/aws/sns"
+}
+
+resource "aws_sns_topic" "warning" {
+  name              = "${var.project_name}-escalation-warning"
+  kms_master_key_id = "alias/aws/sns"
+}
+
+########################################
+# EMAIL SUBSCRIPTIONS
+########################################
+
+resource "aws_sns_topic_subscription" "critical_email" {
+  topic_arn = aws_sns_topic.critical.arn
+  protocol  = "email"
+  endpoint  = var.sns_email
+}
+
+resource "aws_sns_topic_subscription" "high_email" {
+  topic_arn = aws_sns_topic.high.arn
+  protocol  = "email"
+  endpoint  = var.sns_email
+}
+
+resource "aws_sns_topic_subscription" "warning_email" {
+  topic_arn = aws_sns_topic.warning.arn
+  protocol  = "email"
+  endpoint  = var.sns_email
+}
