@@ -401,12 +401,13 @@ export type OperationsStreamHandlers = {
   onClose?: () => void;
 };
 
-export type BackendLog = {
+export interface BackendLog {
   timestamp: number;
   level: string;
   logger: string;
   message: string;
-};
+  job_id?: string;
+}
 
 export type LogsResponse = {
   logs: BackendLog[];

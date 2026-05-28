@@ -2,7 +2,7 @@
 const repositoryName = process.env.GITHUB_REPOSITORY?.split("/")[1];
 const pagesPath = process.env.GITHUB_ACTIONS && repositoryName ? `/${repositoryName}` : "";
 const isCiExport = process.env.GITHUB_ACTIONS === "true";
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:6001";
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:6001";
 
 const nextConfig = {
   ...(isCiExport ? { output: "export" } : {}),

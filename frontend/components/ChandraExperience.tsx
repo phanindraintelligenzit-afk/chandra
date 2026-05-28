@@ -1080,6 +1080,9 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
   const [approvals, setApprovals] = useState<EnrichedApprovalRow[]>(Array.isArray(seed) ? seed : []);
   const [analyzedResults, setAnalyzedResults] = useState<ActionResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  // Track which actions have already been dispatched for execution — prevents re-runs of the
+  // effect (triggered by new rawActions references) from submitting the same action twice
+  const dispatchedActionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setApprovals(Array.isArray(seed) ? seed : []);
@@ -1100,19 +1103,25 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
             const isAutoApproved = analyzed ? !analyzed.HumanReviewNeeded : false;
 
             if (isAutoApproved && onAutoApproved) {
-              setTimeout(() => {
-                onAutoApproved({
-                  ...row,
-                  incident: row.incident,
-                  actionName: row.incident,
-                  severity: analyzed?.severity || row.severity,
-                  jiraUrl: analyzed?.JiraUrl,
-                  service: "AWS",
-                  kraCode: row.kraCode || "",
-                  steps: row.steps || [],
-                  note: row.note
-                });
-              }, 500);
+              // Use jiraKey + actionName as a unique dedup key
+              const dedupKey = `${analyzed?.JiraIssueKey || row.id}::${row.incident}`;
+              if (!dispatchedActionsRef.current.has(dedupKey)) {
+                dispatchedActionsRef.current.add(dedupKey);
+                setTimeout(() => {
+                  onAutoApproved({
+                    ...row,
+                    incident: row.incident,
+                    actionName: row.incident,
+                    severity: analyzed?.severity || row.severity,
+                    jiraUrl: analyzed?.JiraUrl,
+                    jiraKey: analyzed?.JiraIssueKey,
+                    service: "AWS",
+                    kraCode: row.kraCode || "",
+                    steps: row.steps || [],
+                    note: row.note
+                  });
+                }, 500);
+              }
             }
 
             return analyzed
@@ -1140,6 +1149,23 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
   const visibleApprovals = approvals;
 
   function markApproval(id: string, nextState: ApprovalState) {
+    if (nextState === "Approved" && onAutoApproved) {
+      const row = approvals.find((r) => r.id === id);
+      if (row) {
+        onAutoApproved({
+          ...row,
+          incident: row.incident,
+          actionName: row.incident,
+          severity: row.severity,
+          jiraUrl: row.jiraUrl,
+          service: "AWS",
+          kraCode: row.kraCode || "",
+          steps: row.steps || [],
+          note: `${row.note} Approved by supervisor.`
+        });
+      }
+    }
+
     setApprovals((current) =>
       current.map((row) =>
         row.id === id
@@ -1228,15 +1254,18 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
                   ) : null}
                 </div>
                 <div className="flex flex-col gap-2 w-[110px]">
-                  {!approval.autoApproved ? (
+                  {approval.state === "Awaiting Review" ? (
                     <>
-                      <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200">Approve</button>
-                      <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal">Reject</button>
-                      <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost">Escalate</button>
+                      <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition">Approve</button>
+                      <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition">Reject</button>
+                      <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost hover:bg-white/10 transition">Escalate</button>
                     </>
                   ) : (
-                    <div className="text-[0.6rem] uppercase tracking-[0.16em] text-emerald-300 text-center py-1">
-                      Auto-Approved
+                    <div className={`text-[0.6rem] uppercase tracking-[0.16em] text-center py-1 font-semibold ${
+                      approval.state === "Approved" ? "text-emerald-300" :
+                      approval.state === "Rejected" ? "text-signal" : "text-amber"
+                    }`}>
+                      {approval.autoApproved ? "Auto-Approved" : approval.state}
                     </div>
                   )}
                 </div>

@@ -80,7 +80,7 @@ export const WorkerActionExecutionCenter = forwardRef<
 
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction
-  }));
+  }), [executingActions]); // re-bind when state changes so dedup check reads fresh list
 
   // Cleanup all intervals on unmount
   useEffect(() => {
@@ -109,7 +109,7 @@ export const WorkerActionExecutionCenter = forwardRef<
     }
   };
 
-  const startPolling = (actionId: string, jobId: string, startedAt: number) => {
+  const startPolling = (actionId: string, jobId: string, startedAt: number, jiraKey: string) => {
     stopPolling(actionId);
 
     const interval = setInterval(async () => {
@@ -120,8 +120,44 @@ export const WorkerActionExecutionCenter = forwardRef<
         ]);
 
         const startTimeSecs = Math.floor(startedAt / 1000);
-        // Include all logs after action started (minus 5s buffer for clock skew)
-        const actionLogs = allLogs.filter((log) => log.timestamp >= startTimeSecs - 5);
+        // Upper bound: completed time + 30s buffer, or now + 30s if still running
+        const nowSecs = Math.floor(Date.now() / 1000);
+
+        // Build jiraKey match variants: "DEV-742" → also match "DEV 742" and "DEV742"
+        const jiraLower = jiraKey ? jiraKey.toLowerCase() : "";        // "dev-742"
+        const jiraSpaced = jiraLower ? jiraLower.replace("-", " ") : "";// "dev 742"
+        const hasValidJira = jiraKey && jiraKey !== "DEV-000" && jiraKey.length > 3;
+        const jobIdLower = jobId ? jobId.toLowerCase() : "";
+
+        let actionLogs = allLogs.filter((log) => {
+          const isInWindow = log.timestamp >= startTimeSecs - 5 && log.timestamp <= nowSecs + 30;
+          if (!isInWindow) return false;
+
+          // 1. Explicit thread-local jobId match (perfect isolation)
+          if (log.job_id && jobIdLower && log.job_id.toLowerCase() === jobIdLower) {
+            return true;
+          }
+
+          const text = `${log.message} ${log.logger}`.toLowerCase();
+
+          // 1. jobId match — most reliable
+          if (jobIdLower && text.includes(jobIdLower)) return true;
+
+          // 2. jiraKey match (both formats)
+          if (hasValidJira && (text.includes(jiraLower) || text.includes(jiraSpaced))) return true;
+
+          // 3. Time-window fallback: include all logs in the time window 
+          // UNLESS they explicitly belong to a DIFFERENT orchestration job.
+          const mentionsDifferentJira =
+            text.includes("jira issue key") &&
+            (!hasValidJira || (!text.includes(jiraLower) && !text.includes(jiraSpaced)));
+            
+          const mentionsDifferentJob =
+            text.includes("job_id=") &&
+            jobIdLower && !text.includes(jobIdLower);
+
+          return !mentionsDifferentJira && !mentionsDifferentJob;
+        });
 
         const jobDone =
           jobStatus.status === "completed" ||
@@ -163,7 +199,6 @@ export const WorkerActionExecutionCenter = forwardRef<
                 : a
             )
           );
-          // Scroll logs container (not the page) to show latest entry
           scrollLogsToBottom(actionId);
 
           if (finalStatus === "completed" && onActionApproved) {
@@ -196,19 +231,35 @@ export const WorkerActionExecutionCenter = forwardRef<
     pollIntervalsRef.current.set(actionId, interval);
   };
 
+
   const handleExecuteAction = async (action: any) => {
-    const actionId = `action-${Date.now()}`;
+    const actionId = `action-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const startedAt = Date.now();
+
+    const jiraKey = action.jiraUrl?.split("/").pop() || action.jiraKey || "DEV-000";
+    const actionName = action.actionName || action.incident || "Unnamed Action";
+
+    // Safety-net dedup: skip if an active entry with the same jiraKey+actionName already exists
+    const isDuplicate = executingActions.some(
+      (a) =>
+        (a.status === "pending" || a.status === "running") &&
+        a.jiraKey === jiraKey &&
+        a.actionName === actionName
+    );
+    if (isDuplicate) {
+      console.warn(`[WorkerCenter] Skipping duplicate submission for ${jiraKey} - ${actionName}`);
+      return;
+    }
 
     const executing: ExecutingAction = {
       id: actionId,
-      actionName: action.actionName || action.incident || "Unnamed Action",
+      actionName,
       actionDescription: action.actionDescription || action.note || "",
       service: action.service || "AWS",
       kraCode: action.kraCode || "",
       priorityLevel: action.severity || action.priorityLevel || "P3",
       steps: action.steps || [],
-      jiraKey: action.jiraUrl?.split("/").pop() || action.jiraKey || "DEV-000",
+      jiraKey,
       status: "pending",
       jobId: "",
       threadId: "",
@@ -250,7 +301,7 @@ export const WorkerActionExecutionCenter = forwardRef<
         )
       );
 
-      startPolling(actionId, jobId, startedAt);
+      startPolling(actionId, jobId, startedAt, executing.jiraKey);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("Action submission failed:", errorMessage);

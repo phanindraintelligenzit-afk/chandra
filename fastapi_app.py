@@ -41,6 +41,8 @@ _job_store: Dict[str, Dict[str, Any]] = {}
 _job_store_lock = threading.Lock()
 _thread_pool = ThreadPoolExecutor(max_workers=3)
 
+_thread_local = threading.local()
+
 class LogCapture(logging.Handler):
     """Custom handler to capture logs into memory buffer"""
     def emit(self, record: logging.LogRecord) -> None:
@@ -48,7 +50,8 @@ class LogCapture(logging.Handler):
             "timestamp": record.created,
             "level": record.levelname,
             "logger": record.name,
-            "message": self.format(record)
+            "message": self.format(record),
+            "job_id": getattr(_thread_local, "job_id", None)
         }
         _log_buffer.append(log_entry)
         # Keep only last 500 logs
@@ -505,6 +508,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
     """Background worker to run orchestration without blocking the API."""
     import time
     start_time = time.time()
+    _thread_local.job_id = job_id
     
     try:
         with _job_store_lock:
@@ -555,6 +559,8 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             _job_store[job_id]["error"] = str(exc)
             _job_store[job_id]["completed_at"] = time.time()
             _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
 
 
 if __name__ == "__main__":
