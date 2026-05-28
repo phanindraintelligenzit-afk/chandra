@@ -108,3 +108,18 @@ output "chandra_log_group" {
 
   value = module.cloudwatch_audit.log_group_name
 }
+########################################
+# SNS outputs
+########################################
+
+output "critical_topic_arn" {
+  value = aws_sns_topic.critical.arn
+}
+
+output "high_topic_arn" {
+  value = aws_sns_topic.high.arn
+}
+
+output "warning_topic_arn" {
+  value = aws_sns_topic.warning.arn
+}
