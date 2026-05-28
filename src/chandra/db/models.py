@@ -7,6 +7,7 @@ node and migrations is allowed to write to these tables.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -34,6 +35,29 @@ class Base(DeclarativeBase):
 
 def _uuid() -> str:
     return str(uuid4())
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that converts datetime objects to ISO format strings."""
+    
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()  # Convert datetime to ISO 8601 string
+        return super().default(obj)
+
+
+def serialize_finding_evidence(evidence_dict: dict) -> dict:
+    """
+    Convert all datetime objects in evidence_jsonb to ISO strings.
+    This prevents 'datetime is not JSON serializable' errors.
+    """
+    if not evidence_dict:
+        return evidence_dict
+    
+    # Use custom encoder to convert to JSON string, then back to dict
+    # This ensures all datetime objects are converted to strings
+    json_str = json.dumps(evidence_dict, cls=DateTimeEncoder)
+    return json.loads(json_str)
 
 
 class Run(Base):
