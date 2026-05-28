@@ -43,3 +43,32 @@ resource "aws_sns_topic_subscription" "warning_email" {
   protocol  = "email"
   endpoint  = var.alert_email
 }
+########################################
+# CHATBOT IAM ROLE
+########################################
+
+resource "aws_iam_role" "chatbot_role" {
+
+  name = "chandra-chatbot-role"
+
+  assume_role_policy = jsonencode({
+
+    Version = "2012-10-17"
+
+    Statement = [
+
+      {
+
+        Effect = "Allow"
+
+        Principal = {
+          Service = "chatbot.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+
+      }
+
+    ]
+  })
+}
