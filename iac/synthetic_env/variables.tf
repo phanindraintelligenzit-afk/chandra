@@ -81,13 +81,6 @@ variable "environment" {
 ########################################
 # SNS variables
 ########################################
-
-variable "project_name" {
-  description = "Project name"
-  type        = string
-  default     = "chandra"
-}
-
 variable "sns_email" {
   description = "Email for SNS alerts"
   type        = string
