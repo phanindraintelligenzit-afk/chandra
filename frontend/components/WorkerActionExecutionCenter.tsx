@@ -14,12 +14,13 @@ type ExecutingAction = {
   priorityLevel: string;
   steps: string[];
   jiraKey: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted";
   threadId: string;
   startedAt: number;
   completedAt?: number;
   logs: BackendLog[];
   lastLogTimestamp?: number;
+  errorMessage?: string;
 };
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -27,23 +28,29 @@ function cx(...classes: Array<string | false | null | undefined>) {
 }
 
 function StatusBadge({ status }: { status: ExecutingAction["status"] }) {
-  const tones = {
+  const tones: Record<string, string> = {
     pending: "border-amber/45 bg-amber/12 text-amber",
     running: "border-signal/45 bg-signal/12 text-signal animate-pulse",
     completed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
-    failed: "border-signal/45 bg-signal/15 text-signal"
+    failed: "border-signal/45 bg-signal/15 text-signal",
+    awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
+    exhausted: "border-orange-400/40 bg-orange-400/12 text-orange-300"
   };
-  const icons = {
+  const icons: Record<string, JSX.Element> = {
     pending: <Clock size={12} />,
     running: <Play size={12} />,
     completed: <CheckCircle2 size={12} />,
-    failed: <AlertTriangle size={12} />
+    failed: <AlertTriangle size={12} />,
+    awaiting_input: <Clock size={12} />,
+    exhausted: <AlertTriangle size={12} />
   };
 
+  const displayLabel = status === "awaiting_input" ? "AWAITING INPUT" : status === "exhausted" ? "EXHAUSTED" : status;
+
   return (
-    <div className={cx("inline-flex items-center gap-1.5 border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] rounded", tones[status])}>
+    <div className={cx("inline-flex items-center gap-1.5 border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] rounded", tones[status] || "border-white/20 bg-white/10")}>
       {icons[status]}
-      {status}
+      {displayLabel}
     </div>
   );
 }
@@ -75,28 +82,50 @@ export function WorkerActionExecutionCenter({
       if (executingActions.length === 0) return;
 
       try {
-        const allLogs = await fetchBackendLogs(200, 0);
+        const allLogs = await fetchBackendLogs(1000, 0);
 
-        setExecutingActions((current) =>
-          current.map((action) => {
-            const actionKeywords = [
-              action.actionName.toLowerCase(),
-              action.threadId.toLowerCase(),
-              action.jiraKey.toLowerCase()
-            ].filter(Boolean);
+        setExecutingActions((current) => {
+          return current.map((action) => {
+            if (action.status !== "running") {
+              return action;
+            }
 
-            const actionLogs = allLogs.filter((log) => {
-              const logText = `${log.message} ${log.logger}`.toLowerCase();
-              return actionKeywords.some((keyword) => logText.includes(keyword));
-            });
+            let actionLogs: BackendLog[] = [];
+            const startTimeMs = action.startedAt;
+            const startTimeSecs = Math.floor(startTimeMs / 1000);
+
+            // First, try to match by threadId if available
+            if (action.threadId && action.threadId.length > 0 && action.threadId !== "error") {
+              actionLogs = allLogs.filter((log) => {
+                const logText = `${log.message} ${log.logger}`.toLowerCase();
+                return logText.includes(action.threadId.toLowerCase());
+              });
+            }
+
+            // If no threadId match, use Jira key + orchestrator keywords
+            if (actionLogs.length === 0) {
+              actionLogs = allLogs.filter((log) => {
+                const logText = `${log.message} ${log.logger}`.toLowerCase();
+                const jiraKeyLower = action.jiraKey.toLowerCase();
+                // Match orchestrator logs with jira key, or any logs after action started
+                const hasJiraContext = logText.includes(jiraKeyLower) || logText.includes("orchestrat");
+                const isAfterStart = log.timestamp >= startTimeSecs - 5;
+                return hasJiraContext && isAfterStart;
+              });
+            }
+
+            // Fallback: include any logs from action start time onwards
+            if (actionLogs.length === 0) {
+              actionLogs = allLogs.filter((log) => log.timestamp >= startTimeSecs - 2);
+            }
 
             return {
               ...action,
-              logs: actionLogs.length > 0 ? actionLogs : action.logs,
+              logs: actionLogs,
               lastLogTimestamp: actionLogs.length > 0 ? actionLogs[actionLogs.length - 1].timestamp : action.lastLogTimestamp
             };
-          })
-        );
+          });
+        });
       } catch (error) {
         console.error("Failed to poll logs:", error);
       }
@@ -125,7 +154,8 @@ export function WorkerActionExecutionCenter({
       status: "running",
       threadId: "",
       startedAt: Date.now(),
-      logs: []
+      logs: [],
+      errorMessage: ""
     };
 
     setExecutingActions((current) => [executing, ...current]);
@@ -143,31 +173,45 @@ export function WorkerActionExecutionCenter({
         max_iterations: 5
       });
 
+      const isSuccess = response.statusCode === 200;
+      const isAwaitingClarification = response.statusCode === 202;
+      const isExhausted = response.statusCode === 207;
+
+      let finalStatus: "completed" | "awaiting_input" | "exhausted" | "failed" = "failed";
+      if (isSuccess) finalStatus = "completed";
+      else if (isAwaitingClarification) finalStatus = "awaiting_input";
+      else if (isExhausted) finalStatus = "exhausted";
+
+      const errorMsg = !isSuccess ? (response.exception || "Execution failed") : "";
+
       setExecutingActions((current) =>
         current.map((a) =>
           a.id === actionId
             ? {
                 ...a,
-                status: response.statusCode === 200 ? "completed" : "failed",
-                threadId: response.thread_id,
-                completedAt: Date.now()
+                status: finalStatus,
+                threadId: response.thread_id || "",
+                completedAt: Date.now(),
+                errorMessage: errorMsg
               }
             : a
         )
       );
 
-      if (onActionApproved) {
+      if (isSuccess && onActionApproved) {
         onActionApproved(action);
       }
     } catch (error) {
-      console.error("Action execution failed:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Action execution failed:", errorMessage);
       setExecutingActions((current) =>
         current.map((a) =>
           a.id === actionId
             ? {
                 ...a,
                 status: "failed",
-                completedAt: Date.now()
+                completedAt: Date.now(),
+                errorMessage: errorMessage
               }
             : a
         )
@@ -275,6 +319,13 @@ export function WorkerActionExecutionCenter({
                         </ol>
                       </div>
 
+                      {action.errorMessage && (
+                        <div className="mb-3 rounded-lg border border-signal/30 bg-signal/10 p-2">
+                          <div className="text-[0.6rem] uppercase tracking-[0.18em] text-signal mb-1 font-semibold">ERROR</div>
+                          <div className="text-[0.65rem] text-signal/90">{action.errorMessage}</div>
+                        </div>
+                      )}
+
                       <div>
                         <div className="text-[0.6rem] uppercase tracking-[0.18em] text-muted mb-2">LIVE EXECUTION LOGS</div>
                         <div ref={containerRef} className="max-h-[250px] space-y-1 overflow-y-auto pr-1 scrollbar-mini">
@@ -298,7 +349,7 @@ export function WorkerActionExecutionCenter({
                               </div>
                             ))
                           ) : (
-                            <div className="text-[0.65rem] text-muted text-center py-2">Waiting for logs...</div>
+                            <div className="text-[0.65rem] text-muted text-center py-2">{action.status === "running" ? "Waiting for logs..." : "No logs captured"}</div>
                           )}
                           <div ref={logsEndRef} />
                         </div>

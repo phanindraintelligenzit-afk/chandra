@@ -24,12 +24,6 @@ from tools.jira_tools.create_jira_ticket import add_comment_to_ticket
 
 load_dotenv(override=True)
 
-logging.basicConfig(
-    filename="orchestrator.log",
-    filemode="w",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-)
 logger = logging.getLogger("OrchestratorAgent")
 
 MAX_ITERATIONS = 5

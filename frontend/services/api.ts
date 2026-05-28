@@ -125,6 +125,7 @@ export type AnalyzerPipelineResponse = {
 };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const ORCHESTRATE_TIMEOUT_MS = 1_800_000; // 30 minutes for long-running orchestrations
 const DEV_PROXY_PREFIX = "/api/backend";
 const DEFAULT_API_URL = "http://localhost:6001";
 
@@ -167,18 +168,15 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFA
         ...(init.headers ?? {})
       }
     });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new HttpError(response.status, body);
-    }
     const text = await response.text();
     if (!text) {
       throw new Error("Empty response body");
     }
     try {
-      return JSON.parse(text) as T;
+      const parsed = JSON.parse(text) as T;
+      return parsed;
     } catch {
-      throw new Error("Malformed JSON response");
+      throw new Error(`Malformed JSON response: ${text.substring(0, 100)}`);
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -455,15 +453,45 @@ export type OrchestratorResponse = {
   output?: unknown;
 };
 
+export type OrchestrateJobResponse = {
+  job_id: string;
+  status: string;
+  message: string;
+  poll_url: string;
+};
+
+export type JobStatusResponse = {
+  job_id: string;
+  status: string; // "pending", "running", "completed", "failed", "not_found"
+  progress: number;
+  message: string;
+  result?: OrchestratorResponse;
+  error?: string;
+  started_at?: number;
+  completed_at?: number;
+};
+
 export async function orchestrateAction(
   payload: OrchestrateRequest,
   options: { signal?: AbortSignal } = {}
-): Promise<OrchestratorResponse> {
-  const response = await request<OrchestratorResponse>("/orchestrate", {
+): Promise<OrchestrateJobResponse> {
+  const response = await request<OrchestrateJobResponse>("/orchestrate", {
     method: "POST",
     body: JSON.stringify(payload),
     signal: options.signal
-  });
+  }, 30_000); // Shorter timeout for initial request
+
+  return response;
+}
+
+export async function getJobStatus(
+  jobId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<JobStatusResponse> {
+  const response = await request<JobStatusResponse>(`/orchestrate/status/${jobId}`, {
+    method: "GET",
+    signal: options.signal
+  }, 10_000);
 
   return response;
 }

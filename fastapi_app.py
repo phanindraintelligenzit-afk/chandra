@@ -5,7 +5,10 @@ FastAPI application for the AWS Observability Agent.
 from __future__ import annotations
 
 import logging
+import threading
+import uuid
 from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -29,9 +32,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fastapi_app")
 
-# In-memory log buffer (keep last 500 logs)
+# In-memory log buffer (keep last 2000 logs for better tracking)
 _log_buffer: List[Dict[str, Any]] = []
-_max_logs = 500
+_max_logs = 2000
+
+# Job tracking for long-running orchestrations
+_job_store: Dict[str, Dict[str, Any]] = {}
+_job_store_lock = threading.Lock()
+_thread_pool = ThreadPoolExecutor(max_workers=3)
 
 class LogCapture(logging.Handler):
     """Custom handler to capture logs into memory buffer"""
@@ -51,6 +59,26 @@ class LogCapture(logging.Handler):
 log_capture = LogCapture()
 log_capture.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
 logging.getLogger().addHandler(log_capture)
+
+# Job models
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str  # "pending", "running", "completed", "failed"
+    progress: int = 0  # 0-100
+    message: str = ""
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+
+    class Config:
+        extra = "ignore"  # Ignore extra fields from job dict
+
+class OrchestrateJobResponse(BaseModel):
+    job_id: str
+    status: str = "accepted"
+    message: str = "Job submitted for processing"
+    poll_url: str = ""
 
 app = FastAPI(
     title="AWS Observability Agent API",
@@ -80,8 +108,8 @@ def health():
     return {"status": "ok"}
 
 @app.get("/logs")
-def get_logs(limit: int = Query(500, ge=1, le=500), offset: int = Query(0, ge=0)):
-    """Get recent backend logs (last 500 stored in memory)"""
+def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
+    """Get recent backend logs (last 2000 stored in memory)"""
     start = max(0, len(_log_buffer) - limit - offset)
     end = max(0, len(_log_buffer) - offset)
     return JSONResponse(status_code=200, content={"logs": _log_buffer[start:end]})
@@ -404,10 +432,11 @@ class OrchestrateRequest(BaseModel):
     )
 
 
-@app.post("/orchestrate", response_model=OrchestratorResponse)
+@app.post("/orchestrate", response_model=OrchestrateJobResponse)
 def orchestrate_action(request: OrchestrateRequest):
     """
-    Generate and execute an action in a self-healing loop until success or max_iterations.
+    Submit a long-running orchestration job. Returns immediately with a job_id.
+    Poll /orchestrate/status/{job_id} to get progress and results.
 
     Example request:
     {
@@ -422,13 +451,71 @@ def orchestrate_action(request: OrchestrateRequest):
         "max_iterations": 5
     }
     """
+    job_id = str(uuid.uuid4())
+    
     logger.info(
-        "POST /orchestrate | action=%s | jira_issue_key=%s | max_iterations=%d",
+        "POST /orchestrate submitted | job_id=%s | action=%s | jira_issue_key=%s",
+        job_id,
         request.action.actionName,
         request.jira_issue_key or "None",
-        request.max_iterations,
     )
+    
+    # Initialize job record
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending",
+            "progress": 0,
+            "message": "Waiting to start",
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "completed_at": None,
+        }
+    
+    # Submit to thread pool
+    _thread_pool.submit(
+        _run_orchestration_task,
+        job_id,
+        request
+    )
+    
+    return OrchestrateJobResponse(
+        job_id=job_id,
+        status="accepted",
+        message=f"Job {job_id} submitted. Poll /orchestrate/status/{job_id} for progress.",
+        poll_url=f"/orchestrate/status/{job_id}"
+    )
+
+@app.get("/orchestrate/status/{job_id}", response_model=JobStatusResponse)
+def get_orchestrate_status(job_id: str):
+    """Poll the status of a submitted orchestration job."""
+    with _job_store_lock:
+        if job_id not in _job_store:
+            return JobStatusResponse(
+                job_id=job_id,
+                status="not_found",
+                message="Job ID not found",
+                error="No job with this ID exists"
+            )
+        job = _job_store[job_id]
+    
+    return JobStatusResponse(job_id=job_id, **job)
+
+def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
+    """Background worker to run orchestration without blocking the API."""
+    import time
+    start_time = time.time()
+    
     try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["message"] = f"Starting orchestration for {request.action.actionName}"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 5
+        
+        logger.info("ORCHESTRATION TASK [%s] started", job_id)
+        
+        # Run the actual orchestration
         orchestrator = OrchestratorAgent(max_iterations=request.max_iterations)
         response = orchestrator.RunPipeline(
             action=request.action.model_dump(),
@@ -440,16 +527,34 @@ def orchestrate_action(request: OrchestrateRequest):
             command_timeout=request.command_timeout,
             jira_issue_key=request.jira_issue_key,
         )
-    except Exception as exc:
-        logger.exception("OrchestratorAgent failed: %s", exc)
-        response = OrchestratorResponse(
-            statusCode=500,
-            status="error",
-            exception=str(exc),
-            thread_id="error",
+        
+        # Update job with result
+        is_success = response.statusCode == 200
+        
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = response.model_dump()
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = (
+                f"Completed successfully in {_job_store[job_id]['completed_at'] - start_time:.1f}s"
+                if is_success else response.summary or "Orchestration completed with errors"
+            )
+        
+        logger.info(
+            "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
+            job_id,
+            response.statusCode,
+            _job_store[job_id]["completed_at"] - start_time
         )
-
-    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+        
+    except Exception as exc:
+        logger.exception("ORCHESTRATION TASK [%s] failed with exception", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
 
 
 if __name__ == "__main__":
