@@ -108,9 +108,25 @@ export type CopilotChatResponse = {
   answer?: string;
 };
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+export type ActionResult = {
+  actionName: string;
+  severity: string;
+  HumanReviewNeeded: boolean;
+  JiraIssueKey: string;
+  JiraUrl: string;
+  priority: string;
+};
+
+export type AnalyzerPipelineResponse = {
+  statusCode: number;
+  status: string;
+  exception?: string | null;
+  output: ActionResult[];
+};
+
+const DEFAULT_TIMEOUT_MS = 60_000;
 const DEV_PROXY_PREFIX = "/api/backend";
-const DEFAULT_API_URL = "http://0.0.0.0:6001";
+const DEFAULT_API_URL = "http://localhost:6001";
 
 function isBrowserDev(): boolean {
   return typeof window !== "undefined" && process.env.NODE_ENV === "development";
@@ -281,6 +297,10 @@ export async function fetchAgentObservations(
   payload: AgentObservationsRequest,
   options: { signal?: AbortSignal } = {}
 ): Promise<AgentObservation> {
+  if (typeof window !== "undefined") {
+    console.log("🌐 FETCH AGENT OBSERVATIONS - region:", payload.region, "kras:", payload.selected_kras?.length ?? 0);
+  }
+
   const response = await request<AgentObservationsResponse>("/getAgentObservations", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -288,8 +308,7 @@ export async function fetchAgentObservations(
   });
 
   if (typeof window !== "undefined") {
-    // eslint-disable-next-line no-console
-    console.log("LIVE OBSERVABILITY RESPONSE", response);
+    console.log("🌐 LIVE OBSERVABILITY RESPONSE", response);
   }
 
   const statusCode = response?.statusCode ?? 0;
@@ -302,7 +321,11 @@ export async function fetchAgentObservations(
     throw new Error("Operational intelligence response did not include output payload");
   }
 
-  return normalizeAgentObservation(output);
+  const normalized = normalizeAgentObservation(output);
+  if (typeof window !== "undefined") {
+    console.log("✅ NORMALIZED OBSERVATIONS", normalized);
+  }
+  return normalized;
 }
 
 export async function fetchCostMetrics(options: { signal?: AbortSignal } = {}): Promise<CostMetricsOutput> {
@@ -315,6 +338,42 @@ export async function fetchCostMetrics(options: { signal?: AbortSignal } = {}): 
     throw new Error("Cost metrics response did not include a daily breakdown");
   }
   return normalized;
+}
+
+export async function analyzeActions(
+  actions: ActionItem[],
+  options: { signal?: AbortSignal } = {}
+): Promise<ActionResult[]> {
+  const payload = {
+    projectKey: "DEV",
+    actions: actions.map((action) => {
+      const item: Record<string, any> = {
+        actionName: action.actionName,
+        actionDescription: action.actionDescription,
+        service: action.service
+      };
+      if (action.kraCode) item.kraCode = action.kraCode;
+      if (action.priorityLevel) item.priorityLevel = action.priorityLevel;
+      if (action.steps) item.steps = action.steps;
+      return item;
+    })
+  };
+
+  if (typeof window !== "undefined") {
+    console.log("ANALYZE ACTIONS PAYLOAD", payload);
+  }
+
+  const response = await request<AnalyzerPipelineResponse>("/analyzeActions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal: options.signal
+  });
+
+  if (!response?.output) {
+    throw new Error("Analyzer response did not include output");
+  }
+
+  return response.output;
 }
 
 export async function sendCopilotMessage(
@@ -343,6 +402,71 @@ export type OperationsStreamHandlers = {
   onError?: (error: Error) => void;
   onClose?: () => void;
 };
+
+export type BackendLog = {
+  timestamp: number;
+  level: string;
+  logger: string;
+  message: string;
+};
+
+export type LogsResponse = {
+  logs: BackendLog[];
+};
+
+export async function fetchBackendLogs(
+  limit: number = 500,
+  offset: number = 0,
+  options: { signal?: AbortSignal } = {}
+): Promise<BackendLog[]> {
+  try {
+    const response = await request<LogsResponse>(`/logs?limit=${limit}&offset=${offset}`, {
+      method: "GET",
+      signal: options.signal
+    });
+    return response?.logs ?? [];
+  } catch (error) {
+    console.error("Failed to fetch backend logs:", error);
+    return [];
+  }
+}
+
+export type OrchestrateRequest = {
+  action: {
+    actionName: string;
+    actionDescription: string;
+    steps?: string[];
+  };
+  sandbox_path?: string;
+  reference_folder?: string;
+  thread_id?: string;
+  answers?: string[];
+  generator_thread_id?: string;
+  command_timeout?: number;
+  jira_issue_key?: string;
+  max_iterations?: number;
+};
+
+export type OrchestratorResponse = {
+  statusCode: number;
+  status: string;
+  exception?: string | null;
+  thread_id: string;
+  output?: unknown;
+};
+
+export async function orchestrateAction(
+  payload: OrchestrateRequest,
+  options: { signal?: AbortSignal } = {}
+): Promise<OrchestratorResponse> {
+  const response = await request<OrchestratorResponse>("/orchestrate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal: options.signal
+  });
+
+  return response;
+}
 
 export function subscribeToOperationsStream(_handlers: OperationsStreamHandlers): () => void {
   return () => {};

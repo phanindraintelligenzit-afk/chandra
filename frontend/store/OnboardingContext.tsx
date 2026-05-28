@@ -201,6 +201,9 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setObservations = useCallback((data: AgentObservation | null, error: string | null = null) => {
+    if (typeof window !== "undefined") {
+      console.log("📝 SET OBSERVATIONS CALLED - data:", data ? `health=${data.health}` : "null", "error:", error);
+    }
     setObservationsState(data);
     setObservationsError(error);
   }, []);

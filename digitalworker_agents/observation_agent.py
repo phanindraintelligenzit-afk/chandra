@@ -131,8 +131,8 @@ class AwsObservabilityAgent:
         self.Kras = self._build_kras_str(kras)
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(model="gpt-5.4")
+            # self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
+            self.Llm = ChatOpenAI(model="gpt-5.4-mini")
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:
@@ -263,7 +263,15 @@ Produce a structured report following these rules:
 
 4. **cost_snapshot** — Every service with notable spend or anomaly.
 
-5. Never fabricate data not present in the tool results. For operational KRAs, steps may use AWS best practices when the tools provide partial context."""
+5. **security_posture** — List of IAM drift findings, Security Hub findings, and misconfigurations detected. Extract from tool data (e.g. fetch_active_threats, fetch_account_audit, check_recorder_status).
+
+6. **compliance_summary** — A brief statement about the compliance readiness or posture based on available data.
+
+7. **health** — Overall health status: "Healthy" if no critical issues, "Degraded" if issues present, "Critical" if P1 issues exist.
+
+8. **kra_status** — Status of each KRA: Green (on track), Yellow (at risk), or Red (behind). Base on available tool data and actions needed.
+
+Never fabricate data not present in the tool results. For operational KRAs, steps may use AWS best practices when the tools provide partial context."""
 
             prompt_chars = len(prompt)
             raw_data_chars = len(raw_str)

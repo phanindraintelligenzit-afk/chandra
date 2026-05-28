@@ -29,6 +29,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fastapi_app")
 
+# In-memory log buffer (keep last 500 logs)
+_log_buffer: List[Dict[str, Any]] = []
+_max_logs = 500
+
+class LogCapture(logging.Handler):
+    """Custom handler to capture logs into memory buffer"""
+    def emit(self, record: logging.LogRecord) -> None:
+        log_entry = {
+            "timestamp": record.created,
+            "level": record.levelname,
+            "logger": record.name,
+            "message": self.format(record)
+        }
+        _log_buffer.append(log_entry)
+        # Keep only last 500 logs
+        if len(_log_buffer) > _max_logs:
+            _log_buffer.pop(0)
+
+# Add custom handler to root logger
+log_capture = LogCapture()
+log_capture.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+logging.getLogger().addHandler(log_capture)
+
 app = FastAPI(
     title="AWS Observability Agent API",
     description="Runs the KRA-aligned AWS observability pipeline and returns a structured report.",
@@ -55,6 +78,13 @@ class PipelineRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/logs")
+def get_logs(limit: int = Query(500, ge=1, le=500), offset: int = Query(0, ge=0)):
+    """Get recent backend logs (last 500 stored in memory)"""
+    start = max(0, len(_log_buffer) - limit - offset)
+    end = max(0, len(_log_buffer) - offset)
+    return JSONResponse(status_code=200, content={"logs": _log_buffer[start:end]})
 
 @app.get("/getDetectorIssues")
 async def get_detector_issues():

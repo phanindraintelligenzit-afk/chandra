@@ -3,7 +3,8 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, sendCopilotMessage, type CopilotChatMessage } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, orchestrateAction, type CopilotChatMessage, type ActionResult, type BackendLog } from "@/services/api";
+import { WorkerActionExecutionCenter } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
   deriveApprovals,
@@ -53,7 +54,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 type Severity = "P1" | "P2" | "P3" | "P4";
 type IncidentStatus = "Resolved" | "Investigating" | "Escalated" | "Monitoring" | "Awaiting Approval";
@@ -513,8 +514,8 @@ function OperationalIntelligencePanel({
 
   const liveObservationRows: Array<[string, string]> =
     liveObservations && liveObservations.length
-      ? liveObservations.map((text, index) => [
-          index === 0 ? "Observation" : index === 1 ? "Telemetry signal" : "Operational note",
+      ? liveObservations.map((text) => [
+          "",
           text
         ])
       : [];
@@ -564,12 +565,18 @@ function OperationalIntelligencePanel({
         </div>
         <div className="operational-scroll max-h-[330px] pr-1">
           <div className="grid gap-3">
-            {observationRows.length ? observationRows.map(([label, text], index) => (
-              <div key={`${label}-${index}`} className="rounded-3xl border border-white/10 bg-black/25 p-3">
-                <div className="text-[0.62rem] uppercase tracking-[0.2em] text-amber">{label}</div>
-                <div className="mt-2 text-sm leading-5 text-frost/80">{text}</div>
-              </div>
-            )) : <OperationalSkeleton label={sync.status === "success" ? "No live observations returned" : "Waiting for LangGraph response"} />}
+            {observationRows.length ? (
+              <>
+                <div className="rounded-3xl border border-white/10 bg-black/25 p-3">
+                  <div className="text-[0.62rem] uppercase tracking-[0.2em] text-amber">Observations</div>
+                </div>
+                {observationRows.map(([label, text], index) => (
+                  <div key={`obs-${index}`} className="rounded-3xl border border-white/10 bg-black/25 p-3">
+                    <div className="text-sm leading-5 text-frost/80">{text}</div>
+                  </div>
+                ))}
+              </>
+            ) : <OperationalSkeleton label={sync.status === "success" ? "No live observations returned" : "Waiting for LangGraph response"} />}
             {securityRows.length > 0 ? (
               <div className="rounded-3xl border border-signal/25 bg-signal/8 p-3">
               <div className="flex items-center gap-2 text-[0.62rem] uppercase tracking-[0.18em] text-signal">
@@ -675,8 +682,8 @@ function CostMonitoring({
           <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
             <div className="text-[0.6rem] uppercase tracking-[0.18em] text-amber">REGION SPEND</div>
             <ul className="operational-scroll mt-2 max-h-[170px] space-y-1 pr-1 text-[0.72rem]">
-              {regionRows.map((row) => (
-                <li key={row.region} className="flex items-center justify-between border-b border-white/5 py-1 last:border-b-0">
+              {regionRows.map((row, idx) => (
+                <li key={`region-${idx}-${row.region}`} className="flex items-center justify-between border-b border-white/5 py-1 last:border-b-0">
                   <span className="text-frost">{row.region}</span>
                   <span className="text-frost/80">${row.total.toFixed(2)}</span>
                 </li>
@@ -686,8 +693,8 @@ function CostMonitoring({
           <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
             <div className="text-[0.6rem] uppercase tracking-[0.18em] text-amber">TOP SERVICES</div>
             <ul className="operational-scroll mt-2 max-h-[170px] space-y-1 pr-1 text-[0.72rem]">
-              {serviceRows.map((row) => (
-                <li key={row.service} className="flex items-center justify-between border-b border-white/5 py-1 last:border-b-0">
+              {serviceRows.map((row, idx) => (
+                <li key={`service-${idx}-${row.service}`} className="flex items-center justify-between border-b border-white/5 py-1 last:border-b-0">
                   <span className="text-frost truncate pr-2" title={row.service}>{row.service}</span>
                   <span className="text-frost/80">${row.total.toFixed(2)}</span>
                 </li>
@@ -714,82 +721,136 @@ function severityRank(severity: Severity) {
   return { P1: 4, P2: 3, P3: 2, P4: 1 }[severity];
 }
 
-function LiveOpsStream({ events, sync }: { events: OpsEvent[]; sync: ObservationsSyncState }) {
+function LiveOpsStream({ sync }: { sync: ObservationsSyncState }) {
+  const [logs, setLogs] = useState<BackendLog[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [logsAvailable, setLogsAvailable] = useState(true);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
 
-  const prioritized = useMemo(() => {
-    return [...events].sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.time.localeCompare(a.time));
-  }, [events]);
+  const scrollToBottom = () => {
+    if (shouldAutoScroll && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  };
 
-  const severityBorder: Record<Severity, string> = {
-    P1: "border-l-signal",
-    P2: "border-l-amber",
-    P3: "border-l-white/30",
-    P4: "border-l-emerald-300/60"
+  const handleScroll = () => {
+    if (containerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+      setShouldAutoScroll(scrollHeight - scrollTop - clientHeight < 50);
+    }
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [logs, shouldAutoScroll]);
+
+  useEffect(() => {
+    let pollInterval: number | null = null;
+
+    const fetchLogs = async () => {
+      try {
+        const newLogs = await fetchBackendLogs(100, 0);
+        setLogs(newLogs);
+        setLogsAvailable(true);
+      } catch (error) {
+        console.log("Logs endpoint not available yet");
+        setLogsAvailable(false);
+      }
+    };
+
+    fetchLogs();
+    pollInterval = window.setInterval(fetchLogs, 1000);
+
+    return () => {
+      if (pollInterval) window.clearInterval(pollInterval);
+    };
+  }, []);
+
+  const levelColor: Record<string, string> = {
+    INFO: "text-frost/80",
+    WARNING: "text-amber",
+    ERROR: "text-signal",
+    DEBUG: "text-muted",
+    CRITICAL: "text-signal"
+  };
+
+  const levelBorder: Record<string, string> = {
+    INFO: "border-l-frost/40",
+    WARNING: "border-l-amber",
+    ERROR: "border-l-signal",
+    DEBUG: "border-l-white/20",
+    CRITICAL: "border-l-signal"
   };
 
   return (
     <Reveal className="glass overflow-hidden p-4">
       <SectionHead
         label="LIVE OPS STREAM"
-        sub="websocket · 5 latest"
+        sub="backend logs · 5 latest"
         action={
           <button className="flex items-center gap-2 border border-white/15 bg-white/[0.04] px-2.5 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-frost/85 hover:border-signal/40 hover:text-signal">
-            <Terminal size={12} /> View Full Audit Stream
+            <Terminal size={12} /> View Full Logs
           </button>
         }
       />
-      <div className="feed-stream max-h-[300px] space-y-1.5 overflow-y-auto pr-1">
-        {prioritized.length ? (
+      <div ref={containerRef} onScroll={handleScroll} className="feed-stream max-h-[300px] space-y-1.5 overflow-y-auto pr-1">
+        {!logsAvailable ? (
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-4 text-center text-[0.68rem] uppercase tracking-[0.16em] text-muted">
+            📋 Live logs endpoint initializing...
+            <div className="mt-2 text-[0.6rem] text-frost/60">Restart backend to enable /logs endpoint</div>
+          </div>
+        ) : logs.length ? (
           <AnimatePresence initial={false}>
-            {prioritized.map((event) => {
-              const open = expandedId === event.id;
+            {logs.map((log, index) => {
+              const id = `${log.timestamp}-${index}`;
+              const open = expandedId === id;
               return (
-              <motion.div
-                key={event.id}
-                layout
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.3 }}
-                onClick={() => setExpandedId(open ? null : event.id)}
-                className={cx(
-                  "cursor-pointer border-l-2 bg-white/[0.025] px-3 py-2 text-[0.72rem] transition hover:bg-white/[0.05]",
-                  severityBorder[event.severity]
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-amber/90">[{event.time}]</span>
-                  <SeverityPill value={event.severity} />
-                  <span className="flex-1 truncate text-frost">{event.incident}</span>
-                  <span className="hidden text-muted md:inline">{event.service}</span>
-                  <span className="text-emerald-300">{event.confidence}%</span>
-                  <StatusDot status={event.status} />
-                </div>
-                <AnimatePresence>
-                  {open ? (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="mt-2 grid gap-1 border-l border-white/8 pl-3 text-[0.66rem] text-muted"
-                    >
-                      <span><span className="text-frost/70">Account:</span> {event.account}</span>
-                      <span><span className="text-frost/70">Resolution:</span> {event.resolution}</span>
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
-              </motion.div>
+                <motion.div
+                  key={id}
+                  layout
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.3 }}
+                  onClick={() => setExpandedId(open ? null : id)}
+                  className={cx(
+                    "cursor-pointer border-l-2 px-3 py-2 text-[0.72rem] transition",
+                    open ? "bg-white/[0.05]" : "bg-white/[0.025] hover:bg-white/[0.05]",
+                    levelBorder[log.level] || "border-l-white/20"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-muted">[{new Date(log.timestamp * 1000).toLocaleTimeString()}]</span>
+                    <span className={`font-semibold ${levelColor[log.level] || "text-frost"}`}>{log.level}</span>
+                    <span className="flex-1 truncate text-frost">{log.message}</span>
+                  </div>
+                  <AnimatePresence>
+                    {open ? (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mt-2 grid gap-1 border-l border-white/8 pl-3 text-[0.66rem] text-muted"
+                      >
+                        <span><span className="text-frost/70">Logger:</span> {log.logger}</span>
+                        <span className="font-mono text-frost/75 break-words">{log.message}</span>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </motion.div>
               );
             })}
           </AnimatePresence>
         ) : (
-          <OperationalSkeleton label={sync.status === "success" ? "No live operational feed events returned" : "Streaming operational events"} />
+          <OperationalSkeleton label={sync.status === "success" ? "No live backend logs returned" : "Streaming backend logs"} />
         )}
+        <div ref={logsEndRef} />
       </div>
       <div className="mt-2 flex items-center justify-between border-t border-white/8 pt-2 text-[0.58rem] uppercase tracking-[0.18em] text-muted">
-        <span>showing {prioritized.length} live events</span>
-        <span className="text-emerald-300">context synced to copilot</span>
+        <span>showing {logs.length} live events</span>
+        <span className="text-emerald-300">live backend stream</span>
       </div>
     </Reveal>
   );
@@ -802,67 +863,37 @@ function KRAMetricsReview({
   selectedKRAs: string[];
   liveEvaluations?: LiveKraEvaluation[];
 }) {
-  const evalByName = new Map<string, LiveKraEvaluation>();
-  (liveEvaluations ?? []).forEach((entry) => evalByName.set(entry.name, entry));
-
-  const selected = selectedKRAs.map((kra) => ({
-    name: kra,
-    metric: getKraMetric(kra),
-    live: evalByName.get(kra) ?? null
-  }));
-
-  if (!selected.length) return null;
-
   return (
     <section className="section-shell">
       <div className="section-inner">
         <SectionHead label="SELECTED KRA SUMMARY" sub="Capability-driven operational review" />
         <Reveal>
-          <div className="grid gap-3 lg:grid-cols-2">
-            {selected.map(({ name, metric, live }) => {
-              const status = live?.status ?? "Active";
-              const statusTone = live ? live.tone : metric.tone;
-              const detail = live?.achievement ?? metric.detail;
-              const note = live?.note;
-              return (
-                <div key={name} className="glass border border-white/10 p-4">
+          {liveEvaluations && liveEvaluations.length > 0 ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {liveEvaluations.map(({ code, name, status, achievement, note, tone }) => (
+                <div key={code} className="glass border border-white/10 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-[0.62rem] uppercase tracking-[0.22em] text-amber">{live?.code ? `${live.code} · ${name}` : name}</div>
-                      <div className="mt-2 text-base font-semibold uppercase tracking-[0.04em] text-frost">{metric.subtitle}</div>
+                      <div className="text-[0.62rem] uppercase tracking-[0.22em] text-amber">{code} · {name}</div>
+                      <div className="mt-2 text-base font-semibold uppercase tracking-[0.04em] text-frost">{name}</div>
                     </div>
-                    <div className={`rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.65rem] uppercase tracking-[0.16em] ${statusTone}`}>
+                    <div className={`rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.65rem] uppercase tracking-[0.16em] ${tone}`}>
                       {status}
                     </div>
                   </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-[0.72rem]">
-                      <div className="uppercase tracking-[0.16em] text-muted">Metric</div>
-                      <div className="mt-1 text-frost">{metric.value}</div>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-[0.72rem] sm:col-span-2">
-                      <div className="uppercase tracking-[0.16em] text-muted">Insight</div>
-                      <div className="mt-1 text-frost">{detail}</div>
-                      {note ? <div className="mt-2 text-[0.65rem] text-muted">{note}</div> : null}
-                    </div>
-                  </div>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-4">
-                    {[
-                      ["Target", metric.target],
-                      ["Actual", metric.actual],
-                      ["Confidence", `${metric.confidence}%`],
-                      ["Automation", `${metric.automation}%`]
-                    ].map(([label, value]) => (
-                      <div key={`${name}-${label}`} className="rounded-2xl border border-white/10 bg-black/30 p-3 text-[0.68rem]">
-                        <div className="uppercase tracking-[0.16em] text-muted">{label}</div>
-                        <div className="mt-1 text-frost">{value}</div>
-                      </div>
-                    ))}
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3 text-[0.72rem]">
+                    <div className="uppercase tracking-[0.16em] text-muted">Achievement</div>
+                    <div className="mt-2 text-frost leading-5">{achievement}</div>
+                    {note ? <div className="mt-2 text-[0.65rem] text-muted">{note}</div> : null}
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-4 text-center text-[0.68rem] uppercase tracking-[0.16em] text-muted">
+              Loading KRA evaluations from backend...
+            </div>
+          )}
         </Reveal>
       </div>
     </section>
@@ -1039,11 +1070,72 @@ function deriveAuditRowsFromLive(events: OpsEvent[], approvals: ApprovalRow[], c
   return [...eventRows, ...approvalRows];
 }
 
-function HumanReviewQueue({ seed }: { seed?: ApprovalRow[] }) {
-  const [approvals, setApprovals] = useState<ApprovalRow[]>(Array.isArray(seed) ? seed : []);
+type EnrichedApprovalRow = ApprovalRow & {
+  severity?: string;
+  jiraUrl?: string;
+  autoApproved?: boolean;
+};
+
+function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: ApprovalRow[]; rawActions?: ActionItem[]; sync?: ObservationsSyncState; onAutoApproved?: (action: any) => void }) {
+  const [approvals, setApprovals] = useState<EnrichedApprovalRow[]>(Array.isArray(seed) ? seed : []);
+  const [analyzedResults, setAnalyzedResults] = useState<ActionResult[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
   useEffect(() => {
     setApprovals(Array.isArray(seed) ? seed : []);
   }, [seed]);
+
+  useEffect(() => {
+    if (!rawActions || rawActions.length === 0) return;
+
+    const enrichApprovals = async () => {
+      setIsLoading(true);
+      try {
+        const results = await analyzeActions(rawActions);
+        setAnalyzedResults(results);
+
+        setApprovals((current) =>
+          current.map((row) => {
+            const analyzed = results.find((r) => r.actionName === row.incident);
+            const isAutoApproved = analyzed ? !analyzed.HumanReviewNeeded : false;
+
+            if (isAutoApproved && onAutoApproved) {
+              setTimeout(() => {
+                onAutoApproved({
+                  ...row,
+                  incident: row.incident,
+                  actionName: row.incident,
+                  severity: analyzed?.severity || row.severity,
+                  jiraUrl: analyzed?.JiraUrl,
+                  service: "AWS",
+                  kraCode: row.kraCode || "",
+                  steps: row.steps || [],
+                  note: row.note
+                });
+              }, 500);
+            }
+
+            return analyzed
+              ? {
+                  ...row,
+                  severity: analyzed.severity,
+                  jiraUrl: analyzed.JiraUrl,
+                  autoApproved: !analyzed.HumanReviewNeeded,
+                  state: analyzed.HumanReviewNeeded ? ("Awaiting Review" as ApprovalState) : ("Approved" as ApprovalState)
+                }
+              : row;
+          })
+        );
+      } catch (error) {
+        console.error("Failed to analyze actions:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    enrichApprovals();
+  }, [rawActions]);
+
   const pendingApprovals = approvals.filter((row) => row.state === "Awaiting Review" || row.state === "Escalated");
   const visibleApprovals = approvals;
 
@@ -1097,7 +1189,16 @@ function HumanReviewQueue({ seed }: { seed?: ApprovalRow[] }) {
       </div>
 
       <div className="operational-scroll flex max-h-[360px] gap-3 overflow-x-auto py-1">
-        {visibleApprovals.length ? (
+        {isLoading || (sync && sync.status !== "success") ? (
+          <div className="w-full flex items-center justify-center">
+            <div className="text-center space-y-3">
+              <div className="h-8 w-8 rounded-full border-2 border-signal/30 border-t-signal animate-spin mx-auto" />
+              <div className="text-[0.7rem] uppercase tracking-[0.16em] text-muted">
+                {isLoading ? "Analyzing actions..." : "Loading operational data..."}
+              </div>
+            </div>
+          </div>
+        ) : visibleApprovals.length ? (
           visibleApprovals.map((approval) => (
             <div key={approval.id} className="glass flex-shrink-0 w-[340px] border border-white/10 p-3">
               <div className="flex items-start justify-between gap-3">
@@ -1105,6 +1206,11 @@ function HumanReviewQueue({ seed }: { seed?: ApprovalRow[] }) {
                   <div className="flex flex-wrap items-center gap-2 text-[0.65rem] uppercase tracking-[0.14em] text-amber">
                     <span>{approval.id}</span>
                     <ApprovalBadge state={approval.state} />
+                    {approval.autoApproved ? (
+                      <span className="border border-emerald-300/40 bg-emerald-300/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-emerald-300">
+                        AUTO-APPROVED
+                      </span>
+                    ) : null}
                     {approval.kraCode ? (
                       <span className="border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-frost/80">
                         {approval.kraCode}
@@ -1113,11 +1219,26 @@ function HumanReviewQueue({ seed }: { seed?: ApprovalRow[] }) {
                   </div>
                   <div className="mt-1 text-sm font-semibold text-frost">{approval.incident}</div>
                   <div className="mt-1 text-[0.68rem] text-muted">{approval.account} · {approval.severity} · {approval.requested}</div>
+                  {approval.jiraUrl ? (
+                    <div className="mt-2">
+                      <a href={approval.jiraUrl} target="_blank" rel="noopener noreferrer" className="text-[0.65rem] text-signal hover:text-signal/80 underline">
+                        View Jira Issue
+                      </a>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-col gap-2 w-[110px]">
-                  <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200">Approve</button>
-                  <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal">Reject</button>
-                  <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost">Escalate</button>
+                  {!approval.autoApproved ? (
+                    <>
+                      <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200">Approve</button>
+                      <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal">Reject</button>
+                      <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost">Escalate</button>
+                    </>
+                  ) : (
+                    <div className="text-[0.6rem] uppercase tracking-[0.16em] text-emerald-300 text-center py-1">
+                      Auto-Approved
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="mt-3 grid gap-2 text-[0.68rem] text-frost/75">
@@ -1277,33 +1398,6 @@ function InfrastructureHealth() {
   );
 }
 
-function DeploymentInsights() {
-  return (
-    <Reveal className="glass overflow-hidden p-4">
-      <SectionHead label="DEPLOYMENT INTELLIGENCE" sub="Release stability · rollback readiness" />
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-3xl border border-white/10 bg-black/25 p-4">
-          <div className="text-sm uppercase tracking-[0.18em] text-muted">RELEASE SUCCESS</div>
-          <div className="mt-3 text-3xl font-semibold text-frost">98.6%</div>
-          <div className="mt-2 text-sm text-frost/70">Stable deployment completion across the last 15 windows.</div>
-        </div>
-        <div className="rounded-3xl border border-white/10 bg-black/25 p-4">
-          <div className="text-sm uppercase tracking-[0.18em] text-muted">ROLLBACK ALERTS</div>
-          <div className="mt-3 text-3xl font-semibold text-frost">2</div>
-          <div className="mt-2 text-sm text-frost/70">Deployments flagged for rollback review by the AI worker.</div>
-        </div>
-      </div>
-      <div className="mt-4 rounded-3xl border border-white/10 bg-black/20 p-4 text-sm text-frost/70">
-        <div className="mb-3 uppercase tracking-[0.18em] text-muted">RECENT DEPLOYMENT LOG</div>
-        <ul className="space-y-2">
-          <li>10:42 · Release pipeline passed all health gates.</li>
-          <li>11:08 · Canary rollout completed with no incidents.</li>
-          <li>12:15 · Auto-rollback signal set on latency spike.</li>
-        </ul>
-      </div>
-    </Reveal>
-  );
-}
 
 function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; unread: number }) {
   const [open, setOpen] = useState(false);
@@ -1466,6 +1560,70 @@ export function ChandraExperience() {
     setCostMetrics,
     setObservations
   } = useOnboarding();
+
+  const [executingActions, setExecutingActions] = useState<any[]>([]);
+
+  const handleExecuteAction = useCallback(async (action: any) => {
+    const actionId = `action-${Date.now()}`;
+    const executing = {
+      id: actionId,
+      actionName: action.incident || action.actionName || "Unnamed Action",
+      actionDescription: action.note || action.actionDescription || "",
+      service: action.service || "AWS",
+      kraCode: action.kraCode || "",
+      priorityLevel: action.severity || "P3",
+      steps: action.steps || [],
+      jiraKey: action.jiraUrl?.split("/").pop() || "DEV-000",
+      status: "running",
+      threadId: "",
+      startedAt: Date.now(),
+      logs: []
+    };
+
+    setExecutingActions((current) => [executing, ...current]);
+
+    try {
+      const response = await orchestrateAction({
+        action: {
+          actionName: executing.actionName,
+          actionDescription: executing.actionDescription,
+          steps: executing.steps
+        },
+        jira_issue_key: executing.jiraKey,
+        command_timeout: 300,
+        max_iterations: 5
+      });
+
+      setExecutingActions((current) =>
+        current.map((a) =>
+          a.id === actionId
+            ? {
+                ...a,
+                status: response.statusCode === 200 ? "completed" : "failed",
+                threadId: response.thread_id,
+                completedAt: Date.now()
+              }
+            : a
+        )
+      );
+    } catch (error) {
+      console.error("Action execution failed:", error);
+      setExecutingActions((current) =>
+        current.map((a) =>
+          a.id === actionId
+            ? {
+                ...a,
+                status: "failed",
+                completedAt: Date.now()
+              }
+            : a
+        )
+      );
+    }
+  }, []);
+
+  console.log("🔵 ChandraExperience RENDER - observations:", observations ? `health=${observations.health}` : "null");
+
   const [observationsSync, setObservationsSync] = useState<ObservationsSyncState>({
     status: observations ? "success" : "loading",
     attempt: 0,
@@ -1525,8 +1683,10 @@ export function ChandraExperience() {
   }, [observationsPayload]);
 
   useEffect(() => {
-    if (observationsInitRef.current) return;
+    console.log("🟡 OBSERVATIONS EFFECT TRIGGERED - observations:", observations ? `health=${observations.health}` : "null", "initRef:", observationsInitRef.current);
+
     if (observations) {
+      console.log("✅ OBSERVATIONS LOADED - updating sync status to success");
       setObservationsSync({
         status: "success",
         attempt: 0,
@@ -1535,6 +1695,13 @@ export function ChandraExperience() {
       });
       return;
     }
+
+    if (observationsInitRef.current) {
+      console.log("⚠️ ALREADY INITIALIZED - returning early");
+      return;
+    }
+
+    console.log("🚀 STARTING OBSERVATION FETCH");
     observationsInitRef.current = true;
 
     let cancelled = false;
@@ -1590,7 +1757,7 @@ export function ChandraExperience() {
       controller?.abort();
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, []);
+  }, [observations]);
 
   const liveEvents: LiveOpsEvent[] = useMemo(
     () => (observations?.issues ? deriveOpsEvents(observations.issues) : []),
@@ -1646,7 +1813,6 @@ export function ChandraExperience() {
   const hasInfra = selectedKRAs.includes("Infrastructure Monitoring");
   const hasIncident = selectedKRAs.includes("Incident Detection");
   const hasCost = selectedKRAs.includes("Cost Optimization");
-  const hasDeploy = selectedKRAs.includes("Deployment Intelligence");
   const hasAudit = selectedKRAs.includes("Audit & Compliance");
 
   return (
@@ -1658,19 +1824,18 @@ export function ChandraExperience() {
           <div className={`lg:col-span-7 ${hasCost ? "" : "opacity-60"}`}>
             <CostMonitoring cards={liveCostCards} breakdown={costBreakdown} />
           </div>
-          <div className="lg:col-span-5"><HumanReviewQueue seed={approvalsAsRow} /></div>
+          <div className="lg:col-span-5"><HumanReviewQueue seed={approvalsAsRow} rawActions={observations?.actions} sync={observationsSync} onAutoApproved={handleExecuteAction} /></div>
         </div>
       </section>
 
-      {(hasInfra || hasIncident || hasDeploy) ? (
+      {(hasInfra || hasIncident) ? (
         <section className="section-shell">
           <div className="section-inner grid gap-3 lg:grid-cols-12">
             <div className="lg:col-span-7 space-y-3">
               {hasInfra ? <InfrastructureHealth /> : null}
             </div>
             <div className="lg:col-span-5 space-y-3">
-              {hasIncident ? <LiveOpsStream events={events} sync={observationsSync} /> : null}
-              {hasDeploy ? <DeploymentInsights /> : null}
+              {hasIncident ? <LiveOpsStream sync={observationsSync} /> : null}
             </div>
           </div>
         </section>
@@ -1683,6 +1848,12 @@ export function ChandraExperience() {
           </div>
         </section>
       ) : null}
+
+      <section className="section-shell">
+        <div className="section-inner">
+          <WorkerActionExecutionCenter actions={executingActions} onActionApproved={handleExecuteAction} />
+        </div>
+      </section>
 
       <KRAMetricsReview selectedKRAs={selectedKRAs} liveEvaluations={liveKraEvaluations} />
 

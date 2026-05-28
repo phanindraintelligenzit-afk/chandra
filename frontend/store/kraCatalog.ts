@@ -25,7 +25,6 @@ export const predefinedKraCatalog: KraDefinition[] = [
   { id: "Infrastructure Monitoring", desc: "Proactively monitor infrastructure and surface anomalies." },
   { id: "Incident Detection", desc: "Detect incidents with high confidence and triage autonomously." },
   { id: "Cost Optimization", desc: "Identify cost anomalies and recommend rightsizing." },
-  { id: "Deployment Intelligence", desc: "Automate safe deployment flows with guardrails." },
   { id: "Audit & Compliance", desc: "Preserve evidence and enforce policy controls." }
 ];
 
@@ -64,17 +63,6 @@ export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
     confidence: 93,
     automation: 81,
     score: 93
-  },
-  "Deployment Intelligence": {
-    subtitle: "Deployment Intelligence",
-    value: "98.6% success",
-    detail: "Release stability tracking is online.",
-    tone: "text-frost",
-    target: "98% success",
-    actual: "98.6%",
-    confidence: 92,
-    automation: 79,
-    score: 91
   },
   "Audit & Compliance": {
     subtitle: "Audit & Compliance",

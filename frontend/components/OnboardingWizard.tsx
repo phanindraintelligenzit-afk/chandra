@@ -284,45 +284,9 @@ export default function OnboardingWizard() {
       setDeployStage(3);
       await animateProgressTo(deploymentTargets[3], controller.signal);
 
-      let data = null;
-      let attempt = 0;
-      const maxAttempts = 5;
-      
-      while (!data && !controller.signal.aborted && attempt < maxAttempts) {
-        attempt += 1;
-        console.log(`DEPLOYMENT ATTEMPT ${attempt}/${maxAttempts}`, payload);
-        setObservationsStatus("loading");
-        setObservationsErrorMessage(attempt > 1 ? `Live backend still initializing. Retrying telemetry request ${attempt}/${maxAttempts}.` : "");
-        try {
-          data = await fetchAgentObservations(payload, { signal: controller.signal });
-          console.log("OBS RESPONSE SUCCESS", data);
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          const message = error instanceof Error ? error.message : "Backend request failed";
-          console.error(`OBS RESPONSE ERROR (Attempt ${attempt})`, message);
-          setObservationsErrorMessage(`${message}. Waiting for live operational response.`);
-          if (attempt < maxAttempts) {
-            await wait(Math.min(10_000, 1_500 * attempt));
-          }
-        }
-      }
-      
-      if (controller.signal.aborted) return;
-
-      if (!data) {
-        console.warn("MAX ATTEMPTS REACHED - PROCEEDING TO DASHBOARD WITH FALLBACK");
-        setObservationsErrorMessage("Maximum attempts reached. Dashboard will continue trying in background.");
-      }
-
       setDeployStage(4);
       await animateProgressTo(deploymentTargets[4], controller.signal);
       await wait(220);
-
-      if (!data) {
-        setObservations(null, "Live operational intelligence timeout. Dashboard will continue retrying.");
-      } else {
-        setObservations(data);
-      }
 
       setDeployStage(5);
       await animateProgressTo(deploymentTargets[5], controller.signal);
@@ -334,6 +298,24 @@ export default function OnboardingWizard() {
         await animateProgressTo(100, controller.signal);
         await wait(420);
         completeOnboarding();
+
+        // Fire observations fetch in background (don't await) with longer timeout
+        const obsController = new AbortController();
+        const obsTimeout = setTimeout(() => obsController.abort(), 90_000); // 90 second timeout
+
+        fetchAgentObservations(payload, { signal: obsController.signal })
+          .then((data) => {
+            clearTimeout(obsTimeout);
+            console.log("OBS RESPONSE SUCCESS", data);
+            setObservations(data);
+          })
+          .catch((error) => {
+            clearTimeout(obsTimeout);
+            const message = error instanceof Error ? error.message : "Backend request failed";
+            console.error("OBS RESPONSE ERROR", message);
+            setObservations(null, message);
+          });
+
         router.push("/dashboard");
       }
     } catch (error: unknown) {
