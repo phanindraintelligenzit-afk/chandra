@@ -77,10 +77,21 @@ module "iam" {
 # SNS
 ###################################
 
+########################################
+# SNS MODULE
+########################################
+
 module "sns" {
+
   source = "./modules/sns"
 
-  email = var.alert_email
+  project_name = var.project_name
+
+  alert_email = var.alert_email
+
+  slack_workspace_id = var.slack_workspace_id
+
+  slack_channel_id = var.slack_channel_id
 }
 
 ###################################
