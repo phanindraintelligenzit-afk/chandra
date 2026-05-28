@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 import pytest
 import structlog.contextvars
+from moto import mock_aws
 
 from chandra.observability import (
     configure_observability,
     task_context,
     traced_node,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_aws_for_metrics():
+    """Mock AWS for all tests in this module so _emit_metric doesn't hit real AWS."""
+    with mock_aws():
+        yield
 
 
 class TestTracedNode:

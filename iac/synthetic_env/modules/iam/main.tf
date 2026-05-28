@@ -52,6 +52,16 @@ resource "aws_iam_policy" "readonly" {
           "sns:Publish"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = "cloudwatch:PutMetricData"
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "Chandra"
+          }
+        }
       }
     ]
   })

@@ -19,6 +19,8 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any
 from uuid import uuid4
+from dotenv import load_dotenv
+load_dotenv()
 
 import yaml
 
@@ -558,7 +560,7 @@ def run_eval(
 
 
 if __name__ == "__main__":
-    account = os.environ.get("SYNTHETIC_ACCOUNT_ID")
+    account = os.getenv("SYNTHETIC_ACCOUNT_ID")
     if not account:
         print("Set SYNTHETIC_ACCOUNT_ID first.", file=sys.stderr)
         sys.exit(2)
