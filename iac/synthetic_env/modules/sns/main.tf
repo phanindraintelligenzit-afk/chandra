@@ -72,3 +72,58 @@ resource "aws_iam_role" "chatbot_role" {
     ]
   })
 }
+########################################
+# CHATBOT POLICY
+########################################
+
+resource "aws_iam_role_policy" "chatbot_policy" {
+
+  role = aws_iam_role.chatbot_role.id
+
+  policy = jsonencode({
+
+    Version = "2012-10-17"
+
+    Statement = [
+
+      {
+
+        Effect = "Allow"
+
+        Action = [
+
+          "sns:Publish",
+          "sns:Subscribe",
+          "sns:GetTopicAttributes"
+
+        ]
+
+        Resource = "*"
+
+      }
+
+    ]
+  })
+}
+########################################
+# AWS CHATBOT SLACK
+########################################
+
+resource "aws_chatbot_slack_channel_configuration" "alerts" {
+
+  configuration_name = "chandra-alerts"
+
+  iam_role_arn = aws_iam_role.chatbot_role.arn
+
+  slack_workspace_id = var.slack_workspace_id
+
+  slack_channel_id = var.slack_channel_id
+
+  sns_topic_arns = [
+
+    aws_sns_topic.critical.arn,
+    aws_sns_topic.high.arn,
+    aws_sns_topic.warning.arn
+
+  ]
+}
