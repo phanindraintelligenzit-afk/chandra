@@ -20,6 +20,7 @@ Topology:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,7 +46,7 @@ from chandra.briefing.schemas import (
     Observation,
     ProposedWrite,
 )
-from chandra.db.models import Briefing, Finding as FindingRow, Run
+from chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
 from chandra.db.session import session_scope
 from chandra.graphs.state import ChandraState
 from chandra.graphs.nodes.action_executor import action_executor_node
@@ -400,9 +401,11 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 
 
 def persist(state: ChandraState) -> dict[str, Any]:
-    """Write run, findings and briefing rows. Idempotent on (run_id)."""
-    import json
-
+    """Write run, findings and briefing rows. Idempotent on (run_id).
+    
+    Converts all datetime objects in evidence_jsonb to ISO strings before saving
+    to prevent 'datetime is not JSON serializable' errors.
+    """
     run_id = state["run_id"]
     account_id = state["account_id"]
     raw = state.get("raw_findings", {}) or {}
@@ -454,6 +457,9 @@ def persist(state: ChandraState) -> dict[str, Any]:
         # Replace findings for this run to keep persist idempotent.
         sess.query(FindingRow).filter(FindingRow.run_id == run_id).delete()
         for f in findings_list:
+            # Serialize evidence_jsonb to remove datetime objects
+            evidence_clean = serialize_finding_evidence(f.evidence)
+            
             sess.add(
                 FindingRow(
                     run_id=run_id,
@@ -464,7 +470,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                     resource_type=f.resource_type,
                     region=f.region,
                     title=f.title,
-                    evidence_jsonb=f.evidence,
+                    evidence_jsonb=evidence_clean,
                     recommendation=f.recommendation,
                 )
             )
@@ -486,6 +492,8 @@ def persist(state: ChandraState) -> dict[str, Any]:
             existing_briefing.markdown_text = briefing_md
             existing_briefing.findings_count = len(findings_list)
 
+        sess.commit()
+
     logger.info(
         "graph.persist",
         run_id=run_id,
@@ -493,6 +501,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
         errors=len(errors),
     )
     return {}
+
 
 def escalation_node(state: ChandraState) -> dict[str, Any]:
     """Publish escalation alerts to SNS."""
