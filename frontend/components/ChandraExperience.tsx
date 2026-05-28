@@ -3,8 +3,8 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, orchestrateAction, getJobStatus, type CopilotChatMessage, type ActionResult, type BackendLog } from "@/services/api";
-import { WorkerActionExecutionCenter } from "./WorkerActionExecutionCenter";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, type CopilotChatMessage, type ActionResult, type BackendLog } from "@/services/api";
+import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
   deriveApprovals,
@@ -1561,175 +1561,12 @@ export function ChandraExperience() {
     setObservations
   } = useOnboarding();
 
-  const [executingActions, setExecutingActions] = useState<any[]>([]);
+  // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
+  // without duplicating state or the job-polling logic
+  const workerRef = useRef<WorkerActionExecutionCenterHandle>(null);
 
-  const handleExecuteAction = useCallback(async (action: any) => {
-    const actionId = `action-${Date.now()}`;
-    const executing = {
-      id: actionId,
-      actionName: action.incident || action.actionName || "Unnamed Action",
-      actionDescription: action.note || action.actionDescription || "",
-      service: action.service || "AWS",
-      kraCode: action.kraCode || "",
-      priorityLevel: action.severity || "P3",
-      steps: action.steps || [],
-      jiraKey: action.jiraUrl?.split("/").pop() || "DEV-000",
-      status: "running",
-      threadId: "",
-      startedAt: Date.now(),
-      logs: [],
-      errorMessage: "",
-      jobId: ""
-    };
-
-    setExecutingActions((current) => [executing, ...current]);
-
-    try {
-      // Step 1: Submit job
-      console.log("Submitting orchestration job...");
-      const jobResponse = await orchestrateAction({
-        action: {
-          actionName: executing.actionName,
-          actionDescription: executing.actionDescription,
-          steps: executing.steps
-        },
-        jira_issue_key: executing.jiraKey,
-        command_timeout: 300,
-        max_iterations: 5
-      });
-
-      const jobId = jobResponse.job_id;
-      console.log(`Job submitted with ID: ${jobId}`);
-
-      setExecutingActions((current) =>
-        current.map((a) =>
-          a.id === actionId
-            ? { ...a, jobId, status: "running" }
-            : a
-        )
-      );
-
-      // Step 2: Poll job status
-      const pollJob = async () => {
-        let isComplete = false;
-        let pollCount = 0;
-        const maxPolls = 3600; // 30 minutes with 30s intervals
-
-        while (!isComplete && pollCount < maxPolls) {
-          try {
-            const statusResponse = await getJobStatus(jobId);
-
-            const progress = statusResponse.progress || 0;
-            const message = statusResponse.message || "";
-
-            setExecutingActions((current) =>
-              current.map((a) =>
-                a.id === actionId
-                  ? {
-                      ...a,
-                      status: statusResponse.status,
-                      message
-                    }
-                  : a
-              )
-            );
-
-            if (
-              statusResponse.status === "completed" ||
-              statusResponse.status === "failed" ||
-              statusResponse.status === "not_found"
-            ) {
-              isComplete = true;
-
-              const result = statusResponse.result;
-              const isSuccess = result?.statusCode === 200;
-              const isAwaitingClarification = result?.statusCode === 202;
-              const isExhausted = result?.statusCode === 207;
-
-              let finalStatus: "completed" | "awaiting_input" | "exhausted" | "failed" = "failed";
-              if (isSuccess) finalStatus = "completed";
-              else if (isAwaitingClarification) finalStatus = "awaiting_input";
-              else if (isExhausted) finalStatus = "exhausted";
-
-              const errorMsg =
-                statusResponse.status === "failed"
-                  ? statusResponse.error || "Execution failed"
-                  : !isSuccess
-                    ? result?.exception || "Execution failed"
-                    : "";
-
-              setExecutingActions((current) =>
-                current.map((a) =>
-                  a.id === actionId
-                    ? {
-                        ...a,
-                        status: finalStatus,
-                        threadId: result?.thread_id || jobId, // Use jobId as fallback for log filtering
-                        completedAt: Date.now(),
-                        errorMessage: errorMsg
-                      }
-                    : a
-                )
-              );
-            } else {
-              // Still running, update with current progress and jobId for log filtering
-              setExecutingActions((current) =>
-                current.map((a) =>
-                  a.id === actionId
-                    ? {
-                        ...a,
-                        threadId: jobId // Use jobId for filtering logs during polling
-                      }
-                    : a
-                )
-              );
-              // Wait and poll again
-              await new Promise((resolve) => setTimeout(resolve, 30_000)); // 30 second intervals
-              pollCount++;
-            }
-          } catch (pollError) {
-            console.error("Error polling job status:", pollError);
-            await new Promise((resolve) => setTimeout(resolve, 30_000)); // 30 second intervals
-            pollCount++;
-          }
-        }
-
-        if (pollCount >= maxPolls) {
-          setExecutingActions((current) =>
-            current.map((a) =>
-              a.id === actionId
-                ? {
-                    ...a,
-                    status: "failed",
-                    completedAt: Date.now(),
-                    errorMessage: "Job polling timeout after 30 minutes"
-                  }
-                : a
-            )
-          );
-        }
-      };
-
-      // Start polling in background
-      pollJob().catch((error) => {
-        console.error("Job polling failed:", error);
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("Action execution failed:", errorMessage);
-      setExecutingActions((current) =>
-        current.map((a) =>
-          a.id === actionId
-            ? {
-                ...a,
-                status: "failed",
-                completedAt: Date.now(),
-                errorMessage: errorMessage
-              }
-            : a
-        )
-      );
-    }
+  const handleExecuteAction = useCallback((action: any) => {
+    workerRef.current?.execute(action);
   }, []);
 
   console.log("🔵 ChandraExperience RENDER - observations:", observations ? `health=${observations.health}` : "null");
@@ -1961,7 +1798,7 @@ export function ChandraExperience() {
 
       <section className="section-shell">
         <div className="section-inner">
-          <WorkerActionExecutionCenter actions={executingActions} onActionApproved={handleExecuteAction} />
+          <WorkerActionExecutionCenter ref={workerRef} />
         </div>
       </section>
 

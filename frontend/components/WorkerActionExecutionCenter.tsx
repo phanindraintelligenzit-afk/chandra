@@ -1,9 +1,9 @@
 "use client";
 
-import { orchestrateAction, fetchBackendLogs, type BackendLog } from "@/services/api";
+import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useRef, useState, Fragment } from "react";
-import { ChevronDown, Play, Pause, CheckCircle2, AlertTriangle, Clock, X } from "lucide-react";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2 } from "lucide-react";
 
 type ExecutingAction = {
   id: string;
@@ -15,22 +15,24 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted";
+  jobId: string;
   threadId: string;
   startedAt: number;
   completedAt?: number;
   logs: BackendLog[];
-  lastLogTimestamp?: number;
   errorMessage?: string;
+  progress?: number;
+  jobMessage?: string;
 };
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
-function StatusBadge({ status }: { status: ExecutingAction["status"] }) {
+function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; progress?: number }) {
   const tones: Record<string, string> = {
     pending: "border-amber/45 bg-amber/12 text-amber",
-    running: "border-signal/45 bg-signal/12 text-signal animate-pulse",
+    running: "border-signal/45 bg-signal/12 text-signal",
     completed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     failed: "border-signal/45 bg-signal/15 text-signal",
     awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
@@ -38,14 +40,21 @@ function StatusBadge({ status }: { status: ExecutingAction["status"] }) {
   };
   const icons: Record<string, JSX.Element> = {
     pending: <Clock size={12} />,
-    running: <Play size={12} />,
+    running: <Loader2 size={12} className="animate-spin" />,
     completed: <CheckCircle2 size={12} />,
     failed: <AlertTriangle size={12} />,
     awaiting_input: <Clock size={12} />,
     exhausted: <AlertTriangle size={12} />
   };
 
-  const displayLabel = status === "awaiting_input" ? "AWAITING INPUT" : status === "exhausted" ? "EXHAUSTED" : status;
+  const displayLabel =
+    status === "awaiting_input"
+      ? "AWAITING INPUT"
+      : status === "exhausted"
+      ? "EXHAUSTED"
+      : status === "running" && progress != null && progress > 0
+      ? `RUNNING ${progress}%`
+      : status;
 
   return (
     <div className={cx("inline-flex items-center gap-1.5 border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] rounded", tones[status] || "border-white/20 bg-white/10")}>
@@ -55,114 +64,166 @@ function StatusBadge({ status }: { status: ExecutingAction["status"] }) {
   );
 }
 
-export function WorkerActionExecutionCenter({
-  actions,
-  onActionApproved
-}: {
-  actions: any[];
-  onActionApproved?: (action: any) => void;
-}) {
+export type WorkerActionExecutionCenterHandle = {
+  execute: (action: any) => void;
+};
+
+export const WorkerActionExecutionCenter = forwardRef<
+  WorkerActionExecutionCenterHandle,
+  { actions?: any[]; onActionApproved?: (action: any) => void }
+>(function WorkerActionExecutionCenter({ onActionApproved }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const logPollInterval = useRef<number | null>(null);
+  // Per-action refs for the logs scroll container — keyed by action id
+  const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
-  const scrollToBottom = () => {
-    logsEndRef.current?.scrollIntoView({ behavior: "auto" });
+  useImperativeHandle(ref, () => ({
+    execute: handleExecuteAction
+  }));
+
+  // Cleanup all intervals on unmount
+  useEffect(() => {
+    return () => {
+      pollIntervalsRef.current.forEach((interval) => clearInterval(interval));
+      pollIntervalsRef.current.clear();
+    };
+  }, []);
+
+  // Scroll the logs container (not the page) to bottom when logs update for the open action
+  const scrollLogsToBottom = (actionId: string) => {
+    const container = logsContainerRefs.current.get(actionId);
+    if (container) {
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+      if (isNearBottom) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [executingActions]);
-
-  // Poll for logs periodically
-  useEffect(() => {
-    const pollLogs = async () => {
-      if (executingActions.length === 0) return;
-
-      try {
-        const allLogs = await fetchBackendLogs(1000, 0);
-
-        setExecutingActions((current) => {
-          return current.map((action) => {
-            if (action.status !== "running") {
-              return action;
-            }
-
-            let actionLogs: BackendLog[] = [];
-            const startTimeMs = action.startedAt;
-            const startTimeSecs = Math.floor(startTimeMs / 1000);
-
-            // First, try to match by threadId if available
-            if (action.threadId && action.threadId.length > 0 && action.threadId !== "error") {
-              actionLogs = allLogs.filter((log) => {
-                const logText = `${log.message} ${log.logger}`.toLowerCase();
-                return logText.includes(action.threadId.toLowerCase());
-              });
-            }
-
-            // If no threadId match, use Jira key + orchestrator keywords
-            if (actionLogs.length === 0) {
-              actionLogs = allLogs.filter((log) => {
-                const logText = `${log.message} ${log.logger}`.toLowerCase();
-                const jiraKeyLower = action.jiraKey.toLowerCase();
-                // Match orchestrator logs with jira key, or any logs after action started
-                const hasJiraContext = logText.includes(jiraKeyLower) || logText.includes("orchestrat");
-                const isAfterStart = log.timestamp >= startTimeSecs - 5;
-                return hasJiraContext && isAfterStart;
-              });
-            }
-
-            // Fallback: include any logs from action start time onwards
-            if (actionLogs.length === 0) {
-              actionLogs = allLogs.filter((log) => log.timestamp >= startTimeSecs - 2);
-            }
-
-            return {
-              ...action,
-              logs: actionLogs,
-              lastLogTimestamp: actionLogs.length > 0 ? actionLogs[actionLogs.length - 1].timestamp : action.lastLogTimestamp
-            };
-          });
-        });
-      } catch (error) {
-        console.error("Failed to poll logs:", error);
-      }
-    };
-
-    if (executingActions.some((a) => a.status === "running")) {
-      logPollInterval.current = window.setInterval(pollLogs, 1000);
+  const stopPolling = (actionId: string) => {
+    const interval = pollIntervalsRef.current.get(actionId);
+    if (interval) {
+      clearInterval(interval);
+      pollIntervalsRef.current.delete(actionId);
     }
+  };
 
-    return () => {
-      if (logPollInterval.current) window.clearInterval(logPollInterval.current);
-    };
-  }, [executingActions]);
+  const startPolling = (actionId: string, jobId: string, startedAt: number) => {
+    stopPolling(actionId);
+
+    const interval = setInterval(async () => {
+      try {
+        const [jobStatus, allLogs] = await Promise.all([
+          getJobStatus(jobId),
+          fetchBackendLogs(1000, 0)
+        ]);
+
+        const startTimeSecs = Math.floor(startedAt / 1000);
+        // Include all logs after action started (minus 5s buffer for clock skew)
+        const actionLogs = allLogs.filter((log) => log.timestamp >= startTimeSecs - 5);
+
+        const jobDone =
+          jobStatus.status === "completed" ||
+          jobStatus.status === "failed" ||
+          jobStatus.status === "not_found";
+
+        if (jobDone) {
+          stopPolling(actionId);
+
+          const result = jobStatus.result as any;
+          const statusCode: number = result?.statusCode ?? 0;
+
+          let finalStatus: ExecutingAction["status"] = "failed";
+          if (jobStatus.status === "completed") {
+            if (statusCode === 200 || statusCode === 0) finalStatus = "completed";
+            else if (statusCode === 202) finalStatus = "awaiting_input";
+            else if (statusCode === 207) finalStatus = "exhausted";
+            else finalStatus = "failed";
+          }
+
+          const errorMsg =
+            jobStatus.error ||
+            (jobStatus.status === "failed" ? jobStatus.message : "") ||
+            (result?.exception ?? "");
+
+          setExecutingActions((current) =>
+            current.map((a) =>
+              a.id === actionId
+                ? {
+                    ...a,
+                    status: finalStatus,
+                    threadId: result?.thread_id || "",
+                    completedAt: Date.now(),
+                    logs: actionLogs.length > 0 ? actionLogs : a.logs,
+                    errorMessage: errorMsg,
+                    progress: 100,
+                    jobMessage: jobStatus.message
+                  }
+                : a
+            )
+          );
+          // Scroll logs container (not the page) to show latest entry
+          scrollLogsToBottom(actionId);
+
+          if (finalStatus === "completed" && onActionApproved) {
+            setExecutingActions((current) => {
+              const found = current.find((a) => a.id === actionId);
+              if (found) onActionApproved(found);
+              return current;
+            });
+          }
+        } else {
+          setExecutingActions((current) =>
+            current.map((a) =>
+              a.id === actionId
+                ? {
+                    ...a,
+                    logs: actionLogs.length > 0 ? actionLogs : a.logs,
+                    progress: jobStatus.progress ?? a.progress,
+                    jobMessage: jobStatus.message
+                  }
+                : a
+            )
+          );
+          scrollLogsToBottom(actionId);
+        }
+      } catch (error) {
+        console.error(`Failed to poll job ${jobId}:`, error);
+      }
+    }, 2000);
+
+    pollIntervalsRef.current.set(actionId, interval);
+  };
 
   const handleExecuteAction = async (action: any) => {
     const actionId = `action-${Date.now()}`;
+    const startedAt = Date.now();
+
     const executing: ExecutingAction = {
       id: actionId,
       actionName: action.actionName || action.incident || "Unnamed Action",
       actionDescription: action.actionDescription || action.note || "",
       service: action.service || "AWS",
       kraCode: action.kraCode || "",
-      priorityLevel: action.severity || "P3",
+      priorityLevel: action.severity || action.priorityLevel || "P3",
       steps: action.steps || [],
-      jiraKey: action.jiraUrl?.split("/").pop() || "DEV-000",
-      status: "running",
+      jiraKey: action.jiraUrl?.split("/").pop() || action.jiraKey || "DEV-000",
+      status: "pending",
+      jobId: "",
       threadId: "",
-      startedAt: Date.now(),
+      startedAt,
       logs: [],
-      errorMessage: ""
+      errorMessage: "",
+      progress: 0,
+      jobMessage: "Submitting job..."
     };
 
     setExecutingActions((current) => [executing, ...current]);
     setExpandedId(actionId);
 
     try {
-      const response = await orchestrateAction({
+      const jobResponse = await orchestrateAction({
         action: {
           actionName: executing.actionName,
           actionDescription: executing.actionDescription,
@@ -173,37 +234,26 @@ export function WorkerActionExecutionCenter({
         max_iterations: 5
       });
 
-      const isSuccess = response.statusCode === 200;
-      const isAwaitingClarification = response.statusCode === 202;
-      const isExhausted = response.statusCode === 207;
-
-      let finalStatus: "completed" | "awaiting_input" | "exhausted" | "failed" = "failed";
-      if (isSuccess) finalStatus = "completed";
-      else if (isAwaitingClarification) finalStatus = "awaiting_input";
-      else if (isExhausted) finalStatus = "exhausted";
-
-      const errorMsg = !isSuccess ? (response.exception || "Execution failed") : "";
+      const jobId = jobResponse.job_id;
 
       setExecutingActions((current) =>
         current.map((a) =>
           a.id === actionId
             ? {
                 ...a,
-                status: finalStatus,
-                threadId: response.thread_id || "",
-                completedAt: Date.now(),
-                errorMessage: errorMsg
+                status: "running",
+                jobId,
+                jobMessage: jobResponse.message || "Job accepted, running...",
+                progress: 5
               }
             : a
         )
       );
 
-      if (isSuccess && onActionApproved) {
-        onActionApproved(action);
-      }
+      startPolling(actionId, jobId, startedAt);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("Action execution failed:", errorMessage);
+      console.error("Action submission failed:", errorMessage);
       setExecutingActions((current) =>
         current.map((a) =>
           a.id === actionId
@@ -211,7 +261,8 @@ export function WorkerActionExecutionCenter({
                 ...a,
                 status: "failed",
                 completedAt: Date.now(),
-                errorMessage: errorMessage
+                errorMessage: errorMessage,
+                jobMessage: "Failed to submit job"
               }
             : a
         )
@@ -220,6 +271,7 @@ export function WorkerActionExecutionCenter({
   };
 
   const removeAction = (id: string) => {
+    stopPolling(id);
     setExecutingActions((current) => current.filter((a) => a.id !== id));
     if (expandedId === id) setExpandedId(null);
   };
@@ -248,7 +300,7 @@ export function WorkerActionExecutionCenter({
           <div className="mt-1 text-sm text-frost/70">Auto-approved actions executing with live logs</div>
         </div>
         <div className="rounded-full bg-signal/20 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-signal">
-          {executingActions.length} EXECUTING
+          {executingActions.filter((a) => a.status === "running" || a.status === "pending").length} EXECUTING
         </div>
       </div>
 
@@ -279,14 +331,30 @@ export function WorkerActionExecutionCenter({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 gap-y-1 flex-wrap">
                           <span className="text-[0.6rem] uppercase tracking-[0.18em] text-amber font-semibold">{action.jiraKey}</span>
-                          <StatusBadge status={action.status} />
+                          <StatusBadge status={action.status} progress={action.progress} />
                           <span className="text-[0.55rem] uppercase tracking-[0.16em] text-muted">{action.priorityLevel}</span>
                         </div>
                         <div className="mt-2 text-sm font-semibold text-frost">{action.actionName}</div>
                         <div className="mt-1 text-[0.65rem] text-muted">
                           {action.service} • {action.kraCode || "No KRA"}
+                          {action.jobId && (
+                            <span className="ml-2 font-mono text-white/30">job:{action.jobId.slice(0, 8)}</span>
+                          )}
                         </div>
                         <div className="mt-2 text-[0.68rem] text-frost/75">{action.actionDescription}</div>
+                        {action.jobMessage && (action.status === "running" || action.status === "pending") && (
+                          <div className="mt-1 text-[0.62rem] text-blue-300/70 italic">{action.jobMessage}</div>
+                        )}
+                        {action.status === "running" && (
+                          <div className="mt-2 h-0.5 w-full rounded-full bg-white/10 overflow-hidden">
+                            <motion.div
+                              className="h-full bg-signal/60 rounded-full"
+                              initial={{ width: "5%" }}
+                              animate={{ width: `${action.progress ?? 5}%` }}
+                              transition={{ duration: 0.5 }}
+                            />
+                          </div>
+                        )}
                       </div>
                       <button
                         onClick={(e) => {
@@ -327,8 +395,17 @@ export function WorkerActionExecutionCenter({
                       )}
 
                       <div>
-                        <div className="text-[0.6rem] uppercase tracking-[0.18em] text-muted mb-2">LIVE EXECUTION LOGS</div>
-                        <div ref={containerRef} className="max-h-[250px] space-y-1 overflow-y-auto pr-1 scrollbar-mini">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-[0.6rem] uppercase tracking-[0.18em] text-muted">LIVE EXECUTION LOGS</div>
+                          <div className="text-[0.55rem] text-muted">{action.logs.length} entries</div>
+                        </div>
+                        <div
+                          ref={(el) => {
+                            if (el) logsContainerRefs.current.set(action.id, el);
+                            else logsContainerRefs.current.delete(action.id);
+                          }}
+                          className="max-h-[300px] space-y-0.5 overflow-y-auto pr-1 scrollbar-mini font-mono"
+                        >
                           {action.logs.length ? (
                             action.logs.map((log, idx) => (
                               <div
@@ -339,24 +416,29 @@ export function WorkerActionExecutionCenter({
                                   levelBorder[log.level] || "border-l-white/20"
                                 )}
                               >
-                                <div className="flex items-center gap-2">
-                                  <span className="text-muted">[{new Date(log.timestamp * 1000).toLocaleTimeString()}]</span>
-                                  <span className={`font-semibold text-[0.6rem] ${levelColor[log.level] || "text-frost"}`}>
+                                <div className="flex items-start gap-2">
+                                  <span className="text-muted shrink-0">[{new Date(log.timestamp * 1000).toLocaleTimeString()}]</span>
+                                  <span className={`font-semibold text-[0.6rem] shrink-0 ${levelColor[log.level] || "text-frost"}`}>
                                     {log.level}
                                   </span>
-                                  <span className="flex-1 truncate text-frost/75">{log.message}</span>
+                                  <span className="flex-1 text-frost/75 break-all whitespace-pre-wrap leading-relaxed">{log.message}</span>
                                 </div>
                               </div>
                             ))
                           ) : (
-                            <div className="text-[0.65rem] text-muted text-center py-2">{action.status === "running" ? "Waiting for logs..." : "No logs captured"}</div>
+                            <div className="text-[0.65rem] text-muted text-center py-4">
+                              {action.status === "running" || action.status === "pending"
+                                ? "⏳ Waiting for logs..."
+                                : "No logs captured"}
+                            </div>
                           )}
-                          <div ref={logsEndRef} />
                         </div>
                       </div>
 
                       <div className="mt-3 pt-3 border-t border-white/8 text-[0.6rem] text-muted">
-                        Started: {new Date(action.startedAt).toLocaleTimeString()} {action.completedAt && `• Completed: ${new Date(action.completedAt).toLocaleTimeString()}`}
+                        Started: {new Date(action.startedAt).toLocaleTimeString()}{" "}
+                        {action.completedAt && `• Completed: ${new Date(action.completedAt).toLocaleTimeString()}`}
+                        {action.jobId && ` • Job: ${action.jobId.slice(0, 8)}…`}
                       </div>
                     </motion.div>
                   )}
@@ -368,7 +450,7 @@ export function WorkerActionExecutionCenter({
       </div>
     </div>
   );
-}
+});
 
 export function ExecuteActionButton({ action, onExecute }: { action: any; onExecute: (action: any) => void }) {
   return (
