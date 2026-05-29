@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Chandra Eval Harness — D13
+Chandra Eval Harness â€” D13
 
 Compares ground truth (seed_manifest.yaml) against detector findings (detected.json)
 and scores recall. Exit 0 only if recall_overall >= threshold AND all per_kra recalls >= threshold.
@@ -229,7 +229,7 @@ class EvalHarness:
         print("\nPER-KRA RECALL:")
         for kra, scores in sorted(report["per_kra"].items()):
             recall_pct = scores["recall"] * 100
-            marker = "✓" if scores["recall"] >= per_kra_threshold else "✗"
+            marker = "âœ“" if scores["recall"] >= per_kra_threshold else "âœ—"
             print(
                 f"  {marker} {kra:12s}: {recall_pct:5.1f}% "
                 f"({scores['detected']}/{scores['expected']}) "
@@ -383,7 +383,7 @@ def score(
 def render_report(run_id: str, account_id: str, result: dict[str, Any]) -> str:
     now = datetime.now(timezone.utc).isoformat()
     lines: list[str] = []
-    lines.append(f"# Chandra Eval Report — {now}")
+    lines.append(f"# Chandra Eval Report â€” {now}")
     lines.append("")
     lines.append(f"- run_id: `{run_id}`")
     lines.append(f"- account_id: `{account_id}`")
@@ -400,25 +400,25 @@ def render_report(run_id: str, account_id: str, result: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Recalled")
     for d in result["recalled"]:
-        lines.append(f"- ✅ {d}")
+        lines.append(f"- âœ… {d}")
     if result["missed"]:
         lines.append("")
         lines.append("## Missed")
         for d in result["missed"]:
-            lines.append(f"- ❌ {d}")
+            lines.append(f"- âŒ {d}")
     if result["false_positives"]:
         lines.append("")
         lines.append("## False positives")
         for fp in result["false_positives"]:
             lines.append(
-                f"- ⚠ {fp['detector_id']} fired on `{fp['resource_arn']}` "
+                f"- âš  {fp['detector_id']} fired on `{fp['resource_arn']}` "
                 f"(expected `{fp['expected_arn']}`)"
             )
     if result["failed_thresholds"]:
         lines.append("")
         lines.append("## Failed thresholds")
         for t in result["failed_thresholds"]:
-            lines.append(f"- 🚨 {t}")
+            lines.append(f"- ðŸš¨ {t}")
     return "\n".join(lines)
 
 
@@ -559,15 +559,12 @@ def run_eval(
     return 0
 
 
+
 if __name__ == "__main__":
-    account = os.getenv("SYNTHETIC_ACCOUNT_ID")
-    if not account:
-        print("Set SYNTHETIC_ACCOUNT_ID first.", file=sys.stderr)
-        sys.exit(2)
-    sys.exit(
-        run_eval(
-            account_id=account,
-            manifest_path=REPO_ROOT / "evals" / "seed_manifest.yaml",
-            apply_terraform=False,
-        )
+    harness = EvalHarness(
+        seed_manifest_path="evals/seed_manifest.yaml",
+        detected_findings_path="evals/detected.json",
     )
+    
+    exit_code = harness.run()
+    sys.exit(exit_code)
