@@ -47,8 +47,17 @@ def _build_checkpointer() -> Any:
         return MemorySaver()
 
     try:
-        checkpointer = PostgresSaver.from_conn_string(settings.postgres_url)
-        checkpointer.setup()
+        # Convert SQLAlchemy URL format to psycopg native format
+        # postgresql+psycopg://... → postgresql://...
+        from psycopg_pool import ConnectionPool
+        import psycopg
+        conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
+        
+        with psycopg.connect(conn_string, autocommit=True) as conn:
+            PostgresSaver(conn).setup()
+            
+        pool = ConnectionPool(conn_string, max_size=10)
+        checkpointer = PostgresSaver(pool)
         return checkpointer
     except Exception as exc:
         logger.warning(

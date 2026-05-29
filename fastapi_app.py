@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uvicorn
 from digitalworker_agents.observation_agent import (
     AwsObservabilityAgent,
@@ -65,6 +65,8 @@ logging.getLogger().addHandler(log_capture)
 
 # Job models
 class JobStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")  # Ignore extra fields from job dict
+
     job_id: str
     status: str  # "pending", "running", "completed", "failed"
     progress: int = 0  # 0-100
@@ -73,9 +75,6 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = None
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
-
-    class Config:
-        extra = "ignore"  # Ignore extra fields from job dict
 
 class OrchestrateJobResponse(BaseModel):
     job_id: str

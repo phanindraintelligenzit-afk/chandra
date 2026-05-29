@@ -131,8 +131,8 @@ class AwsObservabilityAgent:
         self.Kras = self._build_kras_str(kras)
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
-            # self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            self.Llm = ChatOpenAI(model="gpt-5.4-mini")
+            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
+            # self.Llm = ChatOpenAI(model="gpt-5.4-mini")
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:
