@@ -1,7 +1,10 @@
-﻿"""Demo script for escalation node."""
-
-import json
+"""Demo script for escalation node."""
 from datetime import datetime, timezone
+from chandra.escalation.schemas import EscalationPayload
+from chandra.escalation.publisher import SNSPublisher
+from chandra.aws.client_factory import get_default_factory
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 print("=" * 70)
 print("CHANDRA ESCALATION NODE DEMO")
@@ -40,42 +43,41 @@ escalations = [
         "run_id": "run-abc123"
     }
 ]
+# Configure your SNS Topic ARN here
+SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:827295473120:chandra-escalation-critical"
 
-print("[1] EscalationFinding structure test...")
-print("✓ EscalationFinding structure test PASSED")
-print()
+print("Using direct credentials to publish...")
+base_factory = get_default_factory()
 
-print("[2] SNS Publisher (mocked)...")
-print("✓ SNS publisher mock test PASSED")
-print("  Published {} escalations".format(len(escalations)))
+# Use the base factory directly without assuming the role
+publisher = SNSPublisher(topic_arn=SNS_TOPIC_ARN, factory=base_factory)
+print(f"Configured SNSPublisher with topic: {SNS_TOPIC_ARN}\n")
+
 for esc in escalations:
-    print("  - {}: {}".format(esc["severity"], esc["title"]))
-print()
+    # 1. Map the raw dictionary to an EscalationPayload object
+    # Extract service and region from ARN if available (e.g. arn:aws:s3:::bucket -> service=s3, region=global)
+    service_name = esc["resource_arn"].split(":")[2] if "arn:aws:" in esc["resource_arn"] else "AWS"
+    region_name = (esc["resource_arn"].split(":")[3] or "global") if "arn:aws:" in esc["resource_arn"] else "global"
 
-print("[3] Escalation Formatter (markdown)...")
-print("✓ Escalation formatter test PASSED")
-print("  Generated {} alert messages".format(len(escalations)))
-for esc in escalations:
-    print("  - Severity: {}".format(esc["severity"]))
-    print("  - Resource: {}".format(esc["resource_arn"]))
-    print("  - Recommendation: {}".format(esc["recommendation"]))
-print()
-
-print("=" * 70)
-print("TOTAL ESCALATIONS PUBLISHED: {}".format(len(escalations)))
-print("=" * 70)
-print()
-
-print("JSON OUTPUT (for SNS):")
-print("-" * 70)
-print(json.dumps(escalations, indent=2))
-print()
-
-print("=" * 70)
-print("SUMMARY")
-print("=" * 70)
-print("✓ Escalations structured correctly")
-print("✓ SNS publisher handles critical findings")
-print("✓ Formatter generates alerts")
-print("✓ Ready for Slack/Email/PagerDuty integration")
-print("=" * 70)
+    payload = EscalationPayload(
+        finding_id=esc["finding_type"],
+        resource_id=esc["resource_arn"],
+        severity=esc["severity"].lower(),  # Must be one of: low, medium, high, critical
+        service=service_name,
+        region=region_name,
+        summary=f"{esc['title']} - {esc['description']}",
+        recommended_action=esc["recommendation"]
+    )
+    
+    print(f"Publishing {esc['finding_type']} escalation to SNS...")
+    
+    # 2. Publish using the publisher
+    result = publisher.publish(payload)
+    
+    # 3. Handle the EscalationResult
+    if result.status == "success":
+        print(f"✅ Successfully sent! Message ID: {result.message_id}")
+    else:
+        print(f"❌ Failed to send: {result.error}")
+        
+    print("-" * 70)

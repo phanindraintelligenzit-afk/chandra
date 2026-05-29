@@ -1,25 +1,19 @@
-﻿terraform {
-  required_version = ">= 1.0"
 terraform {
-  required_version = ">= 1.5.0"
-
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 5.40"
     }
   }
 }
 
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
 }
 
 resource "aws_cloudwatch_dashboard" "chandra" {
   dashboard_name = "Chandra"
-
-  dashboard_body = file("iac/{path.module}/dashboards/chandra.json")
-  region = var.aws_region
+  dashboard_body = file("${path.module}/dashboards/chandra.json")
 }
 
 #########################################################
@@ -30,8 +24,7 @@ resource "aws_iam_role" "chandra_runtime" {
 
   name = "chandra-runtime-prod"
 
-  permissions_boundary =
-    aws_iam_policy.runtime_boundary.arn
+  permissions_boundary = aws_iam_policy.runtime_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -56,20 +49,16 @@ resource "aws_iam_role" "chandra_runtime" {
 
 resource "aws_iam_role_policy_attachment" "readonly_access" {
 
-  role =
-    aws_iam_role.chandra_runtime.name
+  role = aws_iam_role.chandra_runtime.name
 
-  policy_arn =
-    "arn:aws:iam::aws:policy/ReadOnlyAccess"
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
 resource "aws_iam_role_policy_attachment" "security_audit" {
 
-  role =
-    aws_iam_role.chandra_runtime.name
+  role = aws_iam_role.chandra_runtime.name
 
-  policy_arn =
-    "arn:aws:iam::aws:policy/SecurityAudit"
+  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
 }
 
 #########################################################
@@ -108,11 +97,9 @@ resource "aws_iam_policy" "bedrock_policy" {
 
 resource "aws_iam_role_policy_attachment" "bedrock_attach" {
 
-  role =
-    aws_iam_role.chandra_runtime.name
+  role = aws_iam_role.chandra_runtime.name
 
-  policy_arn =
-    aws_iam_policy.bedrock_policy.arn
+  policy_arn = aws_iam_policy.bedrock_policy.arn
 }
 
 #########################################################

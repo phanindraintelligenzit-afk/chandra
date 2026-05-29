@@ -93,7 +93,6 @@ module "sns" {
 
   slack_channel_id = var.slack_channel_id
 }
-
 ###################################
 # ECS
 ###################################
@@ -101,12 +100,12 @@ module "sns" {
 module "ecs" {
   source = "./modules/ecs"
 
-  cluster_name        = "chandra-cluster"
-  service_name        = "chandra-service"
-  image_url           = var.image_url
-  execution_role_arn  = module.iam.execution_role_arn
-  task_role_arn       = module.iam.task_role_arn
-  sns_topic_arn       = module.sns.topic_arn
+  cluster_name       = "chandra-cluster"
+  service_name       = "chandra-service"
+  image_url          = var.image_url
+  execution_role_arn = module.iam.execution_role_arn
+  task_role_arn      = module.iam.task_role_arn
+  sns_topic_arn      = module.sns.topic_arn
 }
 
 ###################################

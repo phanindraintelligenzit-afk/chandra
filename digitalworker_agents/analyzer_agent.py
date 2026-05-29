@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, TypedDict
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,8 @@ from langchain_aws import ChatBedrockConverse
 from langgraph.graph import END, StateGraph
 
 from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket
+from chandra.escalation.publisher import SNSPublisher
+from chandra.escalation.schemas import EscalationPayload
 
 load_dotenv(override=True)
 
@@ -125,6 +128,7 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
         original_map = {a["actionName"]: a for a in original_actions}
         priority_map = {"HIGH": "High", "MEDIUM": "Medium", "LOW": "Low"}
         final_output = []
+        sns_payloads_to_send = []
 
         for action in analyzed:
             jira_priority = priority_map.get(action["priority"], "Medium")
@@ -152,6 +156,20 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
                 if steps:
                     add_comment_to_ticket(result["issue_key"], steps)
                 add_approval_comment(result["issue_key"], action["HumanReviewNeeded"])
+                
+                # Collect payload for SNS/Slack if Human Review is needed
+                if action["HumanReviewNeeded"]:
+                    payload = EscalationPayload(
+                        finding_id=result["issue_key"],
+                        resource_id=action["actionName"],
+                        severity=action["severity"].lower() if action["severity"].lower() in ["low", "medium", "high", "critical"] else "high",
+                        service=service if service else "AWS",
+                        region="us-east-1",
+                        summary=f"Human Review Required: {description}",
+                        recommended_action=f"Review and approve Jira Ticket: {result['url']}"
+                    )
+                    sns_payloads_to_send.append(payload)
+
                 final_output.append({
                     "actionName": action["actionName"],
                     "severity": action["severity"],
@@ -174,6 +192,21 @@ Return a structured analysis for ALL {len(actions)} actions, preserving the exac
                     "JiraUrl": "",
                     "priority": action["priority"],
                 })
+
+        # Fire all collected SNS notifications at the exact same time
+        if sns_payloads_to_send:
+            try:
+                sns_arn = os.getenv("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:827295473120:chandra-escalation-critical")
+                publisher = SNSPublisher(topic_arn=sns_arn)
+                logger.info("Firing %d collected SNS notifications instantly so Chatbot bundles them...", len(sns_payloads_to_send))
+                for payload in sns_payloads_to_send:
+                    sns_result = publisher.publish(payload)
+                    if sns_result.status == "success":
+                        logger.info("Published SNS notification for HumanReviewNeeded action (Ticket: %s, MessageId: %s)", payload.finding_id, sns_result.message_id)
+                    else:
+                        logger.error("SNS publish failed for Ticket %s: %s", payload.finding_id, sns_result.error)
+            except Exception as sns_exc:
+                logger.error("Exception while setting up/publishing SNS batch: %s", sns_exc)
 
         return {"final_output": final_output}
 
