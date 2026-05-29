@@ -1,9 +1,9 @@
-from moto import mock_sts
+﻿from moto import mock_aws
 
 from chandra.aws.client_factory import AwsClientFactory
 
 
-@mock_sts
+@mock_aws
 def test_assume_role():
 
     factory = AwsClientFactory()
