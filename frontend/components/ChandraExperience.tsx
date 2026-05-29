@@ -949,6 +949,7 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
   const [approvals, setApprovals] = useState<EnrichedApprovalRow[]>(Array.isArray(seed) ? seed : []);
   const [analyzedResults, setAnalyzedResults] = useState<ActionResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   // Track which actions have already been dispatched for execution — prevents re-runs of the
   // effect (triggered by new rawActions references) from submitting the same action twice
   const dispatchedActionsRef = useRef<Set<string>>(new Set());
@@ -1070,21 +1071,27 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
 
   return (
     <Reveal className="glass overflow-hidden p-3">
-      <SectionHead label="HUMAN APPROVAL CENTER" sub="High-risk review queue" />
-      <div className="flex items-center justify-between gap-3 mb-2">
-        <div className="flex items-center gap-3">
-          <div className="rounded-full bg-amber/20 px-3 py-1 text-[0.8rem] font-semibold uppercase tracking-[0.08em] text-amber">{pendingApprovals.length} PENDING</div>
-          <div className="text-[0.72rem] uppercase tracking-[0.12em] text-muted">OPERATIONAL REVIEW QUEUE</div>
-        </div>
+      <div className="section-head cursor-pointer select-none" onClick={() => setIsOpen(!isOpen)}>
         <div className="flex items-center gap-2">
-          {(["Awaiting Review", "Approved", "Rejected", "Escalated"] as ApprovalState[]).map((s) => (
-            <div key={s} className="kpi-card px-2 py-1 text-[0.68rem]">{s}: {approvals.filter((r) => r.state === s).length}</div>
-          ))}
+          <ChevronDown size={14} className={cx("transition-transform duration-300", isOpen ? "" : "-rotate-90")} />
+          <span className="section-label">HUMAN APPROVAL CENTER</span>
+        </div>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="section-sub">High-risk review queue · {pendingApprovals.length} pending</span>
+          <div className="flex items-center gap-2">
+            {(["Awaiting Review", "Approved", "Rejected", "Escalated"] as ApprovalState[]).map((s) => (
+              <div key={s} className="kpi-card px-2 py-1 text-[0.68rem]">{s}: {approvals.filter((r) => r.state === s).length}</div>
+            ))}
+          </div>
         </div>
       </div>
 
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="pt-4">
       <div className="operational-scroll flex max-h-[360px] gap-3 overflow-x-auto py-1">
-        {isLoading || (sync && sync.status !== "success") ? (
+        {isLoading || (!visibleApprovals.length && sync && sync.status !== "success") ? (
           <div className="w-full flex items-center justify-center">
             <div className="text-center space-y-3">
               <div className="h-8 w-8 rounded-full border-2 border-signal/30 border-t-signal animate-spin mx-auto" />
@@ -1164,6 +1171,10 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
           </div>
         )}
       </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </Reveal>
   );
 }
@@ -1494,9 +1505,12 @@ function CostMonitoring({
     if (!rawMetrics?.DailyBreakdown) return [];
     return rawMetrics.DailyBreakdown.slice(-7).map(d => ({
       date: d.Date.slice(5),
-      cost: d.TotalDailyCost
+      cost: Number(d.TotalDailyCost) || 0
     }));
   }, [rawMetrics]);
+
+  const avgCost = chartData.length > 0 ? chartData.reduce((sum, d) => sum + d.cost, 0) / chartData.length : 0;
+  const maxCost = chartData.length > 0 ? Math.max(...chartData.map(d => d.cost)) : 0;
 
   return (
     <Reveal className="glass overflow-hidden p-4">
@@ -1505,31 +1519,31 @@ function CostMonitoring({
         <div className="h-[200px] w-full mt-2">
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+              <LineChart data={chartData} margin={{ top: 10, right: 10, bottom: 10, left: 50 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
-                <XAxis type="category" dataKey="date" stroke="#ffffff50" fontSize={10} tickMargin={8} />
-                <YAxis type="number" dataKey="cost" stroke="#ffffff50" fontSize={10} tickFormatter={(v) => `$${v}`} />
-                <Tooltip 
-                  cursor={{ strokeDasharray: '3 3' }}
+                <XAxis dataKey="date" stroke="#ffffff50" fontSize={10} />
+                <YAxis stroke="#ffffff50" fontSize={10} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+                <Tooltip
                   contentStyle={{ backgroundColor: "#000000cc", border: "1px solid #ffffff20", borderRadius: "8px" }}
                   itemStyle={{ color: "#4ade80" }}
-                  formatter={(v: any, name: string) => [typeof v === "number" ? `$${v.toFixed(2)}` : v, name === "cost" ? "Cost" : name]}
+                  formatter={(v: any) => [typeof v === "number" ? `$${v.toFixed(2)}` : v, "Daily Cost"]}
+                  labelFormatter={(label) => `Date: ${label}`}
                 />
-                <Scatter data={chartData} fill="#4ade80" />
-              </ScatterChart>
+                <Line type="monotone" dataKey="cost" stroke="#4ade80" dot={{ fill: "#4ade80", r: 4 }} strokeWidth={2} />
+              </LineChart>
             </ResponsiveContainer>
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-muted">No trend data available</div>
           )}
         </div>
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4 flex flex-col justify-center">
-          <div className="text-[0.65rem] uppercase tracking-[0.2em] text-amber mb-3">Executive Summary</div>
+          <div className="text-[0.65rem] uppercase tracking-[0.2em] text-amber mb-3">7-Day Summary</div>
           <ul className="space-y-2 text-[0.75rem] text-frost/85 list-disc pl-4 marker:text-emerald-300">
+            <li>Avg Daily: <span className="text-emerald-300">${avgCost.toFixed(2)}</span></li>
+            <li>Peak Daily: <span className="text-emerald-300">${maxCost.toFixed(2)}</span></li>
             {cards && cards.map((c, i) => (
-              <li key={i}>{c.label}: {c.value} ({c.delta})</li>
+              <li key={i}>{c.label}: {c.value}</li>
             ))}
-            <li>Budget utilization currently stable</li>
-            <li>No major anomalies detected</li>
           </ul>
         </div>
       </div>
@@ -1702,10 +1716,9 @@ export function ChandraExperience() {
   }, [observationsPayload]);
 
   useEffect(() => {
-    console.log("🟡 OBSERVATIONS EFFECT TRIGGERED - observations:", observations ? `health=${observations.health}` : "null", "initRef:", observationsInitRef.current);
-
+    if (observationsInitRef.current) return;
     if (observations) {
-      console.log("✅ OBSERVATIONS LOADED - updating sync status to success");
+      observationsInitRef.current = true;
       setObservationsSync({
         status: "success",
         attempt: 0,
@@ -1714,13 +1727,6 @@ export function ChandraExperience() {
       });
       return;
     }
-
-    if (observationsInitRef.current) {
-      console.log("⚠️ ALREADY INITIALIZED - returning early");
-      return;
-    }
-
-    console.log("🚀 STARTING OBSERVATION FETCH");
     observationsInitRef.current = true;
 
     let cancelled = false;
@@ -1731,7 +1737,6 @@ export function ChandraExperience() {
       if (cancelled) return;
       controller?.abort();
       controller = new AbortController();
-      console.log(`DASHBOARD SYNC ATTEMPT ${attempt}`, observationsPayloadRef.current);
       setObservationsSync({
         status: attempt === 1 ? "loading" : "retrying",
         attempt,
@@ -1745,7 +1750,6 @@ export function ChandraExperience() {
       try {
         const data = await fetchAgentObservations(observationsPayloadRef.current, { signal: controller.signal });
         if (cancelled) return;
-        console.log("DASHBOARD SYNC SUCCESS", data);
         setObservationsRef.current(data, null);
         setObservationsSync({
           status: "success",
@@ -1756,7 +1760,6 @@ export function ChandraExperience() {
       } catch (error) {
         if (cancelled || controller.signal.aborted) return;
         const message = error instanceof Error ? error.message : "Operational intelligence request failed";
-        console.error(`DASHBOARD SYNC ERROR (Attempt ${attempt})`, message);
         const nextDelayMs = Math.min(30_000, 2_000 * 2 ** Math.min(attempt - 1, 4));
         setObservationsRef.current(null, message);
         setObservationsSync({
@@ -1776,7 +1779,7 @@ export function ChandraExperience() {
       controller?.abort();
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [observations]);
+  }, []);
 
   const liveEvents: LiveOpsEvent[] = useMemo(
     () => (observations?.issues ? deriveOpsEvents(observations.issues) : []),

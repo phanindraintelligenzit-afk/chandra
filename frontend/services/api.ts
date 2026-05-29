@@ -283,13 +283,21 @@ function normalizeAgentObservation(output: unknown): AgentObservation {
 function normalizeCostMetrics(payload: unknown): CostMetricsOutput {
   const record = asRecord(payload);
   const output = asRecord(record.output ?? record);
-  const daily = Array.isArray(output.DailyBreakdown) ? output.DailyBreakdown : [];
+  const daily = Array.isArray(output.DailyBreakdown)
+    ? output.DailyBreakdown.map((d: any) => ({
+        Date: String(d.Date ?? ""),
+        TotalDailyCost: Number(d.TotalDailyCost ?? 0),
+        Regions: (d.Regions ?? {}) as Record<string, CostRegion>
+      }))
+    : [];
   return {
     LookbackPeriod: (output.LookbackPeriod as CostMetricsOutput["LookbackPeriod"]) ?? { Start: "", End: "" },
     Granularity: String(output.Granularity ?? ""),
-    DailyBreakdown: daily as CostDailyBreakdown[]
+    DailyBreakdown: daily
   };
 }
+
+let activeObservationsRequest: Promise<AgentObservation> | null = null;
 
 export async function fetchAgentObservations(
   payload: AgentObservationsRequest,
@@ -299,43 +307,72 @@ export async function fetchAgentObservations(
     console.log("🌐 FETCH AGENT OBSERVATIONS - region:", payload.region, "kras:", payload.selected_kras?.length ?? 0);
   }
 
-  const response = await request<AgentObservationsResponse>("/getAgentObservations", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    signal: options.signal
-  });
-
-  if (typeof window !== "undefined") {
-    console.log("🌐 LIVE OBSERVABILITY RESPONSE", response);
+  if (activeObservationsRequest) {
+    if (typeof window !== "undefined") {
+      console.log("🌐 REUSING ACTIVE OBSERVATIONS REQUEST");
+    }
+    return activeObservationsRequest;
   }
 
-  const statusCode = response?.statusCode ?? 0;
-  if (statusCode && statusCode !== 200) {
-    throw new Error(`Backend returned statusCode ${statusCode}`);
-  }
+  activeObservationsRequest = (async () => {
+    try {
+      const response = await request<AgentObservationsResponse>("/getAgentObservations", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        signal: options.signal
+      }, 180_000);
 
-  const output = response?.output;
-  if (!output || typeof output !== "object") {
-    throw new Error("Operational intelligence response did not include output payload");
-  }
+      if (typeof window !== "undefined") {
+        console.log("🌐 LIVE OBSERVABILITY RESPONSE", response);
+      }
 
-  const normalized = normalizeAgentObservation(output);
-  if (typeof window !== "undefined") {
-    console.log("✅ NORMALIZED OBSERVATIONS", normalized);
-  }
-  return normalized;
+      const statusCode = response?.statusCode ?? 0;
+      if (statusCode && statusCode !== 200) {
+        throw new Error(`Backend returned statusCode ${statusCode}`);
+      }
+
+      const output = response?.output;
+      if (!output || typeof output !== "object") {
+        throw new Error("Operational intelligence response did not include output payload");
+      }
+
+      const normalized = normalizeAgentObservation(output);
+      if (typeof window !== "undefined") {
+        console.log("✅ NORMALIZED OBSERVATIONS", normalized);
+      }
+      return normalized;
+    } finally {
+      activeObservationsRequest = null;
+    }
+  })();
+
+  return activeObservationsRequest;
 }
 
+let activeCostMetricsRequest: Promise<CostMetricsOutput> | null = null;
+
 export async function fetchCostMetrics(options: { signal?: AbortSignal } = {}): Promise<CostMetricsOutput> {
-  const data = await request<CostMetricsResponse | CostMetricsOutput>("/getCostMetrics", {
-    method: "GET",
-    signal: options.signal
-  });
-  const normalized = normalizeCostMetrics(data);
-  if (!Array.isArray(normalized.DailyBreakdown)) {
-    throw new Error("Cost metrics response did not include a daily breakdown");
+  if (activeCostMetricsRequest) {
+    return activeCostMetricsRequest;
   }
-  return normalized;
+
+  activeCostMetricsRequest = (async () => {
+    try {
+      const data = await request<CostMetricsResponse | CostMetricsOutput>("/getCostMetrics", {
+        method: "GET",
+        signal: options.signal
+      });
+      const normalized = normalizeCostMetrics(data);
+      if (!Array.isArray(normalized.DailyBreakdown)) {
+        throw new Error("Cost metrics response did not include a daily breakdown");
+      }
+      return normalized;
+    } finally {
+      activeCostMetricsRequest = null;
+    }
+  })();
+
+  return activeCostMetricsRequest;
 }
 
 export async function analyzeActions(

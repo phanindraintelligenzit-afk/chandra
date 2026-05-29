@@ -301,7 +301,7 @@ export default function OnboardingWizard() {
 
         // Fire observations fetch in background (don't await) with longer timeout
         const obsController = new AbortController();
-        const obsTimeout = setTimeout(() => obsController.abort(), 90_000); // 90 second timeout
+        const obsTimeout = setTimeout(() => obsController.abort(), 180_000); // 3 minute timeout
 
         fetchAgentObservations(payload, { signal: obsController.signal })
           .then((data) => {

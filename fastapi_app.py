@@ -154,7 +154,7 @@ async def get_detector_issues():
 
 @app.get("/getCostMetrics")
 async def get_cost_metrics(
-    days_lookback: int = Query(default=1, ge=1, le=365, description="Number of days to look back"),
+    days_lookback: int = Query(default=7, ge=1, le=365, description="Number of days to look back"),
     granularity: str = Query(default="DAILY", description="Cost granularity: DAILY or MONTHLY"),
 ) -> JSONResponse:
     logger.info("GET /getCostMetrics called with days_lookback=%d, granularity=%s", days_lookback, granularity)
@@ -202,6 +202,8 @@ def run_pipeline(request: PipelineRequest):
             output=None,
         )
 
+    health = getattr(response.output, "health", "Unknown") if response.output else "Unknown"
+    logger.info("Pipeline completed: statusCode=%d, health=%s", response.statusCode, health)
     return JSONResponse(status_code=response.statusCode, content=response.model_dump())
 
 class ActionInput(BaseModel):

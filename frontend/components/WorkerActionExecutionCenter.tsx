@@ -81,6 +81,8 @@ export const WorkerActionExecutionCenter = forwardRef<
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  const logsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cachedLogsRef = useRef<BackendLog[]>([]);
 
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction
@@ -91,6 +93,7 @@ export const WorkerActionExecutionCenter = forwardRef<
     return () => {
       pollIntervalsRef.current.forEach((interval) => clearInterval(interval));
       pollIntervalsRef.current.clear();
+      if (logsIntervalRef.current) clearInterval(logsIntervalRef.current);
     };
   }, []);
 
@@ -113,15 +116,25 @@ export const WorkerActionExecutionCenter = forwardRef<
     }
   };
 
+  const startLogsPolling = () => {
+    if (logsIntervalRef.current) return;
+    logsIntervalRef.current = setInterval(async () => {
+      try {
+        cachedLogsRef.current = await fetchBackendLogs(1000, 0);
+      } catch (error) {
+        console.error("Failed to fetch logs:", error);
+      }
+    }, 4000);
+  };
+
   const startPolling = (actionId: string, jobId: string, startedAt: number, jiraKey: string) => {
+    startLogsPolling();
     stopPolling(actionId);
 
     const interval = setInterval(async () => {
       try {
-        const [jobStatus, allLogs] = await Promise.all([
-          getJobStatus(jobId),
-          fetchBackendLogs(1000, 0)
-        ]);
+        const jobStatus = await getJobStatus(jobId);
+        const allLogs = cachedLogsRef.current;
 
         const startTimeSecs = Math.floor(startedAt / 1000);
         // Upper bound: completed time + 30s buffer, or now + 30s if still running
