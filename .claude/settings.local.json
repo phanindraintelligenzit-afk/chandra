@@ -44,7 +44,8 @@
       "Bash(cat)",
       "Bash(bash /tmp/test_fix.sh)",
       "Bash(curl -s -X POST http://localhost:6001/orchestrate -H 'Content-Type: application/json' -d '{\"action\":{\"actionName\":\"Deploy RDS\",\"actionDescription\":\"Deploy instance\",\"steps\":[\"Step1\"]},\"jira_issue_key\":\"OPS-001\"}')",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(curl -s http://localhost:6001/logs?limit=1)"
     ]
   }
 }

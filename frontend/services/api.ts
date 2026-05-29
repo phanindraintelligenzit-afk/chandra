@@ -492,7 +492,7 @@ export async function getJobStatus(
   const response = await request<JobStatusResponse>(`/orchestrate/status/${jobId}`, {
     method: "GET",
     signal: options.signal
-  }, 10_000);
+  }, 30_000);
 
   return response;
 }

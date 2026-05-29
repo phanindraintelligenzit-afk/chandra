@@ -4,6 +4,7 @@ import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } fr
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2 } from "lucide-react";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
   id: string;
@@ -425,6 +426,16 @@ export const WorkerActionExecutionCenter = forwardRef<
     CRITICAL: "border-l-signal"
   };
 
+  const executedCount = executingActions.filter(a => a.status === "completed").length;
+  const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input").length;
+  const failedCount = executingActions.filter(a => a.status === "failed" || a.status === "exhausted").length;
+
+  const donutData = [
+    { name: "Executed", value: executedCount, color: "#4ade80" },
+    { name: "Pending", value: pendingCount, color: "#ffb800" },
+    { name: "Failed", value: failedCount, color: "#ff3b3b" }
+  ].filter(d => d.value > 0);
+
   return (
     <div className="glass overflow-hidden p-4 rounded-2xl border border-white/10">
       <div className="mb-4 flex items-center justify-between">
@@ -433,11 +444,48 @@ export const WorkerActionExecutionCenter = forwardRef<
           <div className="mt-1 text-sm text-frost/70">Auto-approved actions executing with live logs</div>
         </div>
         <div className="rounded-full bg-signal/20 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-signal">
-          {executingActions.filter((a) => a.status === "running" || a.status === "pending").length} EXECUTING
+          {pendingCount} EXECUTING
         </div>
       </div>
 
-      <div className="space-y-2">
+      <div className="mb-4 grid gap-4 lg:grid-cols-[200px_1fr]">
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-black/20 p-4">
+          <div className="text-[0.6rem] uppercase tracking-[0.2em] text-muted mb-2">Execution Status</div>
+          <div className="h-[120px] w-full">
+            {donutData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={donutData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={40}
+                    outerRadius={55}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {donutData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: "#000000cc", border: "1px solid #ffffff20", borderRadius: "8px" }}
+                    itemStyle={{ color: "#ffffff" }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-muted">No actions</div>
+            )}
+          </div>
+          <div className="mt-2 flex gap-3 text-[0.55rem] uppercase tracking-wider text-muted">
+            <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-300"></span> Done</div>
+            <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber"></span> Wait</div>
+            <div className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-signal"></span> Fail</div>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
         {executingActions.length === 0 ? (
           <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-4 text-center text-[0.68rem] uppercase tracking-[0.16em] text-muted">
             No actions executing. Auto-approved actions will appear here.
@@ -605,6 +653,7 @@ export const WorkerActionExecutionCenter = forwardRef<
             })}
           </AnimatePresence>
         )}
+      </div>
       </div>
     </div>
   );
