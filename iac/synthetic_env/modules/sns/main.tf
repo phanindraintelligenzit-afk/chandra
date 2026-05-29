@@ -1,3 +1,12 @@
+resource "aws_sns_topic" "alerts" {
+  name = "chandra-alerts"
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
 ####################################
 # SNS Topics
 ####################################
@@ -106,7 +115,7 @@ resource "aws_chatbot_slack_channel_configuration" "alerts" {
 
   iam_role_arn = aws_iam_role.chatbot_role.arn
 
-  slack_workspace_id = var.slack_workspace_id
+  slack_team_id = var.slack_workspace_id
 
   slack_channel_id = var.slack_channel_id
 

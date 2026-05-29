@@ -86,3 +86,11 @@ variable "sns_email" {
   type        = string
   default     = "dummy.intelligenzit@gmail.com"
 }
+###############
+variable "slack_workspace_id" {
+  type = string
+}
+
+variable "slack_channel_id" {
+  type = string
+}

@@ -33,7 +33,7 @@ resource "aws_db_instance" "unencrypted" {
   engine_version         = "16.3"
   instance_class         = "db.t3.micro"
   allocated_storage      = 20
-  username               = "admin"
+  username               = "chandra"
   password               = "ChandraSynth1234!"
   storage_encrypted      = false
   skip_final_snapshot    = true
