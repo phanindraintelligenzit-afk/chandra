@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
+import os
 import uvicorn
 from digitalworker_agents.observation_agent import (
     AwsObservabilityAgent,
@@ -86,6 +88,22 @@ app = FastAPI(
     title="AWS Observability Agent API",
     description="Runs the KRA-aligned AWS observability pipeline and returns a structured report.",
     version="1.0.0",
+)
+
+# Configure CORS for frontend access
+allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    os.getenv("FRONTEND_URL", ""),  # Production frontend domain from env var
+]
+allowed_origins = [origin for origin in allowed_origins if origin]  # Remove empty strings
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins if allowed_origins else ["*"],  # Allow all if no specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
