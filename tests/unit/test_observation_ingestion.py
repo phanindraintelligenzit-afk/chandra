@@ -115,6 +115,7 @@ class TestIngestObservations:
             events.put_rule(  # type: ignore[union-attr]
                 Name=f"rule-{i}",
                 State="ENABLED",
+                EventPattern='{"source": ["aws.ec2"]}',
             )
 
         state = ChandraState(
@@ -234,6 +235,7 @@ class TestIngestObservations:
         events.put_rule(  # type: ignore[union-attr]
             Name="disabled-rule",
             State="DISABLED",
+            EventPattern='{"source": ["aws.ec2"]}',
         )
 
         state = ChandraState(
