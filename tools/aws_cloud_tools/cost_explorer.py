@@ -109,7 +109,7 @@ class AWSCostExplorerFetcher:
                 amount = float(unblended.get("Amount", 0))
                 
                 # Filter out negligible costs (<= $0.00)
-                if amount > 0.001:
+                if amount > 0:
                     # Initialize the region dict if it doesn't exist yet
                     if region_name not in daily_record["Regions"]:
                         daily_record["Regions"][region_name] = {"RegionTotal": 0.0, "Services": {}}

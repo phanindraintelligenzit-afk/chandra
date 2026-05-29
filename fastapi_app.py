@@ -152,15 +152,16 @@ async def get_detector_issues():
         logger.exception("Detector execution failed: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
-@app.get("/getCostMetrics")
-async def get_cost_metrics(
-    days_lookback: int = Query(default=7, ge=1, le=365, description="Number of days to look back"),
-    granularity: str = Query(default="DAILY", description="Cost granularity: DAILY or MONTHLY"),
-) -> JSONResponse:
-    logger.info("GET /getCostMetrics called with days_lookback=%d, granularity=%s", days_lookback, granularity)
+class CostMetricsRequest(BaseModel):
+    days_lookback: int = Field(default=7, ge=1, le=365, description="Number of days to look back")
+    granularity: str = Field(default="DAILY", description="Cost granularity: DAILY or MONTHLY")
+
+@app.post("/getCostMetrics")
+async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
+    logger.info("POST /getCostMetrics called with days_lookback=%d, granularity=%s", request.days_lookback, request.granularity)
     try:
         fetcher = AWSCostExplorerFetcher()
-        summary: Dict[str, Any] = await fetcher.fetch_costs_summary(days_lookback=days_lookback)
+        summary: Dict[str, Any] = await fetcher.fetch_costs_summary(days_lookback=request.days_lookback)
         return JSONResponse(status_code=200, content={"status": "success", "output": summary})
     except Exception as exc:
         logger.exception("Cost metrics fetch failed: %s", exc)

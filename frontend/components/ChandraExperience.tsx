@@ -14,6 +14,7 @@ import {
   deriveKraEvaluations,
   deriveOpsEvents,
   healthTone,
+  kraCodeToName,
   summarizeIssuesBySeverity,
   type LiveApprovalRow,
   type LiveCostCard,
@@ -718,22 +719,14 @@ function CircularProgress({ percent, color }: { percent: number; color: string }
 }
 
 function KRAMetricsReview({
-  selectedKRAs,
+  activeKras,
   liveEvaluations
 }: {
-  selectedKRAs: string[];
+  activeKras: { code: string; name: string }[];
   liveEvaluations?: LiveKraEvaluation[];
 }) {
-  const ALL_KRAS = [
-    { code: "KRA-01", name: "Cost Optimization & Anomaly Management" },
-    { code: "KRA-02", name: "Security Posture & IAM Monitoring" },
-    { code: "KRA-03", name: "Incident Detection & Response" },
-    { code: "KRA-04", name: "Compliance & Audit Readiness" },
-    { code: "KRA-05", name: "Deployment Intelligence & Operational Readiness" }
-  ];
-
   // Derive scores deterministically from backend status
-  const derivedKRAs = ALL_KRAS.map(kra => {
+  const derivedKRAs = activeKras.map(kra => {
     const backendData = liveEvaluations?.find(e => e.code === kra.code || e.name.includes(kra.name.split(" ")[0]));
     const status = backendData?.status?.toUpperCase() || "UNKNOWN";
     
@@ -1494,57 +1487,194 @@ function RealTimeActivityFeed({ events }: { events: OpsEvent[] }) {
 
 function CostMonitoring({
   cards,
-  breakdown,
-  rawMetrics
+  breakdown: globalBreakdown,
+  rawMetrics,
+  costDays = 7,
+  onDaysChange
 }: {
   cards?: LiveCostCard[];
   breakdown?: ReturnType<typeof deriveCostBreakdown>;
   rawMetrics?: CostMetricsOutput | null;
+  costDays?: number;
+  onDaysChange?: (days: number) => void;
 }) {
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+
+  const regionBreakdown = useMemo(() => {
+    if (!rawMetrics || !rawMetrics.DailyBreakdown) return null;
+    if (!selectedRegion) return null;
+
+    let total = 0;
+    const serviceTotals = new Map<string, number>();
+
+    rawMetrics.DailyBreakdown.forEach((day) => {
+      const regionData = day.Regions?.[selectedRegion];
+      if (regionData) {
+        total += regionData.RegionTotal ?? 0;
+        Object.entries(regionData.Services ?? {}).forEach(([service, amount]) => {
+          serviceTotals.set(service, (serviceTotals.get(service) ?? 0) + amount);
+        });
+      }
+    });
+
+    const services = Array.from(serviceTotals.entries())
+      .map(([service, sum]) => ({ service, total: sum }))
+      .sort((a, b) => b.total - a.total);
+
+    return { total, services };
+  }, [rawMetrics, selectedRegion]);
+
   const chartData = useMemo(() => {
     if (!rawMetrics?.DailyBreakdown) return [];
-    return rawMetrics.DailyBreakdown.slice(-7).map(d => ({
-      date: d.Date.slice(5),
-      cost: Number(d.TotalDailyCost) || 0
-    }));
-  }, [rawMetrics]);
+    return rawMetrics.DailyBreakdown.slice(-costDays).map(d => {
+      let cost = 0;
+      if (selectedRegion) {
+        cost = d.Regions?.[selectedRegion]?.RegionTotal ?? 0;
+      } else {
+        cost = Number(d.TotalDailyCost) || 0;
+      }
+      return {
+        date: d.Date.slice(5),
+        cost
+      };
+    });
+  }, [rawMetrics, selectedRegion, costDays]);
 
   const avgCost = chartData.length > 0 ? chartData.reduce((sum, d) => sum + d.cost, 0) / chartData.length : 0;
   const maxCost = chartData.length > 0 ? Math.max(...chartData.map(d => d.cost)) : 0;
+  const activeBreakdown = selectedRegion && regionBreakdown ? regionBreakdown : globalBreakdown;
+  const totalCost = activeBreakdown?.total || 0;
+
+  if (!rawMetrics) {
+    return (
+      <Reveal className="glass overflow-hidden p-4 min-h-[300px] flex flex-col items-center justify-center">
+        <div className="absolute top-4 left-4">
+          <SectionHead label="COST MONITORING" sub="FinOps · Trend & Anomalies" />
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+          <div className="h-8 w-8 rounded-full border-2 border-emerald-300/30 border-t-emerald-300 animate-spin" />
+          <div className="text-[0.7rem] uppercase tracking-[0.16em] text-muted">Retrieving cost intelligence...</div>
+        </div>
+      </Reveal>
+    );
+  }
 
   return (
     <Reveal className="glass overflow-hidden p-4">
       <SectionHead label="COST MONITORING" sub="FinOps · Trend & Anomalies" />
-      <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
-        <div className="h-[200px] w-full mt-2">
-          {chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 10, bottom: 10, left: 50 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
-                <XAxis dataKey="date" stroke="#ffffff50" fontSize={10} />
-                <YAxis stroke="#ffffff50" fontSize={10} tickFormatter={(v) => `$${v.toFixed(0)}`} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: "#000000cc", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                  itemStyle={{ color: "#4ade80" }}
-                  formatter={(v: any) => [typeof v === "number" ? `$${v.toFixed(2)}` : v, "Daily Cost"]}
-                  labelFormatter={(label) => `Date: ${label}`}
-                />
-                <Line type="monotone" dataKey="cost" stroke="#4ade80" dot={{ fill: "#4ade80", r: 4 }} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex h-full items-center justify-center text-xs text-muted">No trend data available</div>
-          )}
+      <div className="flex gap-2 items-center overflow-x-auto scrollbar-mini py-2 mb-2 mt-4">
+        <span className="text-[0.6rem] text-muted shrink-0 uppercase tracking-widest mr-2">Timeline:</span>
+        {Array.from({ length: 30 }, (_, i) => i + 1).map(d => (
+          <button
+            key={d}
+            onClick={() => onDaysChange?.(d)}
+            className={cx(
+              "shrink-0 px-2 py-0.5 rounded text-[0.65rem] transition-colors border",
+              costDays === d
+                ? "bg-emerald-400/20 text-emerald-300 border-emerald-400"
+                : "bg-white/5 text-frost/70 border-white/10 hover:border-white/30 hover:text-frost"
+            )}
+          >
+            {d}d
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+        <div className="flex flex-col gap-4">
+          <div className="h-[240px] w-full rounded-2xl border border-white/5 bg-black/20 p-2">
+            {chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 15, right: 15, bottom: 10, left: 0 }}>
+                  <defs>
+                    <linearGradient id="colorCost" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#4ade80" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#4ade80" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
+                  <XAxis dataKey="date" stroke="#ffffff40" fontSize={10} tickLine={false} axisLine={false} dy={10} />
+                  <YAxis stroke="#ffffff40" fontSize={10} tickFormatter={(v) => `$${v.toFixed(0)}`} tickLine={false} axisLine={false} dx={-10} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "rgba(0,0,0,0.8)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", backdropFilter: "blur(8px)" }}
+                    itemStyle={{ color: "#4ade80" }}
+                    formatter={(v: any) => [typeof v === "number" ? `$${v.toFixed(2)}` : v, "Daily Spend"]}
+                    labelFormatter={(label) => `Date: ${label}`}
+                  />
+                  <Area type="monotone" dataKey="cost" stroke="#4ade80" fillOpacity={1} fill="url(#colorCost)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-muted">No trend data available</div>
+            )}
+          </div>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-black/25 p-4 flex flex-col justify-center">
-          <div className="text-[0.65rem] uppercase tracking-[0.2em] text-amber mb-3">7-Day Summary</div>
-          <ul className="space-y-2 text-[0.75rem] text-frost/85 list-disc pl-4 marker:text-emerald-300">
-            <li>Avg Daily: <span className="text-emerald-300">${avgCost.toFixed(2)}</span></li>
-            <li>Peak Daily: <span className="text-emerald-300">${maxCost.toFixed(2)}</span></li>
-            {cards && cards.map((c, i) => (
-              <li key={i}>{c.label}: {c.value}</li>
-            ))}
-          </ul>
+
+        <div className="flex flex-col gap-3">
+          <div className="rounded-2xl border border-white/10 bg-black/30 p-4 h-full flex flex-col justify-center">
+            <div className="text-[0.65rem] uppercase tracking-[0.2em] text-emerald-300 mb-3 flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 pulse-core" />
+              {costDays}-Day Cost Intelligence
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <div className="text-[0.6rem] text-muted uppercase tracking-widest">Total Spend</div>
+                <div className="text-xl font-light text-frost">${totalCost.toFixed(2)}</div>
+              </div>
+              <div>
+                <div className="text-[0.6rem] text-muted uppercase tracking-widest">Daily Avg</div>
+                <div className="text-xl font-light text-frost">${avgCost.toFixed(2)}</div>
+              </div>
+            </div>
+            
+            {activeBreakdown && activeBreakdown.services.length > 0 && (
+              <div className="mt-2 pt-4 border-t border-white/10 flex-1 flex flex-col min-h-0">
+                <div className="text-[0.6rem] uppercase tracking-widest text-muted mb-2 shrink-0">Cost By Service {selectedRegion ? `(${selectedRegion})` : ""}</div>
+                <div className="space-y-2 overflow-y-auto scrollbar-mini pr-2 flex-1 max-h-[150px]">
+                  {activeBreakdown.services.map((s, i) => (
+                    <div key={i} className="flex justify-between items-center text-[0.7rem] gap-2">
+                      <span className="text-frost/80 truncate flex-1 min-w-0" title={s.service}>
+                        {s.service.replace("Amazon ", "").replace("AWS ", "")}
+                      </span>
+                      <span className="font-mono text-emerald-300/90 shrink-0">${s.total.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {globalBreakdown && globalBreakdown.regions.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-white/10 shrink-0">
+                <div className="text-[0.6rem] uppercase tracking-widest text-muted mb-2 flex justify-between items-center">
+                  <span>Active Regions</span>
+                  {selectedRegion && (
+                    <button onClick={() => setSelectedRegion(null)} className="text-[0.55rem] text-emerald-300/70 hover:text-emerald-300 transition-colors">
+                      Clear Filter
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-[60px] overflow-y-auto scrollbar-mini">
+                  {globalBreakdown.regions.map((r, i) => {
+                    const isSelected = selectedRegion === r.region;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => setSelectedRegion(isSelected ? null : r.region)}
+                        className={cx(
+                          "px-1.5 py-0.5 rounded border text-[0.65rem] transition-all duration-200",
+                          isSelected 
+                            ? "border-emerald-400 bg-emerald-400/20 text-emerald-300" 
+                            : "border-white/10 bg-white/5 text-frost/70 hover:border-white/30 hover:text-frost"
+                        )}
+                      >
+                        {r.region}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </Reveal>
@@ -1664,7 +1794,8 @@ export function ChandraExperience() {
     nextDelayMs: 0
   });
 
-  const costMetricsInitRef = useRef(false);
+  const [costDays, setCostDays] = useState(7);
+  const isFirstCostFetchRef = useRef(true);
   const observationsInitRef = useRef(false);
   const setCostMetricsRef = useRef(setCostMetrics);
   const setObservationsRef = useRef(setObservations);
@@ -1674,12 +1805,16 @@ export function ChandraExperience() {
   }, [setCostMetrics, setObservations]);
 
   useEffect(() => {
-    if (costMetricsInitRef.current) return;
-    if (costMetrics) return;
-    costMetricsInitRef.current = true;
     const controller = new AbortController();
-    console.log("FETCHING COST METRICS (once)...");
-    fetchCostMetrics({ signal: controller.signal })
+    
+    // Only clear out data to show the spinner on the very first mount fetch
+    if (isFirstCostFetchRef.current) {
+      setCostMetricsRef.current(null);
+      isFirstCostFetchRef.current = false;
+    }
+    
+    console.log(`FETCHING COST METRICS (${costDays} days)...`);
+    fetchCostMetrics(costDays, { signal: controller.signal })
       .then((data) => {
         console.log("COST METRICS SUCCESS", data);
         setCostMetricsRef.current(data);
@@ -1691,7 +1826,7 @@ export function ChandraExperience() {
         setCostMetricsRef.current(null, message);
       });
     return () => controller.abort();
-  }, []);
+  }, [costDays]);
 
   const observationsPayload = useMemo(
     () => ({
@@ -1714,6 +1849,13 @@ export function ChandraExperience() {
   useEffect(() => {
     observationsPayloadRef.current = observationsPayload;
   }, [observationsPayload]);
+
+  const activeKras = useMemo(() => {
+    return buildKraPayload(predefinedKras, customKras).map(k => ({
+      code: k.code,
+      name: kraCodeToName(k.code, customKras)
+    }));
+  }, [predefinedKras, customKras]);
 
   useEffect(() => {
     if (observationsInitRef.current) return;
@@ -1844,7 +1986,13 @@ export function ChandraExperience() {
       {hasCost ? (
       <section className="section-shell">
         <div className="section-inner">
-          <CostMonitoring cards={liveCostCards} breakdown={costBreakdown} rawMetrics={costMetrics} />
+          <CostMonitoring 
+            cards={liveCostCards} 
+            breakdown={costBreakdown} 
+            rawMetrics={costMetrics} 
+            costDays={costDays}
+            onDaysChange={setCostDays}
+          />
         </div>
       </section>
       ) : null}
@@ -1887,7 +2035,7 @@ export function ChandraExperience() {
         </section>
       ) : null}
 
-      <KRAMetricsReview selectedKRAs={selectedKRAs} liveEvaluations={liveKraEvaluations} />
+      <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
 
       {hasAudit ? (
         <section className="section-shell">

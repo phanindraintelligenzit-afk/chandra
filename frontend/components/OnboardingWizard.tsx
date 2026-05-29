@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { KeyRound, ShieldCheck, Sparkles } from "lucide-react";
 import { useOnboarding } from "@/store/OnboardingContext";
-import { fetchAgentObservations } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics } from "@/services/api";
 import { buildKraPayload } from "@/services/mapping";
 import {
   agentAvatars,
@@ -154,7 +154,8 @@ export default function OnboardingWizard() {
     addCustomKRA,
     removeCustomKRA,
     completeOnboarding,
-    setObservations
+    setObservations,
+    setCostMetrics
   } = useOnboarding();
   const [step, setStep] = useState(0);
   const [localName, setLocalName] = useState(agentName || "");
@@ -298,6 +299,15 @@ export default function OnboardingWizard() {
         await animateProgressTo(100, controller.signal);
         await wait(420);
         completeOnboarding();
+
+        // Fire cost metrics fetch in background (don't await) so it loads first
+        const costController = new AbortController();
+        fetchCostMetrics(7, { signal: costController.signal })
+          .then((data) => setCostMetrics(data))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : "Cost metrics request failed";
+            setCostMetrics(null, message);
+          });
 
         // Fire observations fetch in background (don't await) with longer timeout
         const obsController = new AbortController();

@@ -349,17 +349,21 @@ export async function fetchAgentObservations(
   return activeObservationsRequest;
 }
 
-let activeCostMetricsRequest: Promise<CostMetricsOutput> | null = null;
+let activeCostMetricsRequests: Record<number, Promise<CostMetricsOutput>> = {};
 
-export async function fetchCostMetrics(options: { signal?: AbortSignal } = {}): Promise<CostMetricsOutput> {
-  if (activeCostMetricsRequest) {
-    return activeCostMetricsRequest;
+export async function fetchCostMetrics(
+  daysLookback: number = 7,
+  options: { signal?: AbortSignal } = {}
+): Promise<CostMetricsOutput> {
+  if (activeCostMetricsRequests[daysLookback]) {
+    return activeCostMetricsRequests[daysLookback];
   }
 
-  activeCostMetricsRequest = (async () => {
+  activeCostMetricsRequests[daysLookback] = (async () => {
     try {
       const data = await request<CostMetricsResponse | CostMetricsOutput>("/getCostMetrics", {
-        method: "GET",
+        method: "POST",
+        body: JSON.stringify({ days_lookback: daysLookback, granularity: "DAILY" }),
         signal: options.signal
       });
       const normalized = normalizeCostMetrics(data);
@@ -368,11 +372,11 @@ export async function fetchCostMetrics(options: { signal?: AbortSignal } = {}): 
       }
       return normalized;
     } finally {
-      activeCostMetricsRequest = null;
+      delete activeCostMetricsRequests[daysLookback];
     }
   })();
 
-  return activeCostMetricsRequest;
+  return activeCostMetricsRequests[daysLookback];
 }
 
 export async function analyzeActions(
