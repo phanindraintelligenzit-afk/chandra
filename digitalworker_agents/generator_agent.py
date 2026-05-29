@@ -14,7 +14,7 @@ import random
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
-
+from chandra.config import settings
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -31,7 +31,67 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger("GeneratorAgent")
+def _build_checkpointer() -> Any:
+    """Return a checkpointer using a three-tier fallback strategy.
 
+    Tier 1: Postgres (production)
+    Tier 2: SQLite (local disk inside 'database/' folder)
+    Tier 3: In-memory MemorySaver fallback
+    """
+    # ── Tier 1: Try Postgres ──
+    try:
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg_pool import ConnectionPool
+        import psycopg
+        if hasattr(settings, "postgres_url") and settings.postgres_url:
+            # Convert SQLAlchemy URL format to psycopg native format
+            # postgresql+psycopg://... → postgresql://...
+            conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
+            
+            with psycopg.connect(conn_string, autocommit=True) as conn:
+                PostgresSaver(conn).setup()
+                
+            pool = ConnectionPool(conn_string, max_size=10)
+            checkpointer = PostgresSaver(pool)
+            logger.info("checkpointer.postgres_setup_success")
+            return checkpointer
+        else:
+            logger.warning("checkpointer.postgres_url_missing")
+    except ImportError:
+        logger.warning("checkpointer.postgres_unavailable")
+    except Exception as exc:
+        logger.warning(
+            "checkpointer.postgres_setup_failed_fallback_to_sqlite",
+            exc_info=exc,
+        )
+
+    # ── Tier 2: Try SQLite ──
+    try:
+        import sqlite3
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        
+        # Ensure the database directory exists
+        db_dir = Path("database")
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_path = db_dir / "checkpoints.sqlite"
+        
+        # Initialize SQLite connection and checkpointer
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
+        checkpointer.__enter__()  # Initialize the context manager
+        logger.info(f"checkpointer.sqlite_setup_success at {db_path}")
+        return checkpointer
+    except ImportError:
+        logger.warning("checkpointer.sqlite_unavailable")
+    except Exception as exc:
+        logger.warning(
+            "checkpointer.sqlite_setup_failed_fallback_to_memory",
+            exc_info=exc,
+        )
+
+    # ── Tier 3: MemorySaver ──
+    logger.warning("checkpointer.fallback_to_memory_saver")
+    return MemorySaver()
 
 # ── Pydantic models ────────────────────────────────────────────────
 
@@ -96,7 +156,7 @@ class GeneratorAgent:
         logger.info("Initialising GeneratorAgent with Reference Folder support")
         try:
             self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            self.Checkpointer = MemorySaver()
+            self.Checkpointer = _build_checkpointer()
             self.Graph = self._build_graph()
             logger.info("GeneratorAgent initialised successfully")
         except Exception as exc:
