@@ -178,7 +178,18 @@ class AwsObservabilityAgent:
                 continue
             tool_name = msg.name or "unknown_tool"
             try:
-                content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                raw = msg.content
+                # Guard against empty / None content — this happens when a tool
+                # raises an exception: LangChain stores "" in ToolMessage.content.
+                if not raw or (isinstance(raw, str) and not raw.strip()):
+                    logger.warning(
+                        "Empty content for tool=%s (tool likely raised an exception)", tool_name
+                    )
+                    raw_results[tool_name] = {"error": "tool returned empty content"}
+                    failed_tools.append(tool_name)
+                    continue
+
+                content = json.loads(raw) if isinstance(raw, str) else raw
                 raw_results[tool_name] = content
                 logger.debug("Normalised result for tool=%s", tool_name)
             except (json.JSONDecodeError, TypeError) as exc:
@@ -199,6 +210,7 @@ class AwsObservabilityAgent:
             len(raw_results), total_chars, total_chars // 4,
         )
         return {"raw_results": raw_results}
+
 
     def SummaryNode(self, state: AgentState) -> dict:
         raw_results = state.get("raw_results", {})

@@ -172,20 +172,26 @@ async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 class CloudWatchMetricsRequest(BaseModel):
-    regions: Optional[List[str]] = Field(default=None, description="List of AWS Regions, or null for all regions")
-    last_hours: int = Field(default=6, description="Hours to look back")
-    period: int = Field(default=1800, description="Period in seconds")
+    region: str = Field(default="us-east-1", description="AWS region to fetch metrics from")
+    last_hours: int = Field(default=1, description="Hours to look back")
+    period: int = Field(default=1200, description="Period in seconds")
+    timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
 
 @app.post("/getCloudWatchMetrics")
 async def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
-    logger.info("POST /getCloudWatchMetrics called with regions=%s", request.regions)
+    logger.info(
+        "POST /getCloudWatchMetrics called with region=%s, last_hours=%d, period=%d",
+        request.region, request.last_hours, request.period,
+    )
     try:
         fetcher = CloudWatchMetricsFetcher()
-        summary = await fetcher.fetch_all_regions_metrics(
-            regions=request.regions,
+        summary = await fetcher.fetch_all_metrics(
+            region=request.region,
             last_hours=request.last_hours,
-            period=request.period
+            period=request.period,
+            timezone_str=request.timezone_str,
         )
+        logger.info("Completed CloudWatch metrics fetch: Found %d metrics", summary["metadata"]["total_metrics_found"])
         return JSONResponse(status_code=200, content={"status": "success", "output": summary})
     except Exception as exc:
         logger.exception("CloudWatch metrics fetch failed: %s", exc)

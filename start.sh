@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 # Export FRONTEND_URL if set (for CORS configuration)
@@ -21,5 +21,7 @@ GRADIO_PID=$!
 echo "FastAPI  started (PID $FASTAPI_PID) → http://0.0.0.0:6001"
 echo "Gradio   started (PID $GRADIO_PID)  → http://0.0.0.0:7861"
 
-# If either process dies, kill the other and exit so Docker can restart the container
-wait $FASTAPI_PID $GRADIO_PID
+# If either process dies, exit so Docker can restart the container
+wait -n $FASTAPI_PID $GRADIO_PID
+kill $FASTAPI_PID $GRADIO_PID 2>/dev/null || true
+

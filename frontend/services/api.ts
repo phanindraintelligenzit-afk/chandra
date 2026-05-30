@@ -106,31 +106,33 @@ export type DetectorIssuesResponse = {
   output: DetectorIssuesOutput;
 };
 
-export type CloudWatchMetricPoint = {
-  Timestamp: string;
-  Average: number;
+export type CloudWatchDatapoint = {
+  timestamp: string;
+  average: number;
 };
 
-export type CloudWatchMetricStats = {
-  points: CloudWatchMetricPoint[];
-  sample_count: number;
-  avg_of_average?: number;
-  max_average?: number;
+export type CloudWatchMetricSeries = {
+  metric_name: string;
+  dimensions: Record<string, string>;
+  datapoints: CloudWatchDatapoint[];
 };
 
-export type CloudWatchMetricsOutput = Record<
-  string,
-  Record<
-    string,
-    Record<
-      string,
-      Record<
-        string,
-        CloudWatchMetricStats
-      >
-    >
-  >
->;
+export type CloudWatchMetadata = {
+  region: string;
+  start_time: string;
+  end_time: string;
+  period_seconds: number;
+  total_metrics_found: number;
+  total_metrics_fetched: number;
+};
+
+/** namespaces: { "AWS/RDS": { "CPUUtilization": [ series... ] } } */
+export type CloudWatchNamespaces = Record<string, Record<string, CloudWatchMetricSeries[]>>;
+
+export type CloudWatchMetricsOutput = {
+  metadata: CloudWatchMetadata;
+  namespaces: CloudWatchNamespaces;
+};
 
 export type CloudWatchMetricsResponse = {
   status: string;
@@ -437,8 +439,7 @@ export async function fetchCostMetrics(
     try {
       const data = await request<CostMetricsResponse | CostMetricsOutput>("/getCostMetrics", {
         method: "POST",
-        body: JSON.stringify({ days_lookback: daysLookback, granularity: "DAILY" }),
-        signal: options.signal
+        body: JSON.stringify({ days_lookback: daysLookback, granularity: "DAILY" })
       });
       const normalized = normalizeCostMetrics(data);
       if (!Array.isArray(normalized.DailyBreakdown)) {
@@ -471,9 +472,8 @@ export async function fetchCloudWatchMetrics(
     try {
       const data = await request<CloudWatchMetricsResponse | CloudWatchMetricsOutput>("/getCloudWatchMetrics", {
         method: "POST",
-        body: JSON.stringify({ last_hours: hoursLookback, period: 3600 }),
-        signal: options.signal
-      }, 120_000);
+        body: JSON.stringify({ last_hours: hoursLookback, period: 1200 })
+      }, 180_000);
       const output = (data as any).output ?? data;
       return output as CloudWatchMetricsOutput;
     } finally {

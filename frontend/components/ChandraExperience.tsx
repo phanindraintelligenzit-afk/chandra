@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
@@ -1764,27 +1764,119 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
   );
 }
 
+const CW_LINE_COLORS = [
+  "#34d399", // emerald
+  "#60a5fa", // blue
+  "#f59e0b", // amber
+  "#f472b6", // pink
+  "#a78bfa", // violet
+  "#fb923c", // orange
+  "#22d3ee", // cyan
+  "#e879f9", // fuchsia
+];
+
+function dimLabel(dimensions: Record<string, string>): string {
+  const entries = Object.entries(dimensions);
+  if (entries.length === 0) return "(all)";
+  return entries.map(([k, v]) => `${k}=${v}`).join(", ");
+}
+
+function formatCwValue(val: number, metricName: string): string {
+  const mn = metricName.toLowerCase();
+  if (mn.includes("bytes") || mn.includes("storage") || mn.includes("memory")) {
+    if (val >= 1e9) return `${(val / 1e9).toFixed(2)} GB`;
+    if (val >= 1e6) return `${(val / 1e6).toFixed(2)} MB`;
+    if (val >= 1e3) return `${(val / 1e3).toFixed(2)} KB`;
+    return `${val.toFixed(2)} B`;
+  }
+  if (mn.includes("latency")) return `${(val * 1000).toFixed(3)} ms`;
+  if (mn.includes("cpu") || mn.includes("utilization")) return `${val.toFixed(2)}%`;
+  if (mn.includes("iops") || mn.includes("connections") || mn.includes("networkin") || mn.includes("networkout")) {
+    return val >= 1e6 ? `${(val / 1e6).toFixed(2)}M` : val >= 1e3 ? `${(val / 1e3).toFixed(1)}K` : val.toFixed(2);
+  }
+  return val.toFixed(4);
+}
+
 function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | null }) {
-  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const namespaces = useMemo(() => metrics ? Object.keys(metrics.namespaces) : [], [metrics]);
+  const [activeNs, setActiveNs] = useState<string | null>(null);
+  const [activeMetric, setActiveMetric] = useState<string | null>(null);
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
 
-  const regions = useMemo(() => metrics ? Object.keys(metrics) : [], [metrics]);
-
-  // Only auto-select first region on initial load; don't interfere with manual selections.
+  // Auto-select first namespace when data arrives
   useEffect(() => {
-    if (regions.length > 0 && !selectedRegion) {
-      setSelectedRegion(regions[0]);
-    }
-    // Intentionally omit selectedRegion from deps — we only want this to fire
-    // when the regions list itself changes (i.e., new metrics arrive), not every
-    // time the user clicks a region button.
+    if (namespaces.length > 0 && !activeNs) setActiveNs(namespaces[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [regions]);
+  }, [namespaces]);
+
+  // Auto-select first metric when namespace changes
+  const metricNames = useMemo(() => {
+    if (!metrics || !activeNs) return [];
+    return Object.keys(metrics.namespaces[activeNs] ?? {});
+  }, [metrics, activeNs]);
+
+  useEffect(() => {
+    if (metricNames.length > 0) setActiveMetric(metricNames[0]);
+    setHiddenSeries(new Set());
+  }, [activeNs, metricNames]);
+
+  // All series for the currently selected metric
+  const allSeries: CloudWatchMetricSeries[] = useMemo(() => {
+    if (!metrics || !activeNs || !activeMetric) return [];
+    return metrics.namespaces[activeNs]?.[activeMetric] ?? [];
+  }, [metrics, activeNs, activeMetric]);
+
+  // Build chart data: sorted timestamps → one key per series
+  const { chartData, seriesKeys } = useMemo(() => {
+    const tsSet = new Set<string>();
+    const keys: string[] = [];
+
+    allSeries.forEach(s => {
+      const key = dimLabel(s.dimensions);
+      if (!keys.includes(key)) keys.push(key);
+      s.datapoints.forEach(dp => tsSet.add(dp.timestamp));
+    });
+
+    const sortedTs = Array.from(tsSet).sort();
+
+    // Build lookup: key → timestamp → average
+    const lookup: Record<string, Record<string, number>> = {};
+    allSeries.forEach(s => {
+      const key = dimLabel(s.dimensions);
+      lookup[key] = lookup[key] ?? {};
+      s.datapoints.forEach(dp => { lookup[key][dp.timestamp] = dp.average; });
+    });
+
+    const data = sortedTs.map(ts => {
+      const row: Record<string, string | number> = { ts: ts.slice(11, 16) };
+      keys.forEach(k => { row[k] = lookup[k]?.[ts] ?? null!; });
+      return row;
+    });
+
+    return { chartData: data, seriesKeys: keys };
+  }, [allSeries]);
+
+  // Stat cards
+  const stats = useMemo(() => {
+    const all = allSeries.flatMap(s => s.datapoints.map(d => d.average));
+    if (!all.length) return null;
+    const avg = all.reduce((a, b) => a + b, 0) / all.length;
+    return { avg, max: Math.max(...all), min: Math.min(...all) };
+  }, [allSeries]);
+
+  const toggleSeries = (key: string) => {
+    setHiddenSeries(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
 
   if (!metrics) {
     return (
       <Reveal className="glass overflow-hidden p-4 min-h-[300px] flex flex-col items-center justify-center">
         <div className="absolute top-4 left-4">
-          <SectionHead label="CLOUDWATCH METRICS" sub="Multi-Region · Health & Security" />
+          <SectionHead label="CLOUDWATCH METRICS" sub="Real-time · Namespaces · Multi-Dimension" />
         </div>
         <div className="flex-1 flex flex-col items-center justify-center space-y-4">
           <div className="h-8 w-8 rounded-full border-2 border-emerald-300/30 border-t-emerald-300 animate-spin" />
@@ -1794,95 +1886,231 @@ function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | 
     );
   }
 
-  const activeData = selectedRegion ? metrics[selectedRegion] : null;
+  const meta = metrics.metadata;
 
   return (
     <Reveal className="glass overflow-hidden p-4">
-      <SectionHead label="CLOUDWATCH METRICS" sub="Multi-Region · Health & Security" />
-      <div className="flex gap-2 items-center overflow-x-auto scrollbar-mini py-2 mb-2 mt-4">
-        <span className="text-[0.6rem] text-muted shrink-0 uppercase tracking-widest mr-2">Region:</span>
-        {regions.map(r => (
+      {/* ── Header ── */}
+      <SectionHead label="CLOUDWATCH METRICS" sub="Real-time · Namespaces · Multi-Dimension" />
+
+      {/* ── Metadata bar ── */}
+      <div className="mt-3 flex flex-wrap gap-3 rounded-xl border border-white/8 bg-black/25 px-4 py-2.5">
+        <div className="flex items-center gap-2 text-[0.65rem]">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 pulse-core" />
+          <span className="text-muted uppercase tracking-widest">Region</span>
+          <span className="font-mono text-frost">{meta.region}</span>
+        </div>
+        <div className="flex items-center gap-2 text-[0.65rem]">
+          <span className="text-muted uppercase tracking-widest">Window</span>
+          <span className="font-mono text-frost">
+            {meta.start_time.slice(11, 16)} → {meta.end_time.slice(11, 16)}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[0.65rem]">
+          <span className="text-muted uppercase tracking-widest">Period</span>
+          <span className="font-mono text-frost">{meta.period_seconds}s</span>
+        </div>
+        <div className="ml-auto flex items-center gap-3 text-[0.65rem]">
+          <span className="rounded bg-emerald-400/15 px-2 py-0.5 text-emerald-300 border border-emerald-400/20">
+            {meta.total_metrics_fetched.toLocaleString()} fetched
+          </span>
+          <span className="rounded bg-white/5 px-2 py-0.5 text-muted border border-white/10">
+            {meta.total_metrics_found.toLocaleString()} found
+          </span>
+        </div>
+      </div>
+
+      {/* ── Namespace tabs ── */}
+      <div className="flex gap-2 items-center overflow-x-auto scrollbar-mini py-3 mt-1">
+        <span className="text-[0.6rem] text-muted shrink-0 uppercase tracking-widest mr-1">Namespace:</span>
+        {namespaces.map(ns => (
           <button
-            key={r}
-            onClick={() => setSelectedRegion(r)}
+            key={ns}
+            onClick={() => { setActiveNs(ns); setActiveMetric(null); }}
             className={cx(
-              "shrink-0 px-2 py-0.5 rounded text-[0.65rem] transition-colors border",
-              selectedRegion === r
-                ? "bg-emerald-400/20 text-emerald-300 border-emerald-400"
+              "shrink-0 px-3 py-1 rounded-full text-[0.65rem] font-medium transition-all border",
+              activeNs === ns
+                ? "bg-emerald-400/20 text-emerald-300 border-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.2)]"
                 : "bg-white/5 text-frost/70 border-white/10 hover:border-white/30 hover:text-frost"
             )}
           >
-            {r}
+            {ns}
           </button>
         ))}
       </div>
-      <div className="mt-2 h-[300px] overflow-y-auto scrollbar-mini bg-black/20 p-2 rounded-xl border border-white/5">
-        {activeData && Object.keys(activeData).length > 0 ? (
-          Object.entries(activeData).map(([ns, groups]) => (
-            <div key={ns} className="mb-4">
-              <div className="text-[0.7rem] uppercase tracking-widest text-emerald-300 mb-2 border-b border-white/10 pb-1">{ns}</div>
-              {Object.entries(
-                Object.entries(groups as any).reduce((acc: Record<string, [string, any][]>, [groupKey, metricsObj]) => {
-                  let category = "GENERAL";
-                  const rTypeMatch = groupKey.match(/ResourceType=([^,]+)/i);
-                  const sTypeMatch = groupKey.match(/Service=([^,]+)/i);
-                  if (rTypeMatch) {
-                    const parts = rTypeMatch[1].split('::');
-                    category = parts.length >= 2 ? `${parts[0]}::${parts[1]}`.toUpperCase() : rTypeMatch[1].toUpperCase();
-                  } else if (sTypeMatch) {
-                    category = `AWS::${sTypeMatch[1].trim().toUpperCase()}`;
-                  }
-                  if (!acc[category]) acc[category] = [];
-                  acc[category].push([groupKey, metricsObj]);
-                  return acc;
-                }, {})
-              ).sort().map(([category, items]) => (
-                <div key={category} className="mb-5 bg-black/20 rounded-lg p-3 border border-white/5">
-                  <div className="text-[0.65rem] font-bold text-emerald-400 mb-3 uppercase tracking-widest">{category}</div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {items.map(([groupKey, metricsObj], idx) => (
-                      <div key={idx} className="bg-white/5 border border-white/10 rounded-md p-2 flex flex-col">
-                        <div className="text-[0.55rem] text-frost/70 mb-2 flex flex-wrap gap-1">
-                          {groupKey === "<NO DIMENSIONS>" ? (
-                            <span className="text-muted">{groupKey}</span>
-                          ) : (
-                            groupKey.split(',').map(d => d.trim()).filter(d => !d.toUpperCase().includes("CLASS=NONE")).map((dim, dIdx) => {
-                              // Make Resource/Id/Type more readable by stripping prefix if needed
-                              return (
-                                <span key={dIdx} className="bg-emerald-900/30 text-emerald-300 border border-emerald-500/20 px-1 py-0.5 rounded leading-none">
-                                  {dim}
-                                </span>
-                              );
-                            })
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-2 mt-auto">
-                          {Object.entries(metricsObj as any).map(([metricName, points]: [string, any]) => {
-                            let avg = 0;
-                            if (Array.isArray(points) && points.length > 0) {
-                              const sum = points.reduce((acc: number, pt: any) => acc + (pt.Average || 0), 0);
-                              avg = sum / points.length;
-                            }
-                            return (
-                              <div key={metricName} className="flex-1 min-w-[80px] bg-black/30 rounded p-1.5 flex flex-col justify-center text-center">
-                                <div className="text-[0.55rem] text-frost/60 truncate" title={metricName}>{metricName.replace('ConfigurationRecorder', '')}</div>
-                                <div className="text-sm text-frost font-mono mt-0.5">{avg.toFixed(2)}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
+
+      {/* ── Metric pills ── */}
+      {metricNames.length > 0 && (
+        <div className="flex gap-2 items-center flex-wrap pb-3 border-b border-white/8">
+          <span className="text-[0.6rem] text-muted uppercase tracking-widest mr-1 shrink-0">Metric:</span>
+          {metricNames.map(mn => (
+            <button
+              key={mn}
+              onClick={() => { setActiveMetric(mn); setHiddenSeries(new Set()); }}
+              className={cx(
+                "px-2.5 py-0.5 rounded text-[0.62rem] transition-all border shrink-0",
+                activeMetric === mn
+                  ? "bg-blue-400/20 text-blue-300 border-blue-400/60"
+                  : "bg-white/5 text-frost/60 border-white/10 hover:border-white/25 hover:text-frost"
+              )}
+            >
+              {mn}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Main content ── */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_240px]">
+        {/* Chart area */}
+        <div className="flex flex-col gap-3">
+          {/* Series legend / toggle chips */}
+          {seriesKeys.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {seriesKeys.map((key, i) => {
+                const color = CW_LINE_COLORS[i % CW_LINE_COLORS.length];
+                const hidden = hiddenSeries.has(key);
+                return (
+                  <button
+                    key={key}
+                    onClick={() => toggleSeries(key)}
+                    className={cx(
+                      "flex items-center gap-1.5 px-2 py-0.5 rounded text-[0.6rem] border transition-all",
+                      hidden
+                        ? "opacity-40 bg-white/3 border-white/8 text-muted"
+                        : "bg-white/5 border-white/15 text-frost/80 hover:border-white/30"
+                    )}
+                  >
+                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: hidden ? "#ffffff30" : color }} />
+                    <span className="max-w-[180px] truncate" title={key}>{key}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Chart */}
+          <div className="h-[260px] w-full rounded-2xl border border-white/5 bg-black/20 p-2">
+            {chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 10, right: 12, bottom: 8, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
+                  <XAxis dataKey="ts" stroke="#ffffff40" fontSize={10} tickLine={false} axisLine={false} dy={6} />
+                  <YAxis
+                    stroke="#ffffff40"
+                    fontSize={9}
+                    tickLine={false}
+                    axisLine={false}
+                    dx={-4}
+                    width={60}
+                    tickFormatter={v => formatCwValue(v as number, activeMetric ?? "")}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "rgba(0,0,0,0.85)",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: "10px",
+                      backdropFilter: "blur(12px)",
+                      fontSize: "0.65rem"
+                    }}
+                    itemStyle={{ color: "#e2e8f0" }}
+                    formatter={(v: any, name: string) => [
+                      formatCwValue(v as number, activeMetric ?? ""),
+                      <span className="truncate max-w-[200px]" title={name}>{name}</span>
+                    ]}
+                    labelFormatter={l => `Time: ${l}`}
+                  />
+                  {seriesKeys.map((key, i) => (
+                    <Line
+                      key={key}
+                      dataKey={key}
+                      stroke={CW_LINE_COLORS[i % CW_LINE_COLORS.length]}
+                      strokeWidth={1.8}
+                      dot={false}
+                      strokeOpacity={hiddenSeries.has(key) ? 0 : 1}
+                      hide={hiddenSeries.has(key)}
+                      connectNulls
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-muted italic">
+                No datapoints for this metric / namespace.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Stat sidebar */}
+        <div className="flex flex-col gap-3">
+          <div className="rounded-2xl border border-white/10 bg-black/30 p-4 flex flex-col gap-3">
+            <div className="text-[0.65rem] uppercase tracking-[0.2em] text-emerald-300 mb-1 flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 pulse-core" />
+              {activeMetric ?? "—"}
+            </div>
+
+            {stats ? (
+              <>
+                <div>
+                  <div className="text-[0.6rem] text-muted uppercase tracking-widest">Average</div>
+                  <div className="text-lg font-light text-frost font-mono">
+                    {formatCwValue(stats.avg, activeMetric ?? "")}
                   </div>
                 </div>
-              ))}
+                <div>
+                  <div className="text-[0.6rem] text-muted uppercase tracking-widest">Peak</div>
+                  <div className="text-lg font-light text-amber font-mono">
+                    {formatCwValue(stats.max, activeMetric ?? "")}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[0.6rem] text-muted uppercase tracking-widest">Minimum</div>
+                  <div className="text-lg font-light text-frost/60 font-mono">
+                    {formatCwValue(stats.min, activeMetric ?? "")}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted italic">No data</div>
+            )}
+
+            <div className="pt-3 border-t border-white/8">
+              <div className="text-[0.6rem] text-muted uppercase tracking-widest mb-1.5">Series Count</div>
+              <div className="text-lg font-light text-frost">{seriesKeys.length}</div>
+              <div className="text-[0.6rem] text-muted mt-0.5">dimension combinations</div>
             </div>
-          ))
-        ) : (
-          <div className="flex items-center justify-center h-full text-muted text-sm italic">
-            No metrics available for this region.
+
+            <div className="pt-3 border-t border-white/8">
+              <div className="text-[0.6rem] text-muted uppercase tracking-widest mb-1.5">Datapoints</div>
+              <div className="text-lg font-light text-frost">{chartData.length}</div>
+              <div className="text-[0.6rem] text-muted mt-0.5">time buckets</div>
+            </div>
           </div>
-        )}
+
+          {/* Namespace summary pills */}
+          <div className="rounded-xl border border-white/8 bg-black/20 p-3 flex flex-col gap-2">
+            <div className="text-[0.6rem] text-muted uppercase tracking-widest mb-1">Namespace Overview</div>
+            {namespaces.map(ns => {
+              const metricCount = Object.keys(metrics.namespaces[ns] ?? {}).length;
+              return (
+                <button
+                  key={ns}
+                  onClick={() => { setActiveNs(ns); setActiveMetric(null); }}
+                  className={cx(
+                    "flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[0.62rem] border transition-all text-left",
+                    activeNs === ns
+                      ? "bg-emerald-400/10 border-emerald-400/30 text-emerald-300"
+                      : "bg-white/3 border-white/8 text-frost/60 hover:border-white/20 hover:text-frost"
+                  )}
+                >
+                  <span className="truncate font-medium">{ns.replace("AWS/", "")}</span>
+                  <span className="shrink-0 ml-2 rounded bg-white/10 px-1.5 py-0.5 text-[0.55rem]">{metricCount} metrics</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </Reveal>
   );
@@ -2222,7 +2450,7 @@ export function ChandraExperience() {
   // cancelled by unrelated cost-metrics or detector signal teardown.
   useEffect(() => {
     const cwController = new AbortController();
-    fetchCloudWatchMetrics(6, { signal: cwController.signal })
+    fetchCloudWatchMetrics(1, { signal: cwController.signal })
       .then(res => { if (res) setCwMetrics(res); })
       .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
     return () => cwController.abort();
@@ -2449,7 +2677,12 @@ export function ChandraExperience() {
       </section>
       ) : null}
 
-      {/* CloudWatch section removed for now — data is still fetched into cwMetrics state */}
+      <section className="section-shell">
+        <div className="section-inner">
+          <CloudWatchMonitoring metrics={cwMetrics} />
+        </div>
+      </section>
+
 
       <div className="px-5 md:px-10 mb-4 mx-auto max-w-[1480px]">
         <OperationalIntelligencePanel
