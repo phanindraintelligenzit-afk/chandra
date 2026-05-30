@@ -78,7 +78,7 @@ def _build_checkpointer() -> Any:
         # Initialize SQLite connection and checkpointer
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
         checkpointer = SqliteSaver(conn)
-        checkpointer.__enter__()  # Initialize the context manager
+        checkpointer.setup()
         logger.info(f"checkpointer.sqlite_setup_success at {db_path}")
         return checkpointer
     except ImportError:

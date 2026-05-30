@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
@@ -416,10 +416,7 @@ function CommandHeader({
   const avatar = getAvatarById(avatarId);
   const health = liveObservations?.health ?? "Active";
   const healthClass = healthTone(health);
-  const liveOpsForPanel = useMemo(
-    () => (liveObservations?.issues ? deriveOpsEvents(liveObservations.issues) : []),
-    [liveObservations]
-  );
+  // (liveOpsForPanel removed — was computed but never consumed in this component)
 
   return (
     <section className="relative px-5 pt-10 pb-6 md:px-10 md:pt-12">
@@ -464,7 +461,7 @@ function CommandHeader({
               {[
                 [String(liveObservations?.observations?.length || 0), "TOTAL OBSERVATIONS"],
                 [String(liveSummary.total || 0), "ACTIVE ALERTS"],
-                [String(liveSummary.p1 + liveSummary.p2 || 0), "ACTIVE INCIDENTS"],
+                [String((liveSummary.p1 + liveSummary.p2) || 0), "ACTIVE INCIDENTS"],
                 [String(liveObservations?.actions?.length || 0), "PENDING ACTIONS"]
               ].map(([value, label]) => (
                 <div key={label} className="rounded-2xl border border-white/10 bg-black/30 px-3 py-2">
@@ -954,10 +951,15 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
   useEffect(() => {
     if (!rawActions || rawActions.length === 0) return;
 
+    // Cancellation flag — prevents stale async responses from updating state
+    // after rawActions has changed or the component has unmounted.
+    let cancelled = false;
+
     const enrichApprovals = async () => {
       setIsLoading(true);
       try {
         const results = await analyzeActions(rawActions);
+        if (cancelled) return;
         setAnalyzedResults(results);
 
         setApprovals((current) =>
@@ -999,13 +1001,14 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
           })
         );
       } catch (error) {
-        console.error("Failed to analyze actions:", error);
+        if (!cancelled) console.error("Failed to analyze actions:", error);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     enrichApprovals();
+    return () => { cancelled = true; };
   }, [rawActions]);
 
   const pendingApprovals = approvals.filter((row) => row.state === "Awaiting Review" || row.state === "Escalated");
@@ -1761,6 +1764,423 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
   );
 }
 
+function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | null }) {
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+
+  const regions = useMemo(() => metrics ? Object.keys(metrics) : [], [metrics]);
+
+  // Only auto-select first region on initial load; don't interfere with manual selections.
+  useEffect(() => {
+    if (regions.length > 0 && !selectedRegion) {
+      setSelectedRegion(regions[0]);
+    }
+    // Intentionally omit selectedRegion from deps — we only want this to fire
+    // when the regions list itself changes (i.e., new metrics arrive), not every
+    // time the user clicks a region button.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regions]);
+
+  if (!metrics) {
+    return (
+      <Reveal className="glass overflow-hidden p-4 min-h-[300px] flex flex-col items-center justify-center">
+        <div className="absolute top-4 left-4">
+          <SectionHead label="CLOUDWATCH METRICS" sub="Multi-Region · Health & Security" />
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+          <div className="h-8 w-8 rounded-full border-2 border-emerald-300/30 border-t-emerald-300 animate-spin" />
+          <div className="text-[0.7rem] uppercase tracking-[0.16em] text-muted">Retrieving CloudWatch metrics...</div>
+        </div>
+      </Reveal>
+    );
+  }
+
+  const activeData = selectedRegion ? metrics[selectedRegion] : null;
+
+  return (
+    <Reveal className="glass overflow-hidden p-4">
+      <SectionHead label="CLOUDWATCH METRICS" sub="Multi-Region · Health & Security" />
+      <div className="flex gap-2 items-center overflow-x-auto scrollbar-mini py-2 mb-2 mt-4">
+        <span className="text-[0.6rem] text-muted shrink-0 uppercase tracking-widest mr-2">Region:</span>
+        {regions.map(r => (
+          <button
+            key={r}
+            onClick={() => setSelectedRegion(r)}
+            className={cx(
+              "shrink-0 px-2 py-0.5 rounded text-[0.65rem] transition-colors border",
+              selectedRegion === r
+                ? "bg-emerald-400/20 text-emerald-300 border-emerald-400"
+                : "bg-white/5 text-frost/70 border-white/10 hover:border-white/30 hover:text-frost"
+            )}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 h-[300px] overflow-y-auto scrollbar-mini bg-black/20 p-2 rounded-xl border border-white/5">
+        {activeData && Object.keys(activeData).length > 0 ? (
+          Object.entries(activeData).map(([ns, groups]) => (
+            <div key={ns} className="mb-4">
+              <div className="text-[0.7rem] uppercase tracking-widest text-emerald-300 mb-2 border-b border-white/10 pb-1">{ns}</div>
+              {Object.entries(
+                Object.entries(groups as any).reduce((acc: Record<string, [string, any][]>, [groupKey, metricsObj]) => {
+                  let category = "GENERAL";
+                  const rTypeMatch = groupKey.match(/ResourceType=([^,]+)/i);
+                  const sTypeMatch = groupKey.match(/Service=([^,]+)/i);
+                  if (rTypeMatch) {
+                    const parts = rTypeMatch[1].split('::');
+                    category = parts.length >= 2 ? `${parts[0]}::${parts[1]}`.toUpperCase() : rTypeMatch[1].toUpperCase();
+                  } else if (sTypeMatch) {
+                    category = `AWS::${sTypeMatch[1].trim().toUpperCase()}`;
+                  }
+                  if (!acc[category]) acc[category] = [];
+                  acc[category].push([groupKey, metricsObj]);
+                  return acc;
+                }, {})
+              ).sort().map(([category, items]) => (
+                <div key={category} className="mb-5 bg-black/20 rounded-lg p-3 border border-white/5">
+                  <div className="text-[0.65rem] font-bold text-emerald-400 mb-3 uppercase tracking-widest">{category}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {items.map(([groupKey, metricsObj], idx) => (
+                      <div key={idx} className="bg-white/5 border border-white/10 rounded-md p-2 flex flex-col">
+                        <div className="text-[0.55rem] text-frost/70 mb-2 flex flex-wrap gap-1">
+                          {groupKey === "<NO DIMENSIONS>" ? (
+                            <span className="text-muted">{groupKey}</span>
+                          ) : (
+                            groupKey.split(',').map(d => d.trim()).filter(d => !d.toUpperCase().includes("CLASS=NONE")).map((dim, dIdx) => {
+                              // Make Resource/Id/Type more readable by stripping prefix if needed
+                              return (
+                                <span key={dIdx} className="bg-emerald-900/30 text-emerald-300 border border-emerald-500/20 px-1 py-0.5 rounded leading-none">
+                                  {dim}
+                                </span>
+                              );
+                            })
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 mt-auto">
+                          {Object.entries(metricsObj as any).map(([metricName, points]: [string, any]) => {
+                            let avg = 0;
+                            if (Array.isArray(points) && points.length > 0) {
+                              const sum = points.reduce((acc: number, pt: any) => acc + (pt.Average || 0), 0);
+                              avg = sum / points.length;
+                            }
+                            return (
+                              <div key={metricName} className="flex-1 min-w-[80px] bg-black/30 rounded p-1.5 flex flex-col justify-center text-center">
+                                <div className="text-[0.55rem] text-frost/60 truncate" title={metricName}>{metricName.replace('ConfigurationRecorder', '')}</div>
+                                <div className="text-sm text-frost font-mono mt-0.5">{avg.toFixed(2)}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        ) : (
+          <div className="flex items-center justify-center h-full text-muted text-sm italic">
+            No metrics available for this region.
+          </div>
+        )}
+      </div>
+    </Reveal>
+  );
+}
+
+type FlatDetectorRow = {
+  category: string;
+  severity: string;
+  title: string;
+  region: string;
+  resource_type: string;
+  recommendation: string;
+  resource_arn: string;
+  detector_id: string;
+};
+
+function flattenDetectorIssues(issues: DetectorIssuesOutput): FlatDetectorRow[] {
+  const rows: FlatDetectorRow[] = [];
+  Object.entries(issues).forEach(([category, items]) => {
+    // Guard: skip if items is not a real array (can happen if backend shapes differ)
+    if (!Array.isArray(items)) return;
+    items.forEach(issue => {
+      if (!issue || typeof issue !== "object") return;
+      rows.push({
+        category: category.toUpperCase(),
+        severity: String(issue.severity ?? "info"),
+        title: String(issue.title ?? ""),
+        region: String(issue.region ?? ""),
+        resource_type: String(issue.resource_type ?? ""),
+        recommendation: String(issue.recommendation ?? ""),
+        resource_arn: String(issue.resource_arn ?? ""),
+        detector_id: String(issue.detector_id ?? "")
+      });
+    });
+  });
+  return rows;
+}
+
+function exportDetectorCsv(rows: FlatDetectorRow[]) {
+  const header = ["category", "severity", "title", "region", "resource_type", "recommendation", "resource_arn", "detector_id"];
+  const body = rows.map(r =>
+    [r.category, r.severity, r.title, r.region, r.resource_type, r.recommendation, r.resource_arn, r.detector_id]
+      .map(escapeCsv).join(",")
+  );
+  downloadBlob([header.join(","), ...body].join("\n"), `chandra-audit-findings-${Date.now()}.csv`, "text/csv;charset=utf-8");
+}
+
+function exportDetectorXlsx(rows: FlatDetectorRow[]) {
+  const header = ["Category", "Severity", "Title", "Region", "Resource Type", "Recommendation", "Resource ARN", "Detector ID"];
+  const headerXml = header.map(c => `<Cell><Data ss:Type="String">${c}</Data></Cell>`).join("");
+  const rowsXml = rows.map(r => {
+    const cells = [
+      r.category, r.severity, r.title, r.region, r.resource_type, r.recommendation, r.resource_arn, r.detector_id
+    ].map(v => `<Cell><Data ss:Type="String">${String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</Data></Cell>`).join("");
+    return `<Row>${cells}</Row>`;
+  }).join("");
+  const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n  <Worksheet ss:Name="Audit Findings">\n    <Table>\n      <Row>${headerXml}</Row>\n      ${rowsXml}\n    </Table>\n  </Worksheet>\n</Workbook>`;
+  downloadBlob(xml, `chandra-audit-findings-${Date.now()}.xls`, "application/vnd.ms-excel");
+}
+
+function exportDetectorPdf(rows: FlatDetectorRow[]) {
+  const rowsHtml = rows.map(r => `
+    <tr>
+      <td><span class="cat cat-${r.category.toLowerCase()}">${r.category}</span></td>
+      <td><span class="sev sev-${r.severity.toLowerCase()}">${r.severity.toUpperCase()}</span></td>
+      <td>${r.title}</td>
+      <td>${r.region}</td>
+      <td>${r.resource_type}</td>
+      <td>${r.recommendation}</td>
+    </tr>`).join("");
+  const doc = `<!doctype html><html><head><title>Chandra Audit Findings</title>
+<style>
+  body{font-family:ui-monospace,Consolas,monospace;color:#111;padding:24px;}
+  h1{font-size:18px;margin:0 0 4px;}
+  .meta{color:#555;font-size:11px;margin-bottom:18px;}
+  table{width:100%;border-collapse:collapse;font-size:11px;}
+  th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top;}
+  th{background:#f4f4f4;text-transform:uppercase;font-size:9px;letter-spacing:1px;}
+  .sev{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:1px;}
+  .sev-critical{background:#fee2e2;color:#dc2626;} .sev-high{background:#ffedd5;color:#ea580c;}
+  .sev-medium{background:#fef9c3;color:#ca8a04;} .sev-low{background:#dbeafe;color:#2563eb;}
+  .cat{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600;background:#f1f5f9;color:#334155;}
+  @media print{button{display:none;}}
+</style></head><body>
+  <h1>Chandra Audit Findings — Security & Compliance Export</h1>
+  <div class="meta">Generated ${new Date().toISOString()} · ${rows.length} findings · L3 Human-Supervised AI Digital Worker</div>
+  <button onclick="window.print()" style="margin-bottom:12px;padding:6px 10px;font-size:11px;">Print / Save as PDF</button>
+  <table>
+    <thead><tr><th>Category</th><th>Severity</th><th>Finding</th><th>Region</th><th>Resource Type</th><th>Recommendation</th></tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  <script>setTimeout(function(){window.print();},250);</script>
+</body></html>`;
+  const win = window.open("", "_blank");
+  if (win) { win.document.open(); win.document.write(doc); win.document.close(); }
+  else { downloadBlob(doc, `chandra-audit-findings-${Date.now()}.html`, "text/html;charset=utf-8"); }
+}
+
+const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+function DetectorIssuesMonitoring({ issues }: { issues: DetectorIssuesOutput | null }) {
+  const [search, setSearch] = useState("");
+  const [sevFilter, setSevFilter] = useState<string>("all");
+  const [catFilter, setCatFilter] = useState<string>("all");
+  const [isOpen, setIsOpen] = useState(true);
+
+  if (!issues) {
+    return (
+      <Reveal className="glass overflow-hidden p-4 min-h-[200px] flex flex-col items-center justify-center">
+        <div className="absolute top-4 left-4 right-4">
+          <SectionHead label="AUDIT FINDINGS" sub="Compliance · Security · Reliability · Performance · Cost" />
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center space-y-4 pt-12">
+          <div className="h-8 w-8 rounded-full border-2 border-emerald-300/30 border-t-emerald-300 animate-spin" />
+          <div className="text-[0.7rem] uppercase tracking-[0.16em] text-muted">Retrieving Audit Findings...</div>
+        </div>
+      </Reveal>
+    );
+  }
+
+  const allRows = flattenDetectorIssues(issues);
+  const categories = Array.from(new Set(allRows.map(r => r.category))).sort();
+  const severities = Array.from(new Set(allRows.map(r => r.severity.toLowerCase()))).sort((a, b) => (SEVERITY_ORDER[a] ?? 9) - (SEVERITY_ORDER[b] ?? 9));
+
+  const filtered = allRows
+    .filter(r => {
+      const text = search.toLowerCase();
+      if (text && !`${r.title} ${r.category} ${r.region} ${r.resource_type} ${r.recommendation}`.toLowerCase().includes(text)) return false;
+      if (sevFilter !== "all" && r.severity.toLowerCase() !== sevFilter) return false;
+      if (catFilter !== "all" && r.category !== catFilter) return false;
+      return true;
+    })
+    .sort((a, b) => (SEVERITY_ORDER[a.severity.toLowerCase()] ?? 9) - (SEVERITY_ORDER[b.severity.toLowerCase()] ?? 9));
+
+  const sevStyle = (sev: string) => ({
+    critical: "bg-red-500/20 text-red-400 border border-red-500/30",
+    high: "bg-orange-500/20 text-orange-400 border border-orange-500/30",
+    medium: "bg-amber-500/20 text-amber-400 border border-amber-500/30",
+    low: "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+  }[sev.toLowerCase()] ?? "bg-white/10 text-frost/60 border border-white/10");
+
+  const sevCounts = severities.reduce<Record<string, number>>((acc, s) => {
+    acc[s] = allRows.filter(r => r.severity.toLowerCase() === s).length;
+    return acc;
+  }, {});
+
+  return (
+    <Reveal className="glass overflow-hidden p-4">
+      {/* Header */}
+      <div className="section-head cursor-pointer select-none" onClick={() => setIsOpen(!isOpen)}>
+        <div className="flex items-center gap-2">
+          <ChevronDown size={14} className={cx("transition-transform duration-300", isOpen ? "" : "-rotate-90")} />
+          <span className="section-label">AUDIT FINDINGS</span>
+          <span className="text-[0.6rem] bg-white/5 px-2 py-0.5 rounded text-muted border border-white/8">
+            {filtered.length} / {allRows.length} findings
+          </span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          {/* Severity summary pills */}
+          {severities.map(s => (
+            <span key={s} className={cx("hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[0.55rem] uppercase tracking-wider rounded font-semibold border", sevStyle(s))}>
+              {s} <span className="opacity-70">{sevCounts[s]}</span>
+            </span>
+          ))}
+          {/* Export buttons */}
+          <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => exportDetectorCsv(filtered)}
+              className="flex items-center gap-1 border border-white/15 bg-white/[0.04] px-2 py-1 text-[0.58rem] uppercase tracking-[0.18em] text-frost/85 hover:border-emerald-300/40 hover:text-emerald-300 transition"
+            >
+              <FileText size={11} /> CSV
+            </button>
+            <button
+              onClick={() => exportDetectorXlsx(filtered)}
+              className="flex items-center gap-1 border border-white/15 bg-white/[0.04] px-2 py-1 text-[0.58rem] uppercase tracking-[0.18em] text-frost/85 hover:border-amber/45 hover:text-amber transition"
+            >
+              <FileSpreadsheet size={11} /> XLSX
+            </button>
+            <button
+              onClick={() => exportDetectorPdf(filtered)}
+              className="flex items-center gap-1 border border-white/15 bg-white/[0.04] px-2 py-1 text-[0.58rem] uppercase tracking-[0.18em] text-frost/85 hover:border-signal/40 hover:text-signal transition"
+            >
+              <Download size={11} /> PDF
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="pt-4 space-y-3">
+              {/* Filters row */}
+              <div className="flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 border border-white/12 bg-black/35 px-3 py-1.5 text-[0.7rem] text-muted flex-1 min-w-[200px]">
+                  <Search size={13} />
+                  <input
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full bg-transparent text-frost outline-none placeholder:text-muted"
+                    placeholder="Search findings, region, resource type..."
+                  />
+                </label>
+                {/* Severity filter */}
+                <div className="flex items-center gap-1 border border-white/12 bg-black/35 p-1">
+                  {["all", ...severities].map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setSevFilter(s)}
+                      className={cx(
+                        "px-2.5 py-1 text-[0.58rem] uppercase tracking-[0.14em] transition rounded-sm",
+                        sevFilter === s ? "bg-signal/15 text-signal" : "text-muted hover:text-frost"
+                      )}
+                    >
+                      {s === "all" ? "All Sev" : s}
+                    </button>
+                  ))}
+                </div>
+                {/* Category filter */}
+                <div className="flex items-center gap-1 border border-white/12 bg-black/35 p-1 overflow-x-auto scrollbar-mini">
+                  {["all", ...categories].map(c => (
+                    <button
+                      key={c}
+                      onClick={() => setCatFilter(c)}
+                      className={cx(
+                        "px-2.5 py-1 text-[0.58rem] uppercase tracking-[0.14em] transition rounded-sm shrink-0",
+                        catFilter === c ? "bg-emerald-300/15 text-emerald-300" : "text-muted hover:text-frost"
+                      )}
+                    >
+                      {c === "all" ? "All Categories" : c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Table */}
+              <div className="overflow-auto max-h-[480px] scrollbar-mini rounded-xl border border-white/8">
+                {filtered.length > 0 ? (
+                  <table className="w-full text-[0.7rem] border-collapse">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="bg-black/80 backdrop-blur">
+                        {["Category", "Severity", "Finding", "Region", "Resource Type", "Recommendation"].map(h => (
+                          <th key={h} className="px-3 py-2.5 text-left text-[0.58rem] uppercase tracking-[0.18em] text-muted font-semibold border-b border-white/10 whitespace-nowrap">
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((row, idx) => (
+                        <tr
+                          key={idx}
+                          className={cx(
+                            "border-b border-white/5 transition-colors",
+                            idx % 2 === 0 ? "bg-black/20" : "bg-white/[0.02]",
+                            "hover:bg-white/[0.05]"
+                          )}
+                        >
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            <span className="inline-block px-2 py-0.5 rounded text-[0.6rem] uppercase tracking-wider font-semibold bg-white/8 text-frost/70 border border-white/10">
+                              {row.category}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            <span className={cx("inline-block px-2 py-0.5 rounded text-[0.62rem] uppercase font-bold tracking-wider", sevStyle(row.severity))}>
+                              {row.severity}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 max-w-[260px]">
+                            <div className="font-semibold text-frost/90 leading-tight">{row.title}</div>
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            <span className="font-mono text-frost/60">{row.region || "—"}</span>
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            <span className="text-frost/60">{row.resource_type || "—"}</span>
+                          </td>
+                          <td className="px-3 py-2.5 max-w-[280px]">
+                            <div className="text-frost/70 leading-snug">{row.recommendation}</div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="flex items-center justify-center h-24 text-muted text-xs italic">
+                    {allRows.length === 0 ? "No audit findings detected. System is compliant." : "No findings match your filters."}
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Reveal>
+  );
+}
+
 export function ChandraExperience() {
   const {
     selectedKRAs,
@@ -1794,6 +2214,35 @@ export function ChandraExperience() {
     nextDelayMs: 0
   });
 
+  const [costMetricsState, setCostMetricsState] = useState<CostMetricsOutput | null>(null);
+  const [cwMetrics, setCwMetrics] = useState<CloudWatchMetricsOutput | null>(null);
+  const [detectorIssues, setDetectorIssues] = useState<DetectorIssuesOutput | null>(null);
+
+  // Fetch CloudWatch metrics on mount — independent AbortController so it is not
+  // cancelled by unrelated cost-metrics or detector signal teardown.
+  useEffect(() => {
+    const cwController = new AbortController();
+    fetchCloudWatchMetrics(6, { signal: cwController.signal })
+      .then(res => { if (res) setCwMetrics(res); })
+      .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
+    return () => cwController.abort();
+  }, []);
+
+  // Fetch detector issues on mount — independent AbortController.
+  useEffect(() => {
+    let cancelled = false;
+    fetchDetectorIssues()
+      .then(res => {
+        console.log("🔍 DETECTOR ISSUES RAW RESPONSE:", res);
+        if (!cancelled) setDetectorIssues(res ?? null);
+      })
+      .catch(err => {
+        if (!cancelled && err.name !== "AbortError" && err.message !== "Request timed out before the backend responded")
+          console.error("Detector issues error:", err);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const [costDays, setCostDays] = useState(7);
   const isFirstCostFetchRef = useRef(true);
   const observationsInitRef = useRef(false);
@@ -1810,6 +2259,7 @@ export function ChandraExperience() {
     // Only clear out data to show the spinner on the very first mount fetch
     if (isFirstCostFetchRef.current) {
       setCostMetricsRef.current(null);
+      setCostMetricsState(null);
       isFirstCostFetchRef.current = false;
     }
     
@@ -1817,13 +2267,17 @@ export function ChandraExperience() {
     fetchCostMetrics(costDays, { signal: controller.signal })
       .then((data) => {
         console.log("COST METRICS SUCCESS", data);
+        // Update both the shared context (used by other consumers) and the
+        // local state (passed directly as rawMetrics to CostMonitoring).
         setCostMetricsRef.current(data);
+        setCostMetricsState(data);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         const message = error instanceof Error ? error.message : "Cost metrics request failed";
         console.error("COST METRICS ERROR", message);
         setCostMetricsRef.current(null, message);
+        setCostMetricsState(null);
       });
     return () => controller.abort();
   }, [costDays]);
@@ -1974,10 +2428,8 @@ export function ChandraExperience() {
   );
   const AGENT = agentName || "Chandra";
 
-  const hasInfra = selectedKRAs.includes("Infrastructure Monitoring");
   const hasIncident = selectedKRAs.includes("Incident Detection");
   const hasCost = selectedKRAs.includes("Cost Optimization");
-  const hasAudit = selectedKRAs.includes("Audit & Compliance");
 
   return (
     <main className="bg-obsidian text-frost">
@@ -1989,13 +2441,15 @@ export function ChandraExperience() {
           <CostMonitoring 
             cards={liveCostCards} 
             breakdown={costBreakdown} 
-            rawMetrics={costMetrics} 
+            rawMetrics={costMetricsState} 
             costDays={costDays}
             onDaysChange={setCostDays}
           />
         </div>
       </section>
       ) : null}
+
+      {/* CloudWatch section removed for now — data is still fetched into cwMetrics state */}
 
       <div className="px-5 md:px-10 mb-4 mx-auto max-w-[1480px]">
         <OperationalIntelligencePanel
@@ -2037,13 +2491,11 @@ export function ChandraExperience() {
 
       <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
 
-      {hasAudit ? (
-        <section className="section-shell">
-          <div className="section-inner">
-            <AuditLogs rows={auditRows} />
-          </div>
-        </section>
-      ) : null}
+      <section className="section-shell">
+        <div className="section-inner">
+          <DetectorIssuesMonitoring issues={detectorIssues} />
+        </div>
+      </section>
 
       <section className="px-5 py-8 md:px-10">
         <div className="mx-auto max-w-[1480px] border-t border-white/10 pt-6">

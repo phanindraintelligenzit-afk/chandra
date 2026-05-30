@@ -14,6 +14,9 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 import os
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 import uvicorn
 from digitalworker_agents.observation_agent import (
     AwsObservabilityAgent,
@@ -25,6 +28,7 @@ from digitalworker_agents.generator_agent import GeneratorAgent, GeneratorPipeli
 from digitalworker_agents.executor_agent import ExecutorAgent, ExecutorPipelineResponse
 from digitalworker_agents.orchestrator_agent import OrchestratorAgent, OrchestratorResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
+from tools.aws_cloud_tools.metrics_fetcher import CloudWatchMetricsFetcher
 from tools.aws_cloud_tools.tool_findings import run_all_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
 
@@ -165,6 +169,26 @@ async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
         return JSONResponse(status_code=200, content={"status": "success", "output": summary})
     except Exception as exc:
         logger.exception("Cost metrics fetch failed: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+
+class CloudWatchMetricsRequest(BaseModel):
+    regions: Optional[List[str]] = Field(default=None, description="List of AWS Regions, or null for all regions")
+    last_hours: int = Field(default=6, description="Hours to look back")
+    period: int = Field(default=1800, description="Period in seconds")
+
+@app.post("/getCloudWatchMetrics")
+async def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
+    logger.info("POST /getCloudWatchMetrics called with regions=%s", request.regions)
+    try:
+        fetcher = CloudWatchMetricsFetcher()
+        summary = await fetcher.fetch_all_regions_metrics(
+            regions=request.regions,
+            last_hours=request.last_hours,
+            period=request.period
+        )
+        return JSONResponse(status_code=200, content={"status": "success", "output": summary})
+    except Exception as exc:
+        logger.exception("CloudWatch metrics fetch failed: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 

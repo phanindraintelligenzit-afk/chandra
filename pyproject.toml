@@ -45,6 +45,7 @@ dependencies = [
     "opentelemetry-api>=1.42.1",
     "opentelemetry-sdk>=1.42.1",
     "opentelemetry-exporter-otlp>=1.42.1",
+    "langgraph-checkpoint-sqlite>=3.1.0",
 ]
 
 [project.optional-dependencies]

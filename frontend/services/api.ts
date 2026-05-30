@@ -88,6 +88,55 @@ export type CostMetricsResponse = {
   output: CostMetricsOutput;
 };
 
+export type DetectorIssue = {
+  kra: string;
+  severity: string;
+  resource_arn: string;
+  resource_type: string;
+  region: string;
+  title: string;
+  recommendation: string;
+  detector_id: string;
+};
+
+export type DetectorIssuesOutput = Record<string, DetectorIssue[]>;
+
+export type DetectorIssuesResponse = {
+  status: string;
+  output: DetectorIssuesOutput;
+};
+
+export type CloudWatchMetricPoint = {
+  Timestamp: string;
+  Average: number;
+};
+
+export type CloudWatchMetricStats = {
+  points: CloudWatchMetricPoint[];
+  sample_count: number;
+  avg_of_average?: number;
+  max_average?: number;
+};
+
+export type CloudWatchMetricsOutput = Record<
+  string,
+  Record<
+    string,
+    Record<
+      string,
+      Record<
+        string,
+        CloudWatchMetricStats
+      >
+    >
+  >
+>;
+
+export type CloudWatchMetricsResponse = {
+  status: string;
+  output: CloudWatchMetricsOutput;
+};
+
 export type CopilotChatRequest = {
   sessionId: string;
   message: string;
@@ -156,12 +205,32 @@ class HttpError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const signal = init.signal ?? controller.signal;
+
+  // If the caller supplied a signal that is already aborted, fail immediately
+  // without touching the network.
+  const callerSignal = init.signal instanceof AbortSignal ? init.signal : undefined;
+  if (callerSignal?.aborted) {
+    const err = new Error("Request timed out before the backend responded");
+    err.name = "AbortError";
+    throw err;
+  }
+
+  // Forward the caller's abort to our internal controller so both the timeout
+  // and an external cancel will abort the same fetch.
+  let forwardListener: (() => void) | undefined;
+  if (callerSignal) {
+    forwardListener = () => controller.abort();
+    callerSignal.addEventListener("abort", forwardListener, { once: true });
+  }
+
+  // Always drive the fetch with our internal controller so the timeout abort
+  // (via setTimeout below) is guaranteed to reach the running fetch regardless
+  // of whether the caller also supplied a signal.
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(getApiUrl(path), {
       ...init,
-      signal,
+      signal: controller.signal,
       headers: {
         Accept: "application/json",
         ...(init.body ? { "Content-Type": "application/json" } : {}),
@@ -180,11 +249,16 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFA
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Request timed out before the backend responded");
+      const err = new Error("Request timed out before the backend responded");
+      err.name = "AbortError";
+      throw err;
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    if (callerSignal && forwardListener) {
+      callerSignal.removeEventListener("abort", forwardListener);
+    }
   }
 }
 
@@ -349,14 +423,14 @@ export async function fetchAgentObservations(
   return activeObservationsRequest;
 }
 
-let activeCostMetricsRequests: Record<number, Promise<CostMetricsOutput>> = {};
+let activeCostMetricsRequests: Record<number, Promise<CostMetricsOutput> | undefined> = {};
 
 export async function fetchCostMetrics(
   daysLookback: number = 7,
   options: { signal?: AbortSignal } = {}
 ): Promise<CostMetricsOutput> {
   if (activeCostMetricsRequests[daysLookback]) {
-    return activeCostMetricsRequests[daysLookback];
+    return activeCostMetricsRequests[daysLookback]!;
   }
 
   activeCostMetricsRequests[daysLookback] = (async () => {
@@ -376,7 +450,71 @@ export async function fetchCostMetrics(
     }
   })();
 
-  return activeCostMetricsRequests[daysLookback];
+  return activeCostMetricsRequests[daysLookback]!;
+}
+
+let activeCwMetricsRequests: Record<number, Promise<CloudWatchMetricsOutput> | undefined> = {};
+
+export async function fetchCloudWatchMetrics(
+  hoursLookback: number = 6,
+  options: { signal?: AbortSignal } = {}
+): Promise<CloudWatchMetricsOutput> {
+  if (activeCwMetricsRequests[hoursLookback]) {
+    return activeCwMetricsRequests[hoursLookback]!;
+  }
+
+  // Do NOT pass the caller's signal into the IIFE — passing it would mean a
+  // StrictMode cleanup-abort of the first call kills the shared dedup promise
+  // before the second call can reuse or replace it. The signal is only needed
+  // to abort a request that hasn't started deduplication yet (handled above).
+  const promise = (async () => {
+    try {
+      const data = await request<CloudWatchMetricsResponse | CloudWatchMetricsOutput>("/getCloudWatchMetrics", {
+        method: "POST",
+        body: JSON.stringify({ last_hours: hoursLookback, period: 3600 }),
+        signal: options.signal
+      }, 120_000);
+      const output = (data as any).output ?? data;
+      return output as CloudWatchMetricsOutput;
+    } finally {
+      delete activeCwMetricsRequests[hoursLookback];
+    }
+  })();
+
+  activeCwMetricsRequests[hoursLookback] = promise;
+  return promise;
+}
+
+let activeDetectorIssuesRequest: Promise<DetectorIssuesOutput> | null = null;
+
+export async function fetchDetectorIssues(
+  options: { signal?: AbortSignal } = {}
+): Promise<DetectorIssuesOutput> {
+  if (activeDetectorIssuesRequest) {
+    return activeDetectorIssuesRequest;
+  }
+
+  // Do NOT pass the caller's signal into the IIFE for the same reason as
+  // fetchCloudWatchMetrics above — a StrictMode cleanup abort of the first
+  // effect would kill the shared dedup promise and the second effect run
+  // would then find an already-failed (aborted) cached promise.
+  // The request runs without an external signal; the 120s internal timeout
+  // in request() still applies.
+  const promise = (async () => {
+    try {
+      const data = await request<DetectorIssuesResponse | DetectorIssuesOutput>(`/getDetectorIssues?t=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store"
+      }, 120_000);
+      const output = (data as any).output ?? data;
+      return output as DetectorIssuesOutput;
+    } finally {
+      activeDetectorIssuesRequest = null;
+    }
+  })();
+
+  activeDetectorIssuesRequest = promise;
+  return promise;
 }
 
 export async function analyzeActions(
