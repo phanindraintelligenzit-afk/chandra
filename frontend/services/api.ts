@@ -407,7 +407,7 @@ export async function fetchAgentObservations(
         method: "POST",
         body: JSON.stringify(payload),
         signal: options.signal
-      }, 180_000);
+      }, 600_000);
 
       if (typeof window !== "undefined") {
         console.log("🌐 LIVE OBSERVABILITY RESPONSE", response);

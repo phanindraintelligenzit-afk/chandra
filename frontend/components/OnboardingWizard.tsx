@@ -120,7 +120,7 @@ function TopRightProfile({
     <div className="flex items-center gap-3 rounded-2xl border border-signal/35 bg-black/50 px-3 py-2 shadow-[0_0_24px_rgba(255,59,59,0.18)] backdrop-blur">
       <AvatarPortrait avatar={avatar} size={42} selected />
       <div className="flex flex-col text-right">
-        <span className="text-[0.55rem] uppercase tracking-[0.2em] text-muted">AGENT</span>
+        <span className="text-[0.55rem] uppercase tracking-[0.2em] text-muted">WORKER</span>
         <span className="text-sm font-semibold uppercase tracking-[0.08em] text-frost">
           {displayName || "PENDING"}
         </span>
@@ -311,7 +311,7 @@ export default function OnboardingWizard() {
 
         // Fire observations fetch in background (don't await) with longer timeout
         const obsController = new AbortController();
-        const obsTimeout = setTimeout(() => obsController.abort(), 180_000); // 3 minute timeout
+        const obsTimeout = setTimeout(() => obsController.abort(), 600_000); // 10 minute timeout
 
         fetchAgentObservations(payload, { signal: obsController.signal })
           .then((data) => {
@@ -355,7 +355,7 @@ export default function OnboardingWizard() {
             exit={{ opacity: 0, y: -12 }}
             className="fixed right-5 top-5 z-[80] max-w-sm rounded-2xl border border-amber/30 bg-black/85 px-4 py-3 text-sm text-frost shadow-amber backdrop-blur"
           >
-            <div className="text-[0.58rem] uppercase tracking-[0.2em] text-amber">IDENTITY REGISTRY</div>
+            <div className="text-[0.58rem] uppercase tracking-[0.2em] text-amber">SYSTEM NOTIFICATION</div>
             <div className="mt-1 text-frost/85">{notice}</div>
           </motion.div>
         ) : null}
@@ -363,9 +363,12 @@ export default function OnboardingWizard() {
 
       <div className="onboarding-shell relative z-10 w-full max-w-5xl rounded-2xl border border-signal/25 bg-gradient-to-b from-black/70 via-black/50 to-black/40 p-6 shadow-[0_30px_80px_rgba(255,59,59,0.18),0_0_0_1px_rgba(255,59,59,0.08)] backdrop-blur">
         <div className="mb-5 flex min-h-[60px] items-start justify-between gap-4">
-          <div className="flex items-center gap-2 text-[0.6rem] uppercase tracking-[0.24em] text-signal">
-            <span className="h-1.5 w-1.5 rounded-full bg-signal pulse-core" />
-            CHANDRA OPERATIONAL ONBOARDING
+          <div className="flex items-center gap-3">
+            <img 
+              src="/intelligenz-it-logo.png.png" 
+              alt="Intelligenz IT Logo" 
+              className="w-64 sm:w-80 h-10 sm:h-12 object-fill drop-shadow-[0_0_12px_rgba(255,255,255,0.15)]"
+            />
           </div>
           {showProfilePill && selectedAvatar ? (
             <TopRightProfile avatar={selectedAvatar} displayName={displayName} agentId={currentAgentId} />
@@ -377,8 +380,7 @@ export default function OnboardingWizard() {
             <motion.div key="name" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
               <div className="space-y-6">
                 <div>
-                  <div className="text-[0.65rem] uppercase tracking-[0.24em] text-signal">CHANDRA IDENTITY REGISTRY</div>
-                  <h2 className="mt-3 text-3xl font-semibold uppercase tracking-[0.02em]">DEFINE YOUR DIGITAL OPERATOR IDENTITY</h2>
+                  <h2 className="text-3xl font-semibold tracking-[0.02em]">Define your Digital FTE Worker</h2>
                 </div>
 
                 <label className="block">

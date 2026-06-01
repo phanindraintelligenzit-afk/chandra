@@ -18,7 +18,7 @@ const nextConfig = {
     unoptimized: true
   },
   experimental: {
-    proxyTimeout: 180_000
+    proxyTimeout: 600_000
   },
   ...(isCiExport
     ? {}
