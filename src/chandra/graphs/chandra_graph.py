@@ -7,8 +7,8 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from chandra.config import settings
-from chandra.graphs.nodes import (
+from src.chandra.config import settings
+from src.chandra.graphs.nodes import (
     action_executor_node,
     _route_kra_workers,
     analyze,
@@ -27,8 +27,8 @@ from chandra.graphs.nodes import (
     onboard_account,
     persist,
 )
-from chandra.graphs.state import ChandraState
-from chandra.logging import get_logger
+from src.chandra.graphs.state import ChandraState
+from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 

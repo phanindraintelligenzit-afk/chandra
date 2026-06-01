@@ -1,4 +1,4 @@
-from chandra.aws.client_factory import AwsClientFactory
+from src.chandra.aws.client_factory import AwsClientFactory
 
 
 def get_factory_for_state(state):

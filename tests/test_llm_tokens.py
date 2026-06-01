@@ -1,7 +1,7 @@
 import json
 from langchain_aws import ChatBedrockConverse
-from chandra.observability.callbacks import UsageCapture
-from chandra.config import settings
+from src.chandra.observability.callbacks import UsageCapture
+from src.chandra.config import settings
 
 print("=" * 70)
 print("CAPTURING TOKENS AND COST FROM REAL BEDROCK LLM CALL")

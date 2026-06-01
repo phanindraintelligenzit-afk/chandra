@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from chandra.briefing.schemas import Finding
-from chandra.tools.base import DetectorContext
+from src.chandra.briefing.schemas import Finding
+from src.chandra.tools.base import DetectorContext
 
 
 def find_unattached_ebs(ctx: DetectorContext) -> list[Finding]:

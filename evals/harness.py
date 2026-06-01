@@ -24,11 +24,11 @@ load_dotenv()
 
 import yaml
 
-from chandra.briefing.schemas import KRAS
-from chandra.db.models import EvalRun, Finding as FindingRow
-from chandra.db.session import session_scope
-from chandra.graphs.chandra_graph import build_graph
-from chandra.logging import get_logger
+from src.chandra.briefing.schemas import KRAS
+from src.chandra.db.models import EvalRun, Finding as FindingRow
+from src.chandra.db.session import session_scope
+from src.chandra.graphs.chandra_graph import build_graph
+from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 

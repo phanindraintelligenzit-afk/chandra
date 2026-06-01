@@ -18,9 +18,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from chandra.briefing.schemas import Finding
-from chandra.logging import get_logger
-from chandra.tools.base import DetectorContext, detector_guard, paginate
+from src.chandra.briefing.schemas import Finding
+from src.chandra.logging import get_logger
+from src.chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
 

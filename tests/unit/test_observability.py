@@ -9,7 +9,7 @@ import pytest
 import structlog.contextvars
 from moto import mock_aws
 
-from chandra.observability import (
+from src.chandra.observability import (
     configure_observability,
     task_context,
     traced_node,

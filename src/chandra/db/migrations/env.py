@@ -7,15 +7,15 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from chandra.config import settings
-from chandra.db.models import Base
+from src.chandra.config import settings
+from src.chandra.db.models import Base
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Inject the live Postgres URL from chandra.config so we never drift.
+# Inject the live Postgres URL from src.chandra.config so we never drift.
 config.set_main_option("sqlalchemy.url", settings.postgres_url)
 
 target_metadata = Base.metadata

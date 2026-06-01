@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from chandra.briefing import composer
-from chandra.briefing.schemas import Finding
-from chandra.graphs.nodes import analyze
-from chandra.graphs.state import ChandraState
+from src.chandra.briefing import composer
+from src.chandra.briefing.schemas import Finding
+from src.chandra.graphs.nodes import analyze
+from src.chandra.graphs.state import ChandraState
 
 
 def _finding(

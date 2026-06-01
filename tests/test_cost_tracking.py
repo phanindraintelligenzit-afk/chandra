@@ -1,4 +1,4 @@
-﻿from chandra.observability.pricing import calculate_cost
+﻿from src.chandra.observability.pricing import calculate_cost
 
 def test_cost_calculation_input_only():
     cost = calculate_cost(

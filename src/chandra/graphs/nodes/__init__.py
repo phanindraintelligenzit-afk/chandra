@@ -30,34 +30,34 @@ from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
 
-from chandra.aws.client_factory import get_default_factory
-from chandra.aws.regions import active_regions
-from chandra.briefing.composer import (
+from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.aws.regions import active_regions
+from src.chandra.briefing.composer import (
     compose_executive_summary,
     llm_rank,
     render_markdown,
     score_findings,
 )
-from chandra.observability import traced_node
-from chandra.briefing.schemas import (
+from src.chandra.observability import traced_node
+from src.chandra.briefing.schemas import (
     AnalyzedFinding,
     ApprovalDecision,
     Finding,
     Observation,
     ProposedWrite,
 )
-from chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
-from chandra.db.session import session_scope
-from chandra.graphs.state import ChandraState
-from chandra.graphs.nodes.action_executor import action_executor_node
-from chandra.logging import get_logger
-from chandra.observability import traced_node
-from chandra.escalation.publisher import SNSPublisher
-from chandra.escalation.schemas import EscalationPayload
-from chandra.tools import compliance, cost, performance, reliability, security
-from chandra.tools.base import DetectorContext
+from src.chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
+from src.chandra.db.session import session_scope
+from src.chandra.graphs.state import ChandraState
+from src.chandra.graphs.nodes.action_executor import action_executor_node
+from src.chandra.logging import get_logger
+from src.chandra.observability import traced_node
+from src.chandra.escalation.publisher import SNSPublisher
+from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.tools import compliance, cost, performance, reliability, security
+from src.chandra.tools.base import DetectorContext
 
-from chandra.tools.base import DetectorContext, detector_guard, paginate
+from src.chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
 

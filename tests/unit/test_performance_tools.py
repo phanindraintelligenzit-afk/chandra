@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from chandra.tools import performance
-from chandra.tools.base import DetectorContext
+from src.chandra.tools import performance
+from src.chandra.tools.base import DetectorContext
 
 
 @pytest.fixture

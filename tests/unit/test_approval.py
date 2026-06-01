@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from chandra.briefing.schemas import ApprovalDecision, ProposedWrite
-from chandra.graphs.nodes import approval_node
-from chandra.graphs.state import ChandraState
+from src.chandra.briefing.schemas import ApprovalDecision, ProposedWrite
+from src.chandra.graphs.nodes import approval_node
+from src.chandra.graphs.state import ChandraState
 
 
 def test_approval_node_empty_pending_writes() -> None:

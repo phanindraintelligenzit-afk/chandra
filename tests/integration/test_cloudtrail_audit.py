@@ -1,6 +1,6 @@
 ﻿import pytest
 from unittest.mock import patch, MagicMock
-from chandra.aws.cloudtrail_audit import scan_cloudtrail
+from src.chandra.aws.cloudtrail_audit import scan_cloudtrail
 
 
 def test_cloudtrail_returns_list():

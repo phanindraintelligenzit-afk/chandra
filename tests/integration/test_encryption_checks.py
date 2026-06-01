@@ -1,6 +1,6 @@
 ﻿import pytest
 from unittest.mock import patch, MagicMock
-from chandra.aws.encryption_checks import scan_s3_encryption, scan_ebs_encryption
+from src.chandra.aws.encryption_checks import scan_s3_encryption, scan_ebs_encryption
 
 
 def test_s3_encryption_returns_list():

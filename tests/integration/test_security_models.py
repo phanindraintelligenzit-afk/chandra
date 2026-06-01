@@ -1,5 +1,5 @@
 ﻿import pytest
-from chandra.aws.security_models import SecurityFinding
+from src.chandra.aws.security_models import SecurityFinding
 
 
 def test_security_finding_creation():

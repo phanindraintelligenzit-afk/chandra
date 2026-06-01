@@ -16,9 +16,9 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
 
-from chandra.config import settings
-from chandra.db.models import Briefing, EvalRun, Finding as FindingRow, Run
-from chandra.db.session import session_scope
+from src.chandra.config import settings
+from src.chandra.db.models import Briefing, EvalRun, Finding as FindingRow, Run
+from src.chandra.db.session import session_scope
 
 st.set_page_config(
     page_title="Chandra — Cloud Health Briefing",

@@ -18,12 +18,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from chandra.config import settings
-from chandra.db.models import Briefing, Run
-from chandra.db.session import session_scope
-from chandra.graphs.chandra_graph import build_graph
-from chandra.logging import get_logger
-from chandra.observability import configure_observability
+from src.chandra.config import settings
+from src.chandra.db.models import Briefing, Run
+from src.chandra.db.session import session_scope
+from src.chandra.graphs.chandra_graph import build_graph
+from src.chandra.logging import get_logger
+from src.chandra.observability import configure_observability
 
 app = typer.Typer(
     name="chandra",

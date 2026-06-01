@@ -1,6 +1,6 @@
 ﻿from moto import mock_aws
 
-from chandra.aws.client_factory import AwsClientFactory
+from src.chandra.aws.client_factory import AwsClientFactory
 
 
 @mock_aws

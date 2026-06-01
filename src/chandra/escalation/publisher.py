@@ -1,11 +1,11 @@
 import json
 
-from chandra.aws.client_factory import get_default_factory
-from chandra.escalation.schemas import (
+from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.escalation.schemas import (
     EscalationPayload,
     EscalationResult,
 )
-from chandra.escalation.formatter import format_escalation_message
+from src.chandra.escalation.formatter import format_escalation_message
 
 
 class SNSPublisher:

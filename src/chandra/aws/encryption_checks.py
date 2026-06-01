@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import boto3
-from chandra.aws.compliance_models import ComplianceFinding
+from src.chandra.aws.compliance_models import ComplianceFinding
 
 
 def scan_s3_encryption() -> list[ComplianceFinding]:

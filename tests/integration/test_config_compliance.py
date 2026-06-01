@@ -1,6 +1,6 @@
 ﻿import pytest
 from unittest.mock import patch, MagicMock
-from chandra.aws.config_compliance import scan_config_compliance
+from src.chandra.aws.config_compliance import scan_config_compliance
 
 
 def test_config_compliance_returns_list():

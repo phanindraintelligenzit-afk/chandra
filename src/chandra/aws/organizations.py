@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import boto3
-from chandra.logging import get_logger
+from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 

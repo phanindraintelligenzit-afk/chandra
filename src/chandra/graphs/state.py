@@ -10,7 +10,7 @@ from __future__ import annotations
 from operator import add
 from typing import Annotated, Any, TypedDict
 
-from chandra.briefing.schemas import (
+from src.chandra.briefing.schemas import (
     AnalyzedFinding,
     ApprovalDecision,
     Finding,

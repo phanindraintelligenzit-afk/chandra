@@ -9,8 +9,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict
 
-from chandra.aws.client_factory import get_default_factory
-from chandra.logging import get_logger
+from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 

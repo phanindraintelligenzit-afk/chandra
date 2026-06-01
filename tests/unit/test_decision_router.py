@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from chandra.briefing.schemas import AnalyzedFinding, Finding, Severity
-from chandra.graphs.nodes import decision_router
-from chandra.graphs.state import ChandraState
+from src.chandra.briefing.schemas import AnalyzedFinding, Finding, Severity
+from src.chandra.graphs.nodes import decision_router
+from src.chandra.graphs.state import ChandraState
 
 
 def _af(severity: Severity, detector_id: str = "TEST-001") -> AnalyzedFinding:

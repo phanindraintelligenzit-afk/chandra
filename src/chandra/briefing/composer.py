@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from chandra.briefing.schemas import (
+from src.chandra.briefing.schemas import (
     KRAS,
     SEVERITY_WEIGHTS,
     AnalyzedFinding,
@@ -26,9 +26,9 @@ from chandra.briefing.schemas import (
     Finding,
     Scorecard,
 )
-from chandra.config import settings
-from chandra.logging import get_logger
-from chandra.observability.callbacks import UsageCapture
+from src.chandra.config import settings
+from src.chandra.logging import get_logger
+from src.chandra.observability.callbacks import UsageCapture
 
 logger = get_logger(__name__)
 

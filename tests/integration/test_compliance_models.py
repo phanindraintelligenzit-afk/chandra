@@ -1,5 +1,5 @@
 ﻿import pytest
-from chandra.aws.compliance_models import ComplianceFinding
+from src.chandra.aws.compliance_models import ComplianceFinding
 
 
 def test_compliance_finding_creation():

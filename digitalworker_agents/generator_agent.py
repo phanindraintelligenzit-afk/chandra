@@ -14,7 +14,7 @@ import random
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
-from chandra.config import settings
+from src.chandra.config import settings
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage

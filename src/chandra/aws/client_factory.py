@@ -18,7 +18,7 @@ import boto3
 from botocore.client import BaseClient
 from botocore.config import Config
 
-from chandra.config import settings
+from src.chandra.config import settings
 
 # Module-level cache for assumed-role factories, keyed by (role_arn, session_name).
 _ASSUME_ROLE_CACHE: dict[tuple[str, str], dict[str, Any]] = {}

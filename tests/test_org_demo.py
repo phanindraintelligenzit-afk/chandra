@@ -1,6 +1,6 @@
 ﻿import json
-from chandra.aws.organizations import Account
-from chandra.briefing.org_summary import (
+from src.chandra.aws.organizations import Account
+from src.chandra.briefing.org_summary import (
     aggregate_org_scorecard,
     build_org_briefing,
 )

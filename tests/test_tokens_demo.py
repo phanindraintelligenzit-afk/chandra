@@ -1,4 +1,4 @@
-from chandra.observability.pricing import calculate_cost
+from src.chandra.observability.pricing import calculate_cost
 
 print("=" * 60)
 print("BEDROCK TOKEN USAGE AND COST TRACKING")

@@ -6,8 +6,8 @@ the real Bedrock round-trip when credentials are available.
 
 from __future__ import annotations
 
-from chandra.briefing import composer
-from chandra.briefing.schemas import Finding, Scorecard
+from src.chandra.briefing import composer
+from src.chandra.briefing.schemas import Finding, Scorecard
 
 
 def _finding(

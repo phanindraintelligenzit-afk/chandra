@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from chandra.tools import reliability
-from chandra.tools.base import DetectorContext
+from src.chandra.tools import reliability
+from src.chandra.tools.base import DetectorContext
 
 
 class TestRdsMultiAz:

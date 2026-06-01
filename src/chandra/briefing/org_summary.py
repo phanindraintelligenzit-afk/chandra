@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from chandra.briefing.schemas import Scorecard
-from chandra.logging import get_logger
+from src.chandra.briefing.schemas import Scorecard
+from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 

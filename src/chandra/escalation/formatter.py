@@ -1,4 +1,4 @@
-from chandra.escalation.schemas import EscalationPayload
+from src.chandra.escalation.schemas import EscalationPayload
 
 
 def format_escalation_message(payload: EscalationPayload) -> dict:

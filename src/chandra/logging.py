@@ -7,7 +7,7 @@ import sys
 import json
 import structlog
 
-from chandra.config import settings
+from src.chandra.config import settings
 
 _configured = False
 

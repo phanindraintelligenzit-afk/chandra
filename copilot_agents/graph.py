@@ -2,7 +2,7 @@ import json
 import uuid
 from typing import Annotated, Any, TypedDict
 import os
-from chandra.config import settings
+from src.chandra.config import settings
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_aws import ChatBedrockConverse
 from langgraph.checkpoint.memory import MemorySaver, logger

@@ -1,8 +1,8 @@
 """Demo script for escalation node."""
 from datetime import datetime, timezone
-from chandra.escalation.schemas import EscalationPayload
-from chandra.escalation.publisher import SNSPublisher
-from chandra.aws.client_factory import get_default_factory
+from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.escalation.publisher import SNSPublisher
+from src.chandra.aws.client_factory import get_default_factory
 from dotenv import load_dotenv
 load_dotenv(override=True)
 

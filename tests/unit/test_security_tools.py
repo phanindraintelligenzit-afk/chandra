@@ -9,8 +9,8 @@ from typing import Any
 import boto3
 import pytest
 
-from chandra.tools import security
-from chandra.tools.base import DetectorContext
+from src.chandra.tools import security
+from src.chandra.tools.base import DetectorContext
 
 
 # ---------------------------------------------------------------------------

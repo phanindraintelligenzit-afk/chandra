@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chandra.briefing.composer import _KRA_CONTEXT
+from src.chandra.briefing.composer import _KRA_CONTEXT
 
 
 class TestKRAContext:

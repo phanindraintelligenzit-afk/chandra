@@ -9,8 +9,8 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 
-from chandra.graphs.nodes import ingest_observations
-from chandra.graphs.state import ChandraState
+from src.chandra.graphs.nodes import ingest_observations
+from src.chandra.graphs.state import ChandraState
 
 
 class TestIngestObservations:

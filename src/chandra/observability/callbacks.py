@@ -1,6 +1,6 @@
 ﻿from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
-from chandra.observability.pricing import calculate_cost
+from src.chandra.observability.pricing import calculate_cost
 
 class UsageCapture(BaseCallbackHandler):
     def __init__(self):

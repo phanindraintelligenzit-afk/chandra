@@ -1,5 +1,5 @@
 
-from chandra.graphs.chandra_graph import build_graph
+from src.chandra.graphs.chandra_graph import build_graph
 from langgraph.checkpoint.memory import MemorySaver
 import uuid
 from dotenv import load_dotenv

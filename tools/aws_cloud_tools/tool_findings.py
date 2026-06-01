@@ -9,10 +9,10 @@ from pathlib import Path
 from dataclasses import asdict
 from collections import defaultdict
 from uuid import uuid4
-from chandra.briefing.schemas import Finding
-from chandra.logging import get_logger
-from chandra.tools.base import DetectorContext, detector_guard, paginate
-from chandra.aws.client_factory import AwsClientFactory
+from src.chandra.briefing.schemas import Finding
+from src.chandra.logging import get_logger
+from src.chandra.tools.base import DetectorContext, detector_guard, paginate
+from src.chandra.aws.client_factory import AwsClientFactory
 
 logger = get_logger(__name__)
 
@@ -36,15 +36,15 @@ async def run_module(module_name: str, ctx: DetectorContext) -> list:
     try:
         # 1. Dynamically import the required module
         if module_name == "compliance":
-            from chandra.tools.compliance import run_all
+            from src.chandra.tools.compliance import run_all
         elif module_name == "cost":
-            from chandra.tools.cost import run_all
+            from src.chandra.tools.cost import run_all
         elif module_name == "performance":
-            from chandra.tools.performance import run_all
+            from src.chandra.tools.performance import run_all
         elif module_name == "reliability":
-            from chandra.tools.reliability import run_all
+            from src.chandra.tools.reliability import run_all
         elif module_name == "security":
-            from chandra.tools.security import run_all
+            from src.chandra.tools.security import run_all
         else:
             return []
 

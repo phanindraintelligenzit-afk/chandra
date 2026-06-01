@@ -5,9 +5,9 @@ from __future__ import annotations
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Send
 
-from chandra.graphs.chandra_graph import build_graph
-from chandra.graphs.nodes import _route_kra_workers, kra_supervisor
-from chandra.graphs.state import ChandraState
+from src.chandra.graphs.chandra_graph import build_graph
+from src.chandra.graphs.nodes import _route_kra_workers, kra_supervisor
+from src.chandra.graphs.state import ChandraState
 
 
 class TestKRASupervisor:

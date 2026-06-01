@@ -2,8 +2,8 @@
 import threading
 import pytest
 from moto import mock_aws
-from chandra.aws.client_factory import get_default_factory
-from chandra.observability import _emit_metric, traced_node
+from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.observability import _emit_metric, traced_node
 
 
 @pytest.fixture

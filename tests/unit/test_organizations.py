@@ -1,6 +1,6 @@
 ﻿"""Tests for AWS Organizations support."""
 
-from chandra.aws.organizations import Account
+from src.chandra.aws.organizations import Account
 import pytest
 
 

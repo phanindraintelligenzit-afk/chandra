@@ -1,5 +1,5 @@
 import json
-from chandra.aws.client_factory import get_default_factory
+from src.chandra.aws.client_factory import get_default_factory
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
