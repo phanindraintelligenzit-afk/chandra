@@ -817,13 +817,8 @@ function IncidentCard({ incident }: { incident: Incident }) {
 
   return (
     <div className="rounded-2xl border border-white/10 bg-black/25 p-3 flex flex-col justify-between">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2 text-[0.6rem] uppercase tracking-[0.16em]">
-          <span className={cx("font-bold", tone[incident.severity as keyof typeof tone])}>{incident.severity}</span>
-          <span className="text-muted">•</span>
-          <span className="text-frost/70">{incident.status}</span>
-        </div>
-        <div className="text-[0.6rem] text-muted">{incident.time}</div>
+      <div className="flex items-center gap-2 text-[0.6rem] uppercase tracking-[0.16em] mb-2">
+        <span className={cx("font-bold", tone[incident.severity as keyof typeof tone])}>{incident.severity}</span>
       </div>
       <div className="text-[0.7rem] font-semibold text-frost/90 leading-tight">
         {incident.incident}
@@ -2707,8 +2702,7 @@ export function ChandraExperience() {
       </section>
 
       <section className="section-shell">
-        <div className="section-inner grid gap-3 lg:grid-cols-2">
-          <RealTimeActivityFeed events={events} />
+        <div className="section-inner">
           <LiveOpsStream sync={observationsSync} />
         </div>
       </section>

@@ -186,8 +186,17 @@ function isBrowserDev(): boolean {
 }
 
 function getApiBase(): string {
+  // If NEXT_PUBLIC_API_URL is explicitly set (e.g., on AWS/staging), always
+  // use it directly — even in dev mode — so requests reach the real FastAPI
+  // rather than proxying through Next.js to localhost:6001.
+  const explicitUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (explicitUrl && explicitUrl !== "http://localhost:6001" && explicitUrl !== "http://127.0.0.1:6001") {
+    return explicitUrl;
+  }
+  // Local development: route through the Next.js dev proxy so cookies/CORS
+  // are handled seamlessly without needing a running nginx.
   if (isBrowserDev()) return DEV_PROXY_PREFIX;
-  return process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
+  return explicitUrl ?? DEFAULT_API_URL;
 }
 
 export function getApiUrl(path: string): string {
