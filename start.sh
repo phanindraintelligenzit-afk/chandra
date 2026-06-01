@@ -11,7 +11,7 @@ else
 fi
 
 # Start FastAPI on port 6001
-uvicorn fastapi_app:app --host 0.0.0.0 --port 6001 &
+uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 6001 &
 FASTAPI_PID=$!
 
 # Start Gradio dashboard on port 7861

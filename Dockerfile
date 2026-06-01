@@ -77,12 +77,13 @@ COPY . /app/
 
 RUN chmod +x /app/start.sh && \
     sed -i 's/\r$//' /app/start.sh && \
+    uv pip install --python /app/.venv -e . && \
     chown -R chandra:chandra /app
 
 WORKDIR /app
 USER chandra
 
-ENV PYTHONPATH=/app \
+ENV PYTHONPATH=/app:/app/src \
     PATH="/app/.venv/bin:${PATH}" \
     GRADIO_SERVER_NAME=0.0.0.0 \
     GRADIO_SERVER_PORT=7861
