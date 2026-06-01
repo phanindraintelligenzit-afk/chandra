@@ -75,6 +75,10 @@ COPY --from=frontend-builder /app/frontend/package.json /app/frontend/
 # Copy all project files
 COPY . /app/
 
+RUN chmod +x /app/start.sh && \
+    sed -i 's/\r$//' /app/start.sh && \
+    chown -R chandra:chandra /app
+
 WORKDIR /app
 USER chandra
 
