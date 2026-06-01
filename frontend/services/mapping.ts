@@ -69,6 +69,7 @@ export type LiveKraEvaluation = {
   name: string;
   status: string;
   achievement: string;
+  completedPercentage: number;
   note: string;
   tone: string;
   isCustom: boolean;
@@ -133,6 +134,7 @@ export function deriveKraEvaluations(
       name,
       status: entry.status,
       achievement: entry.achievement,
+      completedPercentage: entry.completedPercentage,
       note: entry.note,
       tone: statusTone(entry.status),
       isCustom

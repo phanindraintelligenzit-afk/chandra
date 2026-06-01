@@ -53,7 +53,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GRADIO_SERVER_PORT=7861
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 ca-certificates nginx \
+    && apt-get install -y --no-install-recommends libpq5 ca-certificates nginx curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 chandra \
     && useradd  --uid 10001 --gid chandra --home /home/chandra --create-home --shell /bin/bash chandra
@@ -80,7 +82,5 @@ ENV PYTHONPATH=/app \
     PATH="/app/.venv/bin:${PATH}" \
     GRADIO_SERVER_NAME=0.0.0.0 \
     GRADIO_SERVER_PORT=7861
-
-EXPOSE 80 443 6001 7861
 
 CMD ["/app/start.sh"]

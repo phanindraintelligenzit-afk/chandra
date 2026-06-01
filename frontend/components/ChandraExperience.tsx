@@ -727,20 +727,16 @@ function KRAMetricsReview({
     const backendData = liveEvaluations?.find(e => e.code === kra.code || e.name.includes(kra.name.split(" ")[0]));
     const status = backendData?.status?.toUpperCase() || "UNKNOWN";
     
-    let score = 0;
     let color = "#ffffff70";
     if (status.includes("GREEN") || status.includes("HEALTHY") || status.includes("STABLE")) {
-      score = 92 + (kra.code.length % 5);
       color = "#4ade80"; // emerald-300
     } else if (status.includes("YELLOW") || status.includes("AMBER") || status.includes("WARN") || status.includes("DEGRADED")) {
-      score = 75 + (kra.code.length % 10);
       color = "#ffb800"; // amber
     } else if (status.includes("RED") || status.includes("CRIT") || status.includes("FAIL")) {
-      score = 45 + (kra.code.length % 15);
       color = "#ff3b3b"; // signal
-    } else {
-      score = 80;
     }
+
+    const score = backendData?.completedPercentage ?? 0;
 
     return {
       ...kra,
@@ -2016,7 +2012,7 @@ function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | 
                     itemStyle={{ color: "#e2e8f0" }}
                     formatter={(v: any, name: string) => [
                       formatCwValue(v as number, activeMetric ?? ""),
-                      <span className="truncate max-w-[200px]" title={name}>{name}</span>
+                      name
                     ]}
                     labelFormatter={l => `Time: ${l}`}
                   />
@@ -2127,25 +2123,32 @@ type FlatDetectorRow = {
   detector_id: string;
 };
 
-function flattenDetectorIssues(issues: DetectorIssuesOutput): FlatDetectorRow[] {
+function flattenDetectorIssues(issues: any): FlatDetectorRow[] {
   const rows: FlatDetectorRow[] = [];
-  Object.entries(issues).forEach(([category, items]) => {
-    // Guard: skip if items is not a real array (can happen if backend shapes differ)
-    if (!Array.isArray(items)) return;
-    items.forEach(issue => {
-      if (!issue || typeof issue !== "object") return;
-      rows.push({
-        category: category.toUpperCase(),
-        severity: String(issue.severity ?? "info"),
-        title: String(issue.title ?? ""),
-        region: String(issue.region ?? ""),
-        resource_type: String(issue.resource_type ?? ""),
-        recommendation: String(issue.recommendation ?? ""),
-        resource_arn: String(issue.resource_arn ?? ""),
-        detector_id: String(issue.detector_id ?? "")
-      });
+  
+  // Handle both grouped dictionaries and flat arrays seamlessly
+  const itemsToProcess = Array.isArray(issues) ? issues : Object.values(issues ?? {}).flat();
+  
+  itemsToProcess.forEach(issue => {
+    if (!issue || typeof issue !== "object") return;
+    
+    // Fallback logic for keys just in case the backend payload shape shifts
+    const category = String(issue.kra ?? issue.category ?? "UNKNOWN").toUpperCase();
+    const severity = String(issue.severity ?? issue.priorityLevel ?? issue.priority ?? "info");
+    const title = String(issue.title ?? issue.issue ?? issue.description ?? "");
+    
+    rows.push({
+      category,
+      severity,
+      title,
+      region: String(issue.region ?? ""),
+      resource_type: String(issue.resource_type ?? issue.service ?? ""),
+      recommendation: String(issue.recommendation ?? ""),
+      resource_arn: String(issue.resource_arn ?? issue.resourceId ?? ""),
+      detector_id: String(issue.detector_id ?? "")
     });
   });
+  
   return rows;
 }
 
@@ -2450,7 +2453,7 @@ export function ChandraExperience() {
   // cancelled by unrelated cost-metrics or detector signal teardown.
   useEffect(() => {
     const cwController = new AbortController();
-    fetchCloudWatchMetrics(1, { signal: cwController.signal })
+    fetchCloudWatchMetrics(12, { signal: cwController.signal })
       .then(res => { if (res) setCwMetrics(res); })
       .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
     return () => cwController.abort();
@@ -2465,8 +2468,10 @@ export function ChandraExperience() {
         if (!cancelled) setDetectorIssues(res ?? null);
       })
       .catch(err => {
-        if (!cancelled && err.name !== "AbortError" && err.message !== "Request timed out before the backend responded")
+        if (!cancelled) {
           console.error("Detector issues error:", err);
+          setDetectorIssues({});
+        }
       });
     return () => { cancelled = true; };
   }, []);

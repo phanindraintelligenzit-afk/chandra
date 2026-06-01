@@ -332,7 +332,10 @@ export const WorkerActionExecutionCenter = forwardRef<
     const actionId = `action-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const startedAt = Date.now();
 
-    const jiraKey = action.jiraUrl?.split("/").pop() || action.jiraKey || "DEV-000";
+    let jiraKey = action.jiraUrl?.split("/").pop() || action.jiraKey || "DEV-000";
+    if (jiraKey.toUpperCase() === "ERROR") {
+      jiraKey = "DEV-000";
+    }
     const actionName = action.actionName || action.incident || "Unnamed Action";
 
     // Safety-net dedup: skip if an active entry with the same jiraKey+actionName already exists

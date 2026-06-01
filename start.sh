@@ -18,10 +18,16 @@ FASTAPI_PID=$!
 uv run app.py &
 GRADIO_PID=$!
 
+# Start Next.js frontend on port 3000
+echo "Starting Next.js frontend..."
+cd /app/frontend && HOST=0.0.0.0 npm start -- -p 3000 &
+FRONTEND_PID=$!
+
 echo "FastAPI  started (PID $FASTAPI_PID) → http://0.0.0.0:6001"
 echo "Gradio   started (PID $GRADIO_PID)  → http://0.0.0.0:7861"
+echo "Frontend started (PID $FRONTEND_PID) → http://0.0.0.0:3000"
 
 # If either process dies, exit so Docker can restart the container
-wait -n $FASTAPI_PID $GRADIO_PID
-kill $FASTAPI_PID $GRADIO_PID 2>/dev/null || true
+wait -n $FASTAPI_PID $GRADIO_PID $FRONTEND_PID
+kill $FASTAPI_PID $GRADIO_PID $FRONTEND_PID 2>/dev/null || true
 

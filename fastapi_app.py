@@ -173,7 +173,7 @@ async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
 
 class CloudWatchMetricsRequest(BaseModel):
     region: str = Field(default="us-east-1", description="AWS region to fetch metrics from")
-    last_hours: int = Field(default=1, description="Hours to look back")
+    last_hours: int = Field(default=12, description="Hours to look back")
     period: int = Field(default=1200, description="Period in seconds")
     timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
 

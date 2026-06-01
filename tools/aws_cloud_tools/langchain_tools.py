@@ -213,7 +213,7 @@ def fetch_all_findings() -> dict:
 
 
 TOOLS_LIST: list[Callable[..., Any]] = [
-    fetch_metrics_summary,
+    # fetch_metrics_summary,
     fetch_alarms_summary,
     fetch_recent_events,
     fetch_budget_status,
@@ -235,7 +235,7 @@ DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
 def default_tool_args(tool_name: str, region: str = DEFAULT_REGION) -> dict:
     """Default kwargs for parallel tool invocation in the observability pipeline."""
     return {
-        "fetch_metrics_summary": {"region": region, "last_hours": 1, "period": 1200},
+        # "fetch_metrics_summary": {"region": region, "last_hours": 1, "period": 1200},
         "fetch_alarms_summary": {"max_total_alarms": 20},
         "fetch_recent_events": {"max_results": 20},
         "fetch_budget_status": {},

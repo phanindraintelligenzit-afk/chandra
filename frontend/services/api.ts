@@ -21,6 +21,7 @@ export type KraStatus = {
   kra_code: string;
   status: string;
   achievement: string;
+  completedPercentage: number;
   note: string;
 };
 
@@ -281,6 +282,7 @@ function normalizeKraStatus(value: unknown): KraStatus[] {
       kra_code: String(row.kra_code ?? row.kraCode ?? row.code ?? `KRA-${String(index + 1).padStart(2, "0")}`),
       status: String(row.status ?? "UNKNOWN"),
       achievement: String(row.achievement ?? row.summary ?? row.description ?? ""),
+      completedPercentage: Number(row.completedPercentage ?? row.completed_percentage ?? row.percentage ?? 0),
       note: String(row.note ?? row.reason ?? row.detail ?? "")
     };
   });
@@ -498,14 +500,14 @@ export async function fetchDetectorIssues(
   // fetchCloudWatchMetrics above — a StrictMode cleanup abort of the first
   // effect would kill the shared dedup promise and the second effect run
   // would then find an already-failed (aborted) cached promise.
-  // The request runs without an external signal; the 120s internal timeout
+  // The request runs without an external signal; the 300s internal timeout
   // in request() still applies.
   const promise = (async () => {
     try {
       const data = await request<DetectorIssuesResponse | DetectorIssuesOutput>(`/getDetectorIssues?t=${Date.now()}`, {
         method: "GET",
         cache: "no-store"
-      }, 120_000);
+      }, 300_000);
       const output = (data as any).output ?? data;
       return output as DetectorIssuesOutput;
     } finally {

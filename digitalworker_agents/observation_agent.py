@@ -87,6 +87,14 @@ class KRAStatus(BaseModel):
     kra_code: str = Field(description="e.g. KRA-01")
     status: str = Field(description="Green | Yellow | Red")
     achievement: str = Field(description="Current performance against target")
+    completedPercentage: int = Field(
+        description=(
+            "Estimated completion percentage (0–100 integer) reflecting how close this KRA is to its target. "
+            "Ground the value in concrete evidence from tool data "
+            "(e.g. 'Config enabled in 1/17 regions = 6%', '3 of 6 S3 buckets remediated = 50%'). "
+            "General guidance: 0–33 → Red (severely behind), 34–66 → Yellow (at risk / partial), 67–100 → Green (on track or achieved)."
+        )
+    )
     note: Optional[str] = Field(default=None)
 
 
@@ -211,7 +219,6 @@ class AwsObservabilityAgent:
         )
         return {"raw_results": raw_results}
 
-
     def SummaryNode(self, state: AgentState) -> dict:
         raw_results = state.get("raw_results", {})
         logger.info("Generating summary. Available tool results=%d", len(raw_results))
@@ -281,7 +288,19 @@ Produce a structured report following these rules:
 
 7. **health** — Overall health status: "Healthy" if no critical issues, "Degraded" if issues present, "Critical" if P1 issues exist.
 
-8. **kra_status** — Status of each KRA: Green (on track), Yellow (at risk), or Red (behind). Base on available tool data and actions needed.
+8. **kra_status** — For each KRA provide:
+   - `status`: Green (on track) | Yellow (at risk) | Red (behind). Base on available tool data and actions needed.
+   - `achievement`: Current performance against the KRA target in plain language.
+   - `completedPercentage`: An integer from 0 to 100 estimating how close this KRA is to its target.
+     Ground the value in concrete, countable evidence from the tool data, for example:
+       • "Config enabled in 1 of 17 regions → 6%"
+       • "3 of 6 public S3 buckets remediated → 50%"
+       • "No cost anomaly alerts configured → 10%"
+     General guidance (not a hard rule — let the evidence decide):
+       0–33  → typically Red
+       34–66 → typically Yellow
+       67–100 → typically Green
+   - `note` (optional): any additional context or caveat.
 
 Never fabricate data not present in the tool results. For operational KRAs, steps may use AWS best practices when the tools provide partial context."""
 
