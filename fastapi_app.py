@@ -4,6 +4,7 @@ FastAPI application for the AWS Observability Agent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import uuid
