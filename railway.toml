@@ -1,0 +1,12 @@
+[deploy]
+# Keep the container always running (no sleep on inactivity)
+restartPolicyType = "always"
+
+# Health check — Railway pings /health to confirm the app is up
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+
+[build]
+# Use the Dockerfile in the project root
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
