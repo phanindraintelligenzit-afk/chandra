@@ -100,11 +100,8 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-# ── LLM with tools bound ──────────────────────────────────────────────────────
-llm = ChatBedrockConverse(
-    model=os.getenv("MODEL_NAME")
-)
-llm_with_tools = llm.bind_tools(tools)
+# LLM is initialized inside build_graph() to avoid crashing at import time
+# if MODEL_NAME is missing or Bedrock credentials are invalid.
 
 SYSTEM_PROMPT = (
     "You are a cloud watcher agent that monitors AWS cloud infrastructure. "
@@ -113,12 +110,6 @@ SYSTEM_PROMPT = (
     "answer the user's question thoroughly. Just give very short summary one line."
 )
 
-# ── Graph nodes ───────────────────────────────────────────────────────────────
-def call_llm(state: AgentState) -> AgentState:
-    """Send messages to the LLM (with tools available)."""
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    response = llm_with_tools.invoke(messages)
-    return {"messages": [response]}
 
 
 def execute_tools(state: AgentState) -> AgentState:
@@ -149,11 +140,22 @@ def should_continue(state: AgentState) -> str:
 
 # ── Build the graph ───────────────────────────────────────────────────────────
 def build_graph():
+    # Initialize LLM here (not at module level) so import errors don't crash FastAPI
+    llm = ChatBedrockConverse(model=os.getenv("MODEL_NAME"))
+    llm_with_tools = llm.bind_tools(tools)
+
+    # Define call_llm as a closure so it captures the local llm_with_tools
+    def call_llm_node(state: AgentState) -> AgentState:
+        """Send messages to the LLM (with tools available)."""
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+        response = llm_with_tools.invoke(messages)
+        return {"messages": [response]}
+
     checkpointer = _build_checkpointer()
 
     graph = StateGraph(AgentState)
 
-    graph.add_node("call_llm", call_llm)
+    graph.add_node("call_llm", call_llm_node)
     graph.add_node("execute_tools", execute_tools)
 
     graph.set_entry_point("call_llm")

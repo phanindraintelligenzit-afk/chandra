@@ -111,10 +111,35 @@ app.add_middleware(
 )
 
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
-_copilot_agent = build_graph()
-_generator_agent = GeneratorAgent()
-_executor_agent = ExecutorAgent()
-_orchestrator_agent = OrchestratorAgent()
+# Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
+# (e.g. Bedrock unreachable, Postgres timeout, missing env var)
+try:
+    _copilot_agent = build_graph()
+    logger.info("Copilot agent initialized successfully")
+except Exception as _e:
+    logger.error("Failed to initialize copilot agent: %s", _e)
+    _copilot_agent = None
+
+try:
+    _generator_agent = GeneratorAgent()
+    logger.info("Generator agent initialized successfully")
+except Exception as _e:
+    logger.error("Failed to initialize generator agent: %s", _e)
+    _generator_agent = None
+
+try:
+    _executor_agent = ExecutorAgent()
+    logger.info("Executor agent initialized successfully")
+except Exception as _e:
+    logger.error("Failed to initialize executor agent: %s", _e)
+    _executor_agent = None
+
+try:
+    _orchestrator_agent = OrchestratorAgent()
+    logger.info("Orchestrator agent initialized successfully")
+except Exception as _e:
+    logger.error("Failed to initialize orchestrator agent: %s", _e)
+    _orchestrator_agent = None
 
 
 class KRAInput(BaseModel):
