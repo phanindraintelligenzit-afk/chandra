@@ -10,12 +10,19 @@ else
     echo "FRONTEND_URL not set, defaulting to: $FRONTEND_URL"
 fi
 
+# Ensure PYTHONPATH includes both /app (for src.chandra.* imports) and /app/src
+# (so that bare `chandra.*` imports also work if any remain)
+export PYTHONPATH="/app:/app/src${PYTHONPATH:+:$PYTHONPATH}"
+
 # Start FastAPI on port 6001
-uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 6001 &
+# Use the venv binary directly so the inherited PYTHONPATH is preserved.
+# `uv run` spawns its own environment and strips PYTHONPATH, causing
+# ModuleNotFoundError: No module named 'chandra'.
+/app/.venv/bin/uvicorn fastapi_app:app --host 0.0.0.0 --port 6001 &
 FASTAPI_PID=$!
 
 # Start Gradio dashboard on port 7861
-uv run app.py &
+/app/.venv/bin/python app.py &
 GRADIO_PID=$!
 
 # Start Next.js frontend on port provided by Render (or 3000)
@@ -31,4 +38,3 @@ echo "Frontend started (PID $FRONTEND_PID) → http://0.0.0.0:$FRONTEND_PORT"
 # If either process dies, exit so Docker can restart the container
 wait -n $FASTAPI_PID $GRADIO_PID $FRONTEND_PID
 kill $FASTAPI_PID $GRADIO_PID $FRONTEND_PID 2>/dev/null || true
-
