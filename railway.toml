@@ -1,12 +1,13 @@
 [deploy]
-# Keep the container always running (no sleep on inactivity)
+# Keep the container always running
 restartPolicyType = "always"
 
-# Health check — Railway pings /health to confirm the app is up
-healthcheckPath = "/health"
+# Healthcheck on "/" — Next.js serves this and returns 200
+# Do NOT use "/health" — that's a FastAPI route on port 6001,
+# not accessible on the public-facing Next.js port that Railway checks.
+healthcheckPath = "/"
 healthcheckTimeout = 300
 
 [build]
-# Use the Dockerfile in the project root
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
