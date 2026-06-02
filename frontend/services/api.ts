@@ -434,20 +434,27 @@ export async function fetchAgentObservations(
 
   activeObservationsRequest = (async () => {
     try {
-      // Step 1: Submit job — returns immediately with job_id
-      const jobResp = await request<{ job_id: string; poll_url: string }>(
+      // Step 1: Submit job — new backend returns job_id immediately (202)
+      // Old backend returns the full result directly (200) — handle both
+      const jobResp = await request<Record<string, unknown>>(
         "/getAgentObservations",
         { method: "POST", body: JSON.stringify(payload), signal: options.signal },
         30_000
       );
 
+      // Backward-compat: if backend returned result directly (old format)
+      if (!jobResp.job_id) {
+        const output = (jobResp.output as Record<string, unknown>) ?? jobResp;
+        return normalizeAgentObservation(output);
+      }
+
       if (typeof window !== "undefined") {
         console.log("✅ Job submitted:", jobResp.job_id, "polling...");
       }
 
-      // Step 2: Poll until complete
+      // Step 2: Poll until complete (new async format)
       const result = await pollJobStatus(
-        jobResp.job_id,
+        jobResp.job_id as string,
         (raw) => {
           const data = raw as Record<string, unknown>;
           const output = (data?.output as Record<string, unknown>) ?? data;
@@ -511,15 +518,20 @@ export async function fetchCloudWatchMetrics(
 
   const promise = (async () => {
     try {
-      // Step 1: Submit job
-      const jobResp = await request<{ job_id: string }>("/getCloudWatchMetrics", {
+      // Submit job — new backend returns job_id (202), old returns result directly (200)
+      const jobResp = await request<Record<string, unknown>>("/getCloudWatchMetrics", {
         method: "POST",
         body: JSON.stringify({ last_hours: hoursLookback, period: 1200 })
       }, 30_000);
 
-      // Step 2: Poll for result
+      // Backward-compat: old backend returned result directly
+      if (!jobResp.job_id) {
+        return ((jobResp as any).output ?? jobResp) as CloudWatchMetricsOutput;
+      }
+
+      // New async format — poll for result
       const output = await pollJobStatus(
-        jobResp.job_id,
+        jobResp.job_id as string,
         (raw) => {
           const data = raw as Record<string, unknown>;
           return ((data as any).output ?? data) as CloudWatchMetricsOutput;
@@ -548,16 +560,21 @@ export async function fetchDetectorIssues(
 
   const promise = (async () => {
     try {
-      // Step 1: Submit job
-      const jobResp = await request<{ job_id: string }>(
+      // Submit job — new backend returns job_id (202), old returns result directly (200)
+      const jobResp = await request<Record<string, unknown>>(
         `/getDetectorIssues?t=${Date.now()}`,
         { method: "GET", cache: "no-store" },
         30_000
       );
 
-      // Step 2: Poll for result
+      // Backward-compat: old backend returned result directly
+      if (!jobResp.job_id) {
+        return ((jobResp as any).output ?? jobResp) as DetectorIssuesOutput;
+      }
+
+      // New async format — poll for result
       const output = await pollJobStatus(
-        jobResp.job_id,
+        jobResp.job_id as string,
         (raw) => {
           const data = raw as Record<string, unknown>;
           return ((data?.output ?? data) as DetectorIssuesOutput);
