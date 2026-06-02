@@ -44,7 +44,7 @@ def test_approval_node_routing(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Mock interrupt to avoid needing a runnable context
     mock_interrupt = Mock(return_value=[{"decision": "approve", "reviewer": "admin", "reason": "OK", "decided_at": datetime.now(timezone.utc).isoformat()}])
-    monkeypatch.setattr("chandra.graphs.nodes.interrupt", mock_interrupt)
+    monkeypatch.setattr("src.chandra.graphs.nodes.interrupt", mock_interrupt)
 
     result = approval_node(state)
 

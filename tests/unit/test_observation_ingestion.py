@@ -149,7 +149,7 @@ class TestIngestObservations:
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "DescribeAlarms",
         )
-        with patch("chandra.graphs.nodes.paginate") as mock_paginate:
+        with patch("src.chandra.graphs.nodes.paginate") as mock_paginate:
             mock_paginate.side_effect = error
             result = ingest_observations(state)
 
