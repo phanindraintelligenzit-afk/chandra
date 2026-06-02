@@ -49,6 +49,29 @@ _thread_pool = ThreadPoolExecutor(max_workers=8)
 
 _thread_local = threading.local()
 
+# ── Shared background event loop ──────────────────────────────────────────────
+# Using asyncio.run() in multiple background threads simultaneously creates
+# competing event loops that crash uvicorn. Instead, we keep ONE persistent
+# event loop running in a dedicated daemon thread and submit all async work
+# to it via asyncio.run_coroutine_threadsafe().
+_bg_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+
+def _start_bg_loop(loop: asyncio.AbstractEventLoop) -> None:
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+_bg_loop_thread = threading.Thread(
+    target=_start_bg_loop, args=(_bg_loop,), daemon=True, name="bg-async-loop"
+)
+_bg_loop_thread.start()
+
+
+def _run_async(coro) -> Any:
+    """Run an async coroutine on the shared background event loop and block until done."""
+    future = asyncio.run_coroutine_threadsafe(coro, _bg_loop)
+    return future.result()  # blocks the calling thread until coroutine completes
+
+
 class LogCapture(logging.Handler):
     """Custom handler to capture logs into memory buffer"""
     def emit(self, record: logging.LogRecord) -> None:
@@ -312,7 +335,7 @@ def _run_observations_task(job_id: str, request: PipelineRequest):
 
 def _run_detector_task(job_id: str):
     """Background worker for /getDetectorIssues."""
-    import asyncio, time
+    import time
     start_time = time.time()
     _thread_local.job_id = job_id
     try:
@@ -322,7 +345,8 @@ def _run_detector_task(job_id: str):
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = "Running compliance/security detectors..."
 
-        findings = asyncio.run(run_all_detectors())
+        # Use shared bg loop — avoids competing event loops crashing uvicorn
+        findings = _run_async(run_all_detectors())
         if isinstance(findings, dict):
             total_issues = sum(len(g) for g in findings.values())
             output = findings
@@ -353,7 +377,7 @@ def _run_detector_task(job_id: str):
 
 def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
     """Background worker for /getCloudWatchMetrics."""
-    import asyncio, time
+    import time
     start_time = time.time()
     _thread_local.job_id = job_id
     try:
@@ -364,7 +388,8 @@ def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
             _job_store[job_id]["message"] = "Discovering CloudWatch metrics..."
 
         fetcher = CloudWatchMetricsFetcher()
-        summary = asyncio.run(fetcher.fetch_all_metrics(
+        # Use shared bg loop — avoids competing event loops crashing uvicorn
+        summary = _run_async(fetcher.fetch_all_metrics(
             region=request.region,
             last_hours=request.last_hours,
             period=request.period,
