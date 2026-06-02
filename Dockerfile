@@ -75,12 +75,15 @@ COPY --from=frontend-builder /app/frontend/package.json /app/frontend/
 # Copy all project files
 COPY . /app/
 
+# WORKDIR must be set BEFORE the RUN so that `uv pip install -e .` finds
+# pyproject.toml in /app rather than running from / (root).
+WORKDIR /app
+
 RUN chmod +x /app/start.sh && \
     sed -i 's/\r$//' /app/start.sh && \
-    uv pip install --python /app/.venv -e . && \
+    uv pip install --python /app/.venv -e /app && \
     chown -R chandra:chandra /app
 
-WORKDIR /app
 USER chandra
 
 ENV PYTHONPATH=/app:/app/src \
