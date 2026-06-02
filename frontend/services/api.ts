@@ -612,20 +612,37 @@ export async function analyzeActions(
   };
 
   if (typeof window !== "undefined") {
-    console.log("ANALYZE ACTIONS PAYLOAD", payload);
+    console.log("🚀 SUBMIT /analyzeActions job", payload.actions.length, "actions");
   }
 
-  const response = await request<AnalyzerPipelineResponse>("/analyzeActions", {
+  // Submit job — new backend returns job_id (202), old returns result directly
+  const jobResp = await request<Record<string, unknown>>("/analyzeActions", {
     method: "POST",
     body: JSON.stringify(payload),
     signal: options.signal
-  });
+  }, 30_000);
 
-  if (!response?.output) {
-    throw new Error("Analyzer response did not include output");
+  // Backward-compat: old backend returned result directly
+  if (!jobResp.job_id) {
+    const direct = jobResp as unknown as AnalyzerPipelineResponse;
+    if (!direct?.output) throw new Error("Analyzer response did not include output");
+    return direct.output;
   }
 
-  return response.output;
+  // New async format — poll for result
+  const result = await pollJobStatus(
+    jobResp.job_id as string,
+    (raw) => {
+      const data = raw as AnalyzerPipelineResponse;
+      if (!data?.output) throw new Error("Analyzer response did not include output");
+      return data.output;
+    },
+    3000,
+    300_000,
+    options.signal
+  );
+
+  return result;
 }
 
 export async function sendCopilotMessage(

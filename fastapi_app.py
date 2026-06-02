@@ -406,48 +406,69 @@ class AnalyzerRequest(BaseModel):
     projectKey: str = Field(default="DEV", description="Jira project key for ticket creation")
 
 
-@app.post("/analyzeActions", response_model=AnalyzerPipelineResponse)
+@app.post("/analyzeActions")
 def analyze_actions(request: AnalyzerRequest):
-    """
-    Example request:
-    {
-        "projectKey": "DEV",
-        "actions": [
-            {
-                "actionName": "Automate Bedrock inference disablement for untagged usage",
-                "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
-                "service": "Bedrock",
-                "kraCode": "KRA-01",
-                "priorityLevel": "P1",
-                "steps": [
-                    "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
-                    "Write Lambda function that checks userIdentity.principalId against allowed tag values",
-                    "If principal has no Environment=prod tag, deny the request",
-                    "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
-                    "Test by simulating an untagged Bedrock call"
-                ]
-            }
-        ]
-    }
-    """
+    """Submit action analysis as an async job. Poll /jobs/status/{job_id} for result."""
+    job_id = str(uuid.uuid4())
     logger.info(
-        "POST /analyzeActions called with %d actions, projectKey=%s",
-        len(request.actions),
-        request.projectKey,
+        "POST /analyzeActions → async job_id=%s actions=%d projectKey=%s",
+        job_id, len(request.actions), request.projectKey,
     )
-    try:
-        agent = AnalyzerAgent()
-        response = agent.RunPipeline(request.model_dump())
-    except Exception as exc:
-        logger.exception("AnalyzerAgent initialisation failed: %s", exc)
-        response = AnalyzerPipelineResponse(
-            statusCode=500,
-            status="error",
-            exception=str(exc),
-            output=None,
-        )
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": f"Queued: analyzing {len(request.actions)} actions",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_analyzer_task, job_id, request)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Analysis submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}"
+    })
 
-    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+
+def _run_analyzer_task(job_id: str, request: AnalyzerRequest):
+    """Background worker for /analyzeActions."""
+    import time
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = "Analyzing actions with LLM..."
+
+        agent = AnalyzerAgent()
+
+        with _job_store_lock:
+            _job_store[job_id]["progress"] = 40
+            _job_store[job_id]["message"] = "Creating Jira tickets..."
+
+        response = agent.RunPipeline(request.model_dump())
+        elapsed = time.time() - start_time
+
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = response.model_dump()
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Completed in {elapsed:.1f}s"
+
+        logger.info("ANALYZER JOB [%s] completed in %.1fs", job_id, elapsed)
+
+    except Exception as exc:
+        logger.exception("ANALYZER JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
 
 
 class CopilotRequest(BaseModel):
