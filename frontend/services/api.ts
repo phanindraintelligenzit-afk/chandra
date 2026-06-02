@@ -205,6 +205,40 @@ export function getApiUrl(path: string): string {
   return `${base}${normalized}`;
 }
 
+/**
+ * Poll /jobs/status/{jobId} every `intervalMs` until the job is done.
+ * Works for any async job submitted to the backend (observations, detectors, cloudwatch).
+ */
+async function pollJobStatus<T>(
+  jobId: string,
+  extractResult: (jobResult: unknown) => T,
+  intervalMs = 3000,
+  maxWaitMs = 1_800_000,
+  signal?: AbortSignal
+): Promise<T> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      const err = new Error("Request cancelled");
+      err.name = "AbortError";
+      throw err;
+    }
+    const status = await request<Record<string, unknown>>(`/jobs/status/${jobId}`, { signal }, 30_000);
+    if (status.status === "completed") {
+      return extractResult(status.result);
+    }
+    if (status.status === "failed") {
+      throw new Error(String(status.error || "Background job failed"));
+    }
+    if (status.status === "not_found") {
+      throw new Error(`Job ${jobId} not found on backend`);
+    }
+    // Still pending/running — wait then poll again
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`Job ${jobId} timed out after ${maxWaitMs / 1000}s`);
+}
+
 class HttpError extends Error {
   readonly status: number;
   readonly body: string;
@@ -391,43 +425,43 @@ export async function fetchAgentObservations(
   options: { signal?: AbortSignal } = {}
 ): Promise<AgentObservation> {
   if (typeof window !== "undefined") {
-    console.log("🌐 FETCH AGENT OBSERVATIONS - region:", payload.region, "kras:", payload.selected_kras?.length ?? 0);
+    console.log("🚀 SUBMIT /getAgentObservations job - region:", payload.region);
   }
 
   if (activeObservationsRequest) {
-    if (typeof window !== "undefined") {
-      console.log("🌐 REUSING ACTIVE OBSERVATIONS REQUEST");
-    }
     return activeObservationsRequest;
   }
 
   activeObservationsRequest = (async () => {
     try {
-      const response = await request<AgentObservationsResponse>("/getAgentObservations", {
-        method: "POST",
-        body: JSON.stringify(payload),
-        signal: options.signal
-      }, 600_000);
+      // Step 1: Submit job — returns immediately with job_id
+      const jobResp = await request<{ job_id: string; poll_url: string }>(
+        "/getAgentObservations",
+        { method: "POST", body: JSON.stringify(payload), signal: options.signal },
+        30_000
+      );
 
       if (typeof window !== "undefined") {
-        console.log("🌐 LIVE OBSERVABILITY RESPONSE", response);
+        console.log("✅ Job submitted:", jobResp.job_id, "polling...");
       }
 
-      const statusCode = response?.statusCode ?? 0;
-      if (statusCode && statusCode !== 200) {
-        throw new Error(`Backend returned statusCode ${statusCode}`);
-      }
+      // Step 2: Poll until complete
+      const result = await pollJobStatus(
+        jobResp.job_id,
+        (raw) => {
+          const data = raw as Record<string, unknown>;
+          const output = (data?.output as Record<string, unknown>) ?? data;
+          return normalizeAgentObservation(output);
+        },
+        3000,
+        1_800_000,
+        options.signal
+      );
 
-      const output = response?.output;
-      if (!output || typeof output !== "object") {
-        throw new Error("Operational intelligence response did not include output payload");
-      }
-
-      const normalized = normalizeAgentObservation(output);
       if (typeof window !== "undefined") {
-        console.log("✅ NORMALIZED OBSERVATIONS", normalized);
+        console.log("✅ OBSERVATIONS COMPLETE", result);
       }
-      return normalized;
+      return result;
     } finally {
       activeObservationsRequest = null;
     }
@@ -475,18 +509,25 @@ export async function fetchCloudWatchMetrics(
     return activeCwMetricsRequests[hoursLookback]!;
   }
 
-  // Do NOT pass the caller's signal into the IIFE — passing it would mean a
-  // StrictMode cleanup-abort of the first call kills the shared dedup promise
-  // before the second call can reuse or replace it. The signal is only needed
-  // to abort a request that hasn't started deduplication yet (handled above).
   const promise = (async () => {
     try {
-      const data = await request<CloudWatchMetricsResponse | CloudWatchMetricsOutput>("/getCloudWatchMetrics", {
+      // Step 1: Submit job
+      const jobResp = await request<{ job_id: string }>("/getCloudWatchMetrics", {
         method: "POST",
         body: JSON.stringify({ last_hours: hoursLookback, period: 1200 })
-      }, 180_000);
-      const output = (data as any).output ?? data;
-      return output as CloudWatchMetricsOutput;
+      }, 30_000);
+
+      // Step 2: Poll for result
+      const output = await pollJobStatus(
+        jobResp.job_id,
+        (raw) => {
+          const data = raw as Record<string, unknown>;
+          return ((data as any).output ?? data) as CloudWatchMetricsOutput;
+        },
+        3000,
+        900_000
+      );
+      return output;
     } finally {
       delete activeCwMetricsRequests[hoursLookback];
     }
@@ -505,20 +546,26 @@ export async function fetchDetectorIssues(
     return activeDetectorIssuesRequest;
   }
 
-  // Do NOT pass the caller's signal into the IIFE for the same reason as
-  // fetchCloudWatchMetrics above — a StrictMode cleanup abort of the first
-  // effect would kill the shared dedup promise and the second effect run
-  // would then find an already-failed (aborted) cached promise.
-  // The request runs without an external signal; the 300s internal timeout
-  // in request() still applies.
   const promise = (async () => {
     try {
-      const data = await request<DetectorIssuesResponse | DetectorIssuesOutput>(`/getDetectorIssues?t=${Date.now()}`, {
-        method: "GET",
-        cache: "no-store"
-      }, 300_000);
-      const output = (data as any).output ?? data;
-      return output as DetectorIssuesOutput;
+      // Step 1: Submit job
+      const jobResp = await request<{ job_id: string }>(
+        `/getDetectorIssues?t=${Date.now()}`,
+        { method: "GET", cache: "no-store" },
+        30_000
+      );
+
+      // Step 2: Poll for result
+      const output = await pollJobStatus(
+        jobResp.job_id,
+        (raw) => {
+          const data = raw as Record<string, unknown>;
+          return ((data?.output ?? data) as DetectorIssuesOutput);
+        },
+        3000,
+        900_000
+      );
+      return output;
     } finally {
       activeDetectorIssuesRequest = null;
     }

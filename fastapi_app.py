@@ -45,7 +45,7 @@ _max_logs = 2000
 # Job tracking for long-running orchestrations
 _job_store: Dict[str, Dict[str, Any]] = {}
 _job_store_lock = threading.Lock()
-_thread_pool = ThreadPoolExecutor(max_workers=3)
+_thread_pool = ThreadPoolExecutor(max_workers=8)
 
 _thread_local = threading.local()
 
@@ -86,6 +86,13 @@ class OrchestrateJobResponse(BaseModel):
     job_id: str
     status: str = "accepted"
     message: str = "Job submitted for processing"
+    poll_url: str = ""
+
+class AsyncJobResponse(BaseModel):
+    """Generic response for any async job submission."""
+    job_id: str
+    status: str = "accepted"
+    message: str = "Job submitted"
     poll_url: str = ""
 
 app = FastAPI(
@@ -164,22 +171,23 @@ def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0
     return JSONResponse(status_code=200, content={"logs": _log_buffer[start:end]})
 
 @app.get("/getDetectorIssues")
-async def get_detector_issues():
-    logger.info("GET /getDetectorIssues called")
-    try:
-        findings = await run_all_detectors()
-        if isinstance(findings, dict):
-            total_issues = sum(len(group) for group in findings.values())
-            output = findings
-        else:
-            total_issues = len(findings)
-            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
-
-        logger.info("Completed detectors: Found %d total issues", total_issues)
-        return JSONResponse(status_code=200, content={"status": "success", "output": output})
-    except Exception as exc:
-        logger.exception("Detector execution failed: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+def get_detector_issues():
+    """Submit detector scan as an async job. Poll /jobs/status/{job_id} for result."""
+    job_id = str(uuid.uuid4())
+    logger.info("GET /getDetectorIssues → async job_id=%s", job_id)
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": "Queued: detector scan",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_detector_task, job_id)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}"
+    })
 
 class CostMetricsRequest(BaseModel):
     days_lookback: int = Field(default=7, ge=1, le=365, description="Number of days to look back")
@@ -203,64 +211,186 @@ class CloudWatchMetricsRequest(BaseModel):
     timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
 
 @app.post("/getCloudWatchMetrics")
-async def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
+def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
+    """Submit CloudWatch metrics fetch as an async job. Poll /jobs/status/{job_id} for result."""
+    job_id = str(uuid.uuid4())
+    logger.info("POST /getCloudWatchMetrics → async job_id=%s region=%s", job_id, request.region)
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": "Queued: CloudWatch metrics fetch",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_cloudwatch_task, job_id, request)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"CloudWatch fetch submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}"
+    })
+
+
+@app.post("/getAgentObservations")
+def run_pipeline(request: PipelineRequest):
+    """Submit observability pipeline as an async job. Poll /jobs/status/{job_id} for result."""
+    job_id = str(uuid.uuid4())
     logger.info(
-        "POST /getCloudWatchMetrics called with region=%s, last_hours=%d, period=%d",
-        request.region, request.last_hours, request.period,
+        "POST /getAgentObservations → async job_id=%s region=%s kras=%s",
+        job_id, request.region, [k.code for k in request.kras],
     )
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": "Queued: AWS observability pipeline",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_observations_task, job_id, request)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Pipeline submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}"
+    })
+
+
+# ── Generic job status endpoint (shared by all async jobs) ────────────────────
+@app.get("/jobs/status/{job_id}")
+def get_job_status_generic(job_id: str):
+    """Poll the status of any submitted async job."""
+    with _job_store_lock:
+        if job_id not in _job_store:
+            return JSONResponse(status_code=404, content={
+                "job_id": job_id, "status": "not_found",
+                "message": "No job with this ID exists"
+            })
+        job = dict(_job_store[job_id])
+    return JSONResponse(status_code=200, content={"job_id": job_id, **job})
+
+
+# ── Background task functions ─────────────────────────────────────────────────
+
+def _run_observations_task(job_id: str, request: PipelineRequest):
+    """Background worker for /getAgentObservations."""
+    import time
+    start_time = time.time()
+    _thread_local.job_id = job_id
     try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = "Initializing AWS agent..."
+
+        agent = AwsObservabilityAgent(region=request.region, kras=request.kras)
+
+        with _job_store_lock:
+            _job_store[job_id]["progress"] = 25
+            _job_store[job_id]["message"] = "Running 11 AWS tools in parallel..."
+
+        response = agent.RunPipeline()
+        elapsed = time.time() - start_time
+
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = response.model_dump()
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Completed in {elapsed:.1f}s"
+
+        logger.info("OBSERVATIONS JOB [%s] completed in %.1fs", job_id, elapsed)
+
+    except Exception as exc:
+        logger.exception("OBSERVATIONS JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
+
+def _run_detector_task(job_id: str):
+    """Background worker for /getDetectorIssues."""
+    import asyncio, time
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = "Running compliance/security detectors..."
+
+        findings = asyncio.run(run_all_detectors())
+        if isinstance(findings, dict):
+            total_issues = sum(len(g) for g in findings.values())
+            output = findings
+        else:
+            total_issues = len(findings)
+            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
+
+        elapsed = time.time() - start_time
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = {"status": "success", "output": output}
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Found {total_issues} issues in {elapsed:.1f}s"
+
+        logger.info("DETECTOR JOB [%s] found %d issues in %.1fs", job_id, total_issues, elapsed)
+
+    except Exception as exc:
+        logger.exception("DETECTOR JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
+
+def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
+    """Background worker for /getCloudWatchMetrics."""
+    import asyncio, time
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = "Discovering CloudWatch metrics..."
+
         fetcher = CloudWatchMetricsFetcher()
-        summary = await fetcher.fetch_all_metrics(
+        summary = asyncio.run(fetcher.fetch_all_metrics(
             region=request.region,
             last_hours=request.last_hours,
             period=request.period,
             timezone_str=request.timezone_str,
-        )
-        logger.info("Completed CloudWatch metrics fetch: Found %d metrics", summary["metadata"]["total_metrics_found"])
-        return JSONResponse(status_code=200, content={"status": "success", "output": summary})
+        ))
+        elapsed = time.time() - start_time
+        total = summary.get("metadata", {}).get("total_metrics_found", 0)
+
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = {"status": "success", "output": summary}
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Fetched {total} metrics in {elapsed:.1f}s"
+
+        logger.info("CLOUDWATCH JOB [%s] found %d metrics in %.1fs", job_id, total, elapsed)
+
     except Exception as exc:
-        logger.exception("CloudWatch metrics fetch failed: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-
-@app.post("/getAgentObservations", response_model=PipelineResponse)
-def run_pipeline(request: PipelineRequest):
-    """
-    Example request:
-    {
-        "region": "us-east-1",
-        "kras": [
-            {
-                "code": "KRA-01",
-                "description": "Reduce unexpected Bedrock spend by 60% through auto-remediation of untagged inference calls"
-            },
-            {
-                "code": "KRA-02",
-                "description": "Zero high-severity misconfigurations open longer than 24 hours"
-            }
-        ]
-    }
-    """
-    logger.info(
-        "POST /getAgentObservations called with region=%s, kras=%s",
-        request.region,
-        [k.code for k in request.kras],
-    )
-    try:
-        agent = AwsObservabilityAgent(region=request.region, kras=request.kras)
-        response = agent.RunPipeline()
-    except Exception as exc:
-        logger.exception("Agent initialisation failed: %s", exc)
-        response = PipelineResponse(
-            statusCode=500,
-            status="error",
-            exception=str(exc),
-            output=None,
-        )
-
-    health = getattr(response.output, "health", "Unknown") if response.output else "Unknown"
-    logger.info("Pipeline completed: statusCode=%d, health=%s", response.statusCode, health)
-    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
+        logger.exception("CLOUDWATCH JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
 
 class ActionInput(BaseModel):
     actionName: str = Field(description="Short name of the action")
