@@ -8,6 +8,22 @@ from dotenv import load_dotenv
 # Load variables from your .env file
 load_dotenv() 
 
+def _is_jira_reachable(server_url: str) -> bool:
+    import socket
+    from urllib.parse import urlparse
+    if not server_url:
+        return False
+    try:
+        parsed = urlparse(server_url)
+        host = parsed.hostname
+        if not host:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except Exception:
+        return False
+
 def create_jira_ticket(project_key: str, summary: str, description: str = "", issuetype: str = "Task", priority: str = None, labels: list = None):
     """
     Checks if a Jira project exists, creates it if necessary, 
@@ -16,6 +32,12 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if not JIRA_SERVER:
+        return {"status": "error", "message": "JIRA_SERVER is not configured."}
+
+    if not _is_jira_reachable(JIRA_SERVER):
+        return {"status": "error", "message": f"Jira server {JIRA_SERVER} is unreachable."}
 
     if not project_key or not summary:
         return {"status": "error", "message": "Both project_key and summary are required."}
@@ -104,6 +126,12 @@ def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
     if not steps:
         return {"status": "skipped", "message": "No steps provided"}
 
+    if not JIRA_SERVER:
+        return {"status": "error", "message": "JIRA_SERVER is not configured."}
+
+    if not _is_jira_reachable(JIRA_SERVER):
+        return {"status": "error", "message": f"Jira server {JIRA_SERVER} is unreachable."}
+
     comment_body = "*Steps to implement:*\n" + "\n".join(
         f"{i + 1}. {step}" for i, step in enumerate(steps)
     )
@@ -123,6 +151,12 @@ def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if not JIRA_SERVER:
+        return {"status": "error", "message": "JIRA_SERVER is not configured."}
+
+    if not _is_jira_reachable(JIRA_SERVER):
+        return {"status": "error", "message": f"Jira server {JIRA_SERVER} is unreachable."}
 
     if human_review_needed:
         body = (
