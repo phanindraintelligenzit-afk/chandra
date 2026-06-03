@@ -55,7 +55,11 @@
       "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.onboard_account)",
       "Bash(.venv/Scripts/python.exe -c \"import ast, sys; [ast.parse\\(open\\(p\\).read\\(\\), p\\) for p in \\('src/chandra/tools/security.py','src/chandra/tools/compliance.py'\\)]; print\\('syntax OK'\\)\")",
       "Bash(.venv/Scripts/python.exe -c \"from src.chandra.tools import security, compliance; print\\('security detectors:', [f.__name__ for f in security.ALL_DETECTORS]\\); print\\('compliance detectors:', [f.__name__ for f in compliance.ALL_DETECTORS]\\)\")",
-      "Bash(.venv/Scripts/python.exe -c \"from src.chandra.tools import compliance; print\\('compliance detectors:', [f.__name__ for f in compliance.ALL_DETECTORS]\\)\")"
+      "Bash(.venv/Scripts/python.exe -c \"from src.chandra.tools import compliance; print\\('compliance detectors:', [f.__name__ for f in compliance.ALL_DETECTORS]\\)\")",
+      "Bash(echo \"---EXIT: $?---\")",
+      "Bash(CHANDRA_AUTO_APPROVE=1 uv run python run.py)",
+      "Bash(echo \"---NO-APPROVE EXIT: $?---\")",
+      "Bash(echo \"---AUTO-APPROVE EXIT: $?---\")"
     ]
   }
 }

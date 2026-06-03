@@ -46,6 +46,7 @@ from src.chandra.briefing.schemas import (
     Observation,
     ProposedWrite,
 )
+from src.chandra.config import settings
 from src.chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
 from src.chandra.db.session import session_scope
 from src.chandra.graphs.state import ChandraState
@@ -103,6 +104,8 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
             requested_by="decision_router",
             justification=af.rationale or f.recommendation,
             risk_level=risk,
+            severity=f.severity,
+            summary=f.title,
         )
         if risk == "high":
             pending.append(write)
@@ -128,15 +131,23 @@ def onboard_account(state: ChandraState) -> dict[str, Any]:
     factory = get_default_factory()
     account_id = state.get("account_id") or factory.account_id()
     regions = state.get("regions") or active_regions(account_id, factory=factory)
+    # Caller-supplied ``sns_topic_arn`` wins; otherwise seed from settings
+    # so the escalation node publishes to the right topic in every entry
+    # point (run.py, FastAPI, the harness). Falls through to the
+    # escalation node's own placeholder if neither is set, so omitting
+    # ``SNS_TOPIC_ARN`` still runs end-to-end (just without notifying).
+    sns_topic_arn = state.get("sns_topic_arn") or settings.sns_topic_arn
     logger.info(
         "graph.onboard",
         run_id=state.get("run_id"),
         account_id=account_id,
         regions=regions,
+        sns_topic_arn_set=bool(sns_topic_arn),
     )
     return {
         "account_id": account_id,
         "regions": regions,
+        "sns_topic_arn": sns_topic_arn,
         "raw_findings": {},
         "errors": [],
     }
@@ -378,14 +389,24 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
     Otherwise, emits an interrupt with pending writes; on resume,
     creates ApprovalDecision records from the payload.
     """
-    pending = state.get("pending_writes", []) or []
-    if not pending:
+    pending_raw = state.get("pending_writes", []) or []
+    if not pending_raw:
         logger.info(
             "graph.approval",
             run_id=state.get("run_id"),
             pending_writes=0,
         )
         return {}
+
+    # When this node runs after a checkpoint round-trip (i.e. on resume
+    # from the interrupt_before pause), the LangGraph serde rehydrates
+    # ``pending_writes`` items as plain dicts rather than ProposedWrite
+    # instances — even with the module registered for msgpack. Normalise
+    # back to ProposedWrite so the rest of the function is uniform.
+    pending: list[ProposedWrite] = [
+        p if isinstance(p, ProposedWrite) else ProposedWrite.model_validate(p)
+        for p in pending_raw
+    ]
 
     logger.info(
         "graph.approval",
@@ -505,34 +526,102 @@ def persist(state: ChandraState) -> dict[str, Any]:
 
 
 def escalation_node(state: ChandraState) -> dict[str, Any]:
-    """Publish escalation alerts to SNS."""
+    """Publish one SNS message per critical/high pending write.
+
+    The ``decision_router`` already routes critical/high findings to
+    ``pending_writes`` (and medium/low to ``auto_fixed``). We iterate the
+    list, build a per-finding :class:`EscalationPayload`, and publish.
+    Each write carries its own ``severity``, ``summary``, and
+    ``recommendation`` so the resulting SNS message identifies the
+    specific resource — not a generic "unknown / medium" placeholder.
+    """
+    topic_arn = state.get("sns_topic_arn")
+    if not topic_arn:
+        logger.warning(
+            "graph.escalation.skipped_no_topic",
+            run_id=state.get("run_id"),
+        )
+        return {
+            "escalation_result": EscalationResult(
+                status="skipped",
+                error="sns_topic_arn not set in state",
+            ).model_dump()
+        }
+
     region = state.get("region", "us-east-1")
-    publisher = SNSPublisher(
-        topic_arn=state.get("sns_topic_arn", "arn:aws:sns:us-east-1:123456789012:chandra-escalations"),
-        region=region
-    )
+    publisher = SNSPublisher(topic_arn=topic_arn, region=region)
+    pending: list[ProposedWrite] = state.get("pending_writes", []) or []
 
-    payload = EscalationPayload(
-        finding_id=state.get("finding_id", "unknown"),
-        resource_id=state.get("resource_id", "unknown"),
-        severity=state.get("severity", "medium"),
-        service=state.get("service", "aws"),
-        region=state.get("region", "us-east-1"),
-        summary=state.get("summary", "Security finding"),
-        recommended_action=state.get("recommended_action", "Review and remediate"),
-    )
+    if not pending:
+        logger.info(
+            "graph.escalation.no_pending",
+            run_id=state.get("run_id"),
+        )
+        return {
+            "escalation_result": EscalationResult(
+                status="skipped",
+                error="no pending writes to escalate",
+            ).model_dump()
+        }
 
-    result = publisher.publish(payload)
+    published: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
+    for write in pending:
+        # Defensive filter: decision_router routes non-critical/high to
+        # ``auto_fixed`` already, but persisted rows or fixtures may
+        # contain lower-severity writes. Skip them here.
+        sev = write.severity or "high"
+        if sev not in ESCALATE_SEVERITIES:
+            continue
+        # Derive service from the ARN's third colon-separated component
+        # (arn:aws:<service>:...). Falls back to ``aws`` for malformed
+        # ARNs so we never block the run on a parse error.
+        arn_parts = write.target_arn.split(":", 2)
+        service = arn_parts[2] if len(arn_parts) >= 3 else "aws"
+        # ``action`` is ``remediate_<detector_id>``; strip the prefix
+        # to recover the canonical finding_id.
+        finding_id = write.action.removeprefix("remediate_")
+        payload = EscalationPayload(
+            finding_id=finding_id,
+            resource_id=write.target_arn,
+            severity=sev,  # type: ignore[arg-type]
+            service=service,
+            region=write.region or region,
+            summary=write.summary or write.justification,
+            recommended_action=write.payload.get(
+                "recommendation", "Review and remediate"
+            ),
+        )
+        result = publisher.publish(payload)
+        if result.status == "success":
+            published.append(
+                {"finding_id": finding_id, "message_id": result.message_id or ""}
+            )
+        else:
+            failed.append(
+                {"finding_id": finding_id, "error": result.error or "unknown"}
+            )
+
+    if published and not failed:
+        status = "success"
+    elif published and failed:
+        status = "partial"
+    else:
+        status = "failed"
 
     logger.info(
         "graph.escalation",
-        run_id=state.get("run_id", "unknown"),
-        severity=payload.severity,
-        finding_id=payload.finding_id,
-        message_id=result.message_id if hasattr(result, 'message_id') else None,
+        run_id=state.get("run_id"),
+        published=len(published),
+        failed=len(failed),
+        status=status,
     )
     return {
-        "escalation_result": result.model_dump()
+        "escalation_result": {
+            "status": status,
+            "published": published,
+            "failed": failed,
+        }
     }
 
 

@@ -51,6 +51,14 @@ class ChandraState(TypedDict, total=False):
     run_id: str
     account_id: str
     regions: list[str]
+    # Seeded by ``onboard_account`` from ``Settings.sns_topic_arn`` (env
+    # ``SNS_TOPIC_ARN``). The escalation node reads this to publish to
+    # the right topic in every entry point (CLI, FastAPI, harness).
+    sns_topic_arn: str | None
+    # When False, ``action_executor_node`` actually invokes the boto3
+    # mutating API for any detector with a registered handler. Defaults
+    # to True; read by action_executor at runtime.
+    dry_run: bool
     inventory: Annotated[dict[str, list[dict[str, Any]]], merge_inventory]
     raw_findings: Annotated[dict[str, list[Finding]], merge_raw_findings]
     observations: Annotated[list[Observation], add]

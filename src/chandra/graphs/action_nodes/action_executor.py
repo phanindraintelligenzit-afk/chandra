@@ -57,6 +57,20 @@ def _iam_key_id_from_arn(arn: str) -> str:
     return arn.rsplit("/", 1)[-1]
 
 
+def _volume_id_from_arn(arn: str) -> str:
+    """arn:aws:ec2:region:acct:volume/vol-xxx  ->  vol-xxx"""
+    if "/" not in arn or not arn.endswith(arn.rsplit("/", 1)[-1]):
+        raise ValueError(f"Invalid EBS volume ARN: {arn!r}")
+    return arn.rsplit("/", 1)[-1]
+
+
+def _instance_id_from_arn(arn: str) -> str:
+    """arn:aws:ec2:region:acct:instance/i-xxx  ->  i-xxx"""
+    if "/" not in arn:
+        raise ValueError(f"Invalid EC2 instance ARN: {arn!r}")
+    return arn.rsplit("/", 1)[-1]
+
+
 # ---------------------------------------------------------------------------
 # Detector-id -> handler registry
 # ---------------------------------------------------------------------------
@@ -83,6 +97,14 @@ def _disable_iam_key_via(executor: ActionExecutor, resource_id: str, region: str
     executor._disable_iam_key(resource_id, region)
 
 
+def _fix_unattached_ebs_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._fix_unattached_ebs(resource_id, region)
+
+
+def _fix_untagged_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._fix_untagged_instance(resource_id, region)
+
+
 _HANDLERS: dict[str, _Handler] = {
     "SEC-001-public-s3": _Handler(
         problem_type="public_s3",
@@ -98,6 +120,24 @@ _HANDLERS: dict[str, _Handler] = {
         problem_type="stale_iam_key",
         extract_resource_id=_iam_key_id_from_arn,
         run=_disable_iam_key_via,
+    ),
+    # COST-002: unattached EBS volumes. Delete after verifying the
+    # volume is in the ``available`` state (i.e. nothing is attached);
+    # refuses otherwise. The volume's data is gone — use snapshot +
+    # copy if you need a recovery path.
+    "COST-002-unattached-ebs": _Handler(
+        problem_type="unattached_ebs",
+        extract_resource_id=_volume_id_from_arn,
+        run=_fix_unattached_ebs_via,
+    ),
+    # COST-004: untagged billable resources. Adds placeholder tags
+    # ``Environment=untagged`` and ``Owner=chandra-auto-fix`` so the
+    # instance shows up under cost allocation. A human should replace
+    # the placeholders with real values.
+    "COST-004-untagged-billable": _Handler(
+        problem_type="untagged_instance",
+        extract_resource_id=_instance_id_from_arn,
+        run=_fix_untagged_via,
     ),
 }
 
@@ -177,6 +217,10 @@ class ActionExecutor:
                 self._fix_open_sg(resource_id, region)
             elif problem_type == "stale_iam_key":
                 self._disable_iam_key(resource_id, region)
+            elif problem_type == "unattached_ebs":
+                self._fix_unattached_ebs(resource_id, region)
+            elif problem_type == "untagged_instance":
+                self._fix_untagged_instance(resource_id, region)
             else:
                 raise ValueError(f"Unknown problem type: {problem_type}")
 
@@ -236,6 +280,48 @@ class ActionExecutor:
         self.iam_client.update_access_key_status(
             AccessKeyId=key_id,
             Status="Inactive",
+        )
+
+    def _fix_unattached_ebs(self, volume_id: str, region: str) -> None:
+        """Delete an unattached EBS volume after a state check.
+
+        Refuses to delete anything that isn't in the ``available``
+        state, which is the only state that means "no attachments".
+        Calling ``delete_volume`` on an in-use volume would either
+        fail with ``VolumeInUse`` (good) or, if the volume was just
+        detached and the state hasn't caught up, succeed and lose
+        data. Verify explicitly so the failure mode is a clear
+        refusal rather than a 5xx.
+        """
+        logger.info(f"Inspecting EBS volume: {volume_id}")
+        resp = self.ec2_client.describe_volumes(VolumeIds=[volume_id])
+        if not resp["Volumes"]:
+            raise ValueError(f"Volume {volume_id} not found")
+        state = resp["Volumes"][0].get("State")
+        if state != "available":
+            raise ValueError(
+                f"Volume {volume_id} is in state {state!r}, not 'available'; "
+                "refusing to delete a volume that may be in use."
+            )
+        logger.info(f"Deleting EBS volume: {volume_id}")
+        self.ec2_client.delete_volume(VolumeId=volume_id)
+
+    def _fix_untagged_instance(self, instance_id: str, region: str) -> None:
+        """Apply placeholder Environment/Owner tags flagged as missing.
+
+        The placeholder values (``Environment=untagged`` and
+        ``Owner=chandra-auto-fix``) are deliberately distinct from any
+        value a human would type, so a reviewer can see at a glance
+        which instances were auto-fixed and need real tags applied.
+        This is a metadata-only change — no runtime impact.
+        """
+        logger.info(f"Applying placeholder tags to instance: {instance_id}")
+        self.ec2_client.create_tags(
+            Resources=[instance_id],
+            Tags=[
+                {"Key": "Environment", "Value": "untagged"},
+                {"Key": "Owner", "Value": "chandra-auto-fix"},
+            ],
         )
 
 

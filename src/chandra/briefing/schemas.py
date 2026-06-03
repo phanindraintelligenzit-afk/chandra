@@ -95,6 +95,12 @@ class ProposedWrite(BaseModel):
     requested_by: str
     justification: str
     risk_level: Literal["low", "high"] = "high"
+    # Carried through from the originating Finding so the escalation
+    # node can render one SNS message per write without reverse-lookup
+    # of ``analyzed_findings``. Optional for backward compatibility
+    # with fixtures / persisted rows written before these existed.
+    severity: Literal["low", "medium", "high", "critical"] | None = None
+    summary: str | None = None
 
 
 class ActionResult(BaseModel):

@@ -32,6 +32,17 @@ from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
+# LangGraph 1.x emits "Deserializing unregistered type
+# src.chandra.briefing.schemas.*" deprecation warnings on every
+# checkpoint round-trip of a pydantic model. Registering the module
+# via ``JsonPlusSerializer(allowed_msgpack_modules=...)`` silences
+# them, but in 1.2.0 it also changes deserialization to return plain
+# dicts, which breaks pydantic field access in ``persist`` and other
+# post-checkpoint nodes. So we accept the warnings as forward-looking
+# deprecation noise. The future-strict mode (``LANGGRAPH_STRICT_MSGPACK=true``)
+# will force a real fix: either a custom serde that preserves pydantic
+# types, or migrating state fields to plain dicts.
+
 
 def _build_checkpointer() -> Any:
     """Return a checkpointer.
@@ -122,7 +133,6 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("decision_router", "action_executor")
     graph.add_edge("action_executor", "escalation")
     graph.add_edge("escalation", "compose_briefing")
-    graph.add_edge("compose_briefing", "persist")
 
     def route_to_approval(state: ChandraState) -> str:
         pending = state.get("pending_writes", []) or []
@@ -137,4 +147,14 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("persist", END)
 
     saver = checkpointer if checkpointer is not None else _build_checkpointer()
-    return graph.compile(checkpointer=saver)
+    # ``interrupt_before`` on ``approval_node`` actually halts the graph at
+    # the human-in-the-loop gate. The function-level ``interrupt(...)`` in
+    # approval_node alone is NOT enough in LangGraph 1.x — the runtime
+    # treats an interrupted node as "complete" for routing and continues
+    # to downstream nodes. ``interrupt_before`` is what makes the gate
+    # real. On resume with ``Command(resume=decisions)``, the function
+    # re-runs from the top and ``interrupt(...)`` returns ``decisions``.
+    return graph.compile(
+        checkpointer=saver,
+        interrupt_before=["approval_node"],
+    )

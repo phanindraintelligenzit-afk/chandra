@@ -47,6 +47,11 @@ class Settings(BaseSettings):
 
     synthetic_account_id: str | None = Field(default=None, alias="SYNTHETIC_ACCOUNT_ID")
 
+    # SNS topic ARN used by the escalation node. Seeded into state by
+    # ``onboard_account`` so every entry point (CLI, FastAPI, harness)
+    # publishes to the right topic without each call site re-injecting it.
+    sns_topic_arn: str | None = Field(default=None, alias="SNS_TOPIC_ARN")
+
     boto_max_attempts: int = Field(default=10, alias="BOTO_MAX_ATTEMPTS")
     boto_retry_mode: str = Field(default="adaptive", alias="BOTO_RETRY_MODE")
 
