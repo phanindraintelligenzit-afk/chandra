@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, calculateDpiScore } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
@@ -42,7 +42,13 @@ import {
   ShieldCheck,
   Sparkles,
   Terminal,
-  X
+  X,
+  Settings,
+  Sliders,
+  ShieldAlert,
+  Coins,
+  Award,
+  Clock
 } from "lucide-react";
 import {
   Area,
@@ -2434,6 +2440,790 @@ function ChaosAndSystemAlerts({ logs }: { logs: BackendLog[] }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DPI-LS PERFORMANCE APPRAISAL ENGINE COMPONENT & HELPER
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DpiAppraisalEngineProps {
+  observations: any;
+  detectorIssues: any;
+  incidents: any[];
+  permissions: string[];
+  costMetrics: any;
+  approvalsAsRow: any[];
+}
+
+function calculateDpiScoreClient(metrics: any, settings: any) {
+  const weights = settings?.weights || { P: 0.15, Q: 0.20, E: 0.15, G: 0.20, R: 0.15, V: 0.10, C: 0.05 };
+  const gates = settings?.gates || { G_floor: 0.60, R_floor: 0.50, V_floor: 0.60 };
+
+  // 1. Productivity (P)
+  let p_val = 0.0;
+  if (metrics.productivity && typeof metrics.productivity === "object") {
+    const ai_out = Number(metrics.productivity.ai_output ?? 0);
+    const h_base = Number(metrics.productivity.human_baseline ?? 1);
+    p_val = h_base > 0 ? Math.min(1.0, ai_out / h_base) : 0.0;
+  } else {
+    p_val = Number(metrics.productivity ?? 0);
+  }
+
+  // 2. Quality (Q)
+  let q_val = 0.0;
+  if (metrics.quality && typeof metrics.quality === "object") {
+    const acc = Number(metrics.quality.accuracy ?? 0);
+    const cons = Number(metrics.quality.consistency ?? 0);
+    const hal = Number(metrics.quality.hallucination ?? 0);
+    const w_acc = Number(settings?.q_weights?.accuracy ?? 0.7);
+    const w_cons = Number(settings?.q_weights?.consistency ?? 0.2);
+    const w_hal = Number(settings?.q_weights?.hallucination ?? 0.1);
+    q_val = (w_acc * acc) + (w_cons * cons) + (w_hal * (1.0 - hal));
+  } else {
+    q_val = Number(metrics.quality ?? 0);
+  }
+
+  // 3. Execution (E)
+  let e_val = 0.0;
+  if (metrics.execution && typeof metrics.execution === "object") {
+    const success = Number(metrics.execution.successful_executions ?? 0);
+    const attempts = Number(metrics.execution.total_attempts ?? 1);
+    e_val = attempts > 0 ? success / attempts : 0.0;
+  } else {
+    e_val = Number(metrics.execution ?? 0);
+  }
+
+  // 4. Governance (G)
+  let g_val = 1.0;
+  if (metrics.governance && typeof metrics.governance === "object") {
+    const violations = Number(metrics.governance.policy_violations ?? 0);
+    const actions = Number(metrics.governance.total_actions ?? 1);
+    g_val = actions > 0 ? 1.0 - (violations / actions) : 1.0;
+  } else {
+    g_val = Number(metrics.governance ?? 1.0);
+  }
+
+  // 5. Risk (R)
+  let r_val = 1.0;
+  if (metrics.risk && typeof metrics.risk === "object") {
+    const incidents = metrics.risk.incidents || [];
+    const r_max = Number(metrics.risk.r_max ?? settings?.r_max ?? 10.0);
+    let sum_risk = 0.0;
+    const severity_weights: Record<string, number> = { critical: 1.0, high: 0.5, medium: 0.2, low: 0.05 };
+    for (const inc of incidents) {
+      const sev = String(inc.severity ?? "low").toLowerCase();
+      const count = Number(inc.count ?? 1);
+      const w = severity_weights[sev] ?? 0.05;
+      sum_risk += w * count;
+    }
+    r_val = r_max > 0 ? 1.0 - Math.min(1.0, sum_risk / r_max) : 0.0;
+  } else {
+    r_val = Number(metrics.risk ?? 1.0);
+  }
+
+  // 6. Validation (V)
+  let v_val = 1.0;
+  if (metrics.validation && typeof metrics.validation === "object") {
+    const val_comp = Number(metrics.validation.validated_components ?? 0);
+    const total_req = Number(metrics.validation.total_required ?? 1);
+    v_val = total_req > 0 ? val_comp / total_req : 1.0;
+  } else {
+    v_val = Number(metrics.validation ?? 1.0);
+  }
+
+  // 7. Cost (C)
+  let c_val = 1.0;
+  if (metrics.cost && typeof metrics.cost === "object") {
+    const h_cost = Number(metrics.cost.human_cost ?? 0);
+    const ai_cost = Number(metrics.cost.ai_cost ?? 1);
+    const util = Number(metrics.cost.utilization ?? 1);
+    c_val = (ai_cost > 0 ? Math.min(1.0, h_cost / ai_cost) : 0.0) * util;
+  } else {
+    c_val = Number(metrics.cost ?? 1.0);
+  }
+
+  const p_clamped = Math.max(0.0, Math.min(1.0, p_val));
+  const q_clamped = Math.max(0.0, Math.min(1.0, q_val));
+  const e_clamped = Math.max(0.0, Math.min(1.0, e_val));
+  const g_clamped = Math.max(0.0, Math.min(1.0, g_val));
+  const r_clamped = Math.max(0.0, Math.min(1.0, r_val));
+  const v_clamped = Math.max(0.0, Math.min(1.0, v_val));
+  const c_clamped = Math.max(0.0, Math.min(1.0, c_val));
+
+  const w_p = weights.P ?? 0.15;
+  const w_q = weights.Q ?? 0.20;
+  const w_e = weights.E ?? 0.15;
+  const w_g = weights.G ?? 0.20;
+  const w_r = weights.R ?? 0.15;
+  const w_v = weights.V ?? 0.10;
+  const w_c = weights.C ?? 0.05;
+
+  const p_f = Math.max(0.0001, p_clamped);
+  const q_f = Math.max(0.0001, q_clamped);
+  const e_f = Math.max(0.0001, e_clamped);
+  const g_f = Math.max(0.0001, g_clamped);
+  const r_f = Math.max(0.0001, r_clamped);
+  const v_f = Math.max(0.0001, v_clamped);
+  const c_f = Math.max(0.0001, c_clamped);
+
+  const geo_mean = (
+    Math.pow(p_f, w_p) *
+    Math.pow(q_f, w_q) *
+    Math.pow(e_f, w_e) *
+    Math.pow(g_f, w_g) *
+    Math.pow(r_f, w_r) *
+    Math.pow(v_f, w_v) *
+    Math.pow(c_f, w_c)
+  );
+
+  const score_raw = geo_mean * 100.0;
+
+  const g_floor = gates.G_floor ?? 0.60;
+  const r_floor = gates.R_floor ?? 0.50;
+  const v_floor = gates.V_floor ?? 0.60;
+
+  const g_violation = g_clamped < g_floor;
+  const r_violation = r_clamped < r_floor;
+  const v_violation = v_clamped < v_floor;
+  const gate_breached = g_violation || r_violation || v_violation;
+
+  const score_final = gate_breached ? Math.min(score_raw, 69.0) : score_raw;
+
+  let rating_band = "Underperforming/Unsafe";
+  if (gate_breached) {
+    rating_band = score_final >= 50.0 ? "Needs Optimization (Compliance Gate Breach)" : "Underperforming/Unsafe";
+  } else if (score_final >= 85.0) {
+    rating_band = "Exceptional";
+  } else if (score_final >= 70.0) {
+    rating_band = "Strong";
+  } else if (score_final >= 50.0) {
+    rating_band = "Needs Optimization";
+  } else {
+    rating_band = "Underperforming/Unsafe";
+  }
+
+  return {
+    metrics: {
+      productivity: p_clamped,
+      quality: q_clamped,
+      execution: e_clamped,
+      governance: g_clamped,
+      risk: r_clamped,
+      validation: v_clamped,
+      cost: c_clamped
+    },
+    score_raw: Number(score_raw.toFixed(2)),
+    score_final: Number(score_final.toFixed(2)),
+    gate_breached,
+    violations: {
+      governance: g_violation,
+      risk: r_violation,
+      validation: v_violation
+    },
+    rating_band
+  };
+}
+
+function DpiAppraisalEngine({
+  observations,
+  detectorIssues,
+  incidents = [],
+  permissions = [],
+  costMetrics,
+  approvalsAsRow = []
+}: DpiAppraisalEngineProps) {
+  // Tunable parameters state
+  const [humanBaseline, setHumanBaseline] = useState(8);
+  const [humanCost, setHumanCost] = useState(50);
+  const [utilization, setUtilization] = useState(0.90);
+  const [rMax, setRMax] = useState(10);
+  const [accuracy, setAccuracy] = useState(0.95);
+  const [consistency, setConsistency] = useState(0.90);
+  const [hallucination, setHallucination] = useState(0.05);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Derived dimensions
+  const aiOutput = observations?.observations?.length || 5;
+  const totalActions = observations?.actions?.length || 4;
+
+  const allIssues = useMemo(() => {
+    return detectorIssues ? flattenDetectorIssues(detectorIssues) : [];
+  }, [detectorIssues]);
+
+  const violationsCount = useMemo(() => {
+    return allIssues.filter(
+      (r) => r.severity.toLowerCase() === "critical" || r.severity.toLowerCase() === "high"
+    ).length;
+  }, [allIssues]);
+
+  const validatedComponents = permissions?.length || 0;
+  const totalRequired = 12;
+
+  const aiCost = useMemo(() => {
+    if (costMetrics?.DailyBreakdown?.length) {
+      const lastDay = costMetrics.DailyBreakdown[costMetrics.DailyBreakdown.length - 1];
+      if (lastDay?.Regions?.["us-east-1"]?.RegionTotal) {
+        return lastDay.Regions["us-east-1"].RegionTotal;
+      }
+    }
+    return 2.50; // default fallback
+  }, [costMetrics]);
+
+  // Compute inputs payload
+  const metricsPayload = useMemo(() => {
+    const mappedIncidents = incidents.map((inc: any) => ({
+      severity: String(inc.severity || "low").toLowerCase(),
+      count: 1
+    }));
+
+    const approvedCount = approvalsAsRow.filter((a) => a.state === "Approved").length;
+    // Execution metric success is approved Count, or a default baseline of 3 if nothing exists yet
+    const successfulExecutions = approvedCount > 0 ? approvedCount : 3;
+
+    return {
+      productivity: { ai_output: aiOutput, human_baseline: humanBaseline },
+      quality: { accuracy, consistency, hallucination },
+      execution: {
+        successful_executions: successfulExecutions,
+        total_attempts: totalActions
+      },
+      governance: { policy_violations: violationsCount, total_actions: totalActions },
+      risk: { incidents: mappedIncidents, r_max: rMax },
+      validation: { validated_components: validatedComponents, total_required: totalRequired },
+      cost: { human_cost: humanCost, ai_cost: aiCost, utilization }
+    };
+  }, [
+    aiOutput,
+    humanBaseline,
+    accuracy,
+    consistency,
+    hallucination,
+    observations,
+    totalActions,
+    violationsCount,
+    incidents,
+    rMax,
+    validatedComponents,
+    totalRequired,
+    humanCost,
+    aiCost,
+    utilization,
+    approvalsAsRow
+  ]);
+
+  // Client score
+  const clientScore = useMemo(() => {
+    return calculateDpiScoreClient(metricsPayload, {
+      r_max: rMax,
+      q_weights: { accuracy: 0.7, consistency: 0.2, hallucination: 0.1 }
+    });
+  }, [metricsPayload, rMax]);
+
+  // Backend Sync
+  const [backendScore, setBackendScore] = useState<any>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setIsSyncing(true);
+    calculateDpiScore({
+      metrics: metricsPayload,
+      settings: {
+        r_max: rMax,
+        q_weights: { accuracy: 0.7, consistency: 0.2, hallucination: 0.1 }
+      }
+    }, { signal: controller.signal })
+      .then((res) => {
+        if (res?.status === "success") {
+          setBackendScore(res.output);
+        }
+        setIsSyncing(false);
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError") {
+          console.error("DPI backend sync failed:", err);
+        }
+        setIsSyncing(false);
+      });
+    return () => controller.abort();
+  }, [metricsPayload, rMax]);
+
+  const activeScore = backendScore || clientScore;
+  const { metrics, score_final, gate_breached, violations, rating_band } = activeScore;
+
+  // Visual tones
+  const bandColorClass = useMemo(() => {
+    if (gate_breached) return "text-red-400 stroke-red-500 shadow-red-500/20";
+    if (score_final >= 85.0) return "text-emerald-400 stroke-emerald-500 shadow-emerald-500/20";
+    if (score_final >= 70.0) return "text-teal-400 stroke-teal-500 shadow-teal-500/20";
+    if (score_final >= 50.0) return "text-orange-400 stroke-orange-500 shadow-orange-500/20";
+    return "text-red-400 stroke-red-500 shadow-red-500/20";
+  }, [score_final, gate_breached]);
+
+  const gradientId = useMemo(() => {
+    if (gate_breached) return "redGradient";
+    if (score_final >= 85.0) return "emeraldGradient";
+    if (score_final >= 70.0) return "tealGradient";
+    if (score_final >= 50.0) return "amberGradient";
+    return "redGradient";
+  }, [score_final, gate_breached]);
+
+  // 7 Dimensions config
+  const dimensions = [
+    {
+      key: "productivity",
+      name: "Productivity (P)",
+      weight: 15,
+      val: metrics.productivity,
+      calc: `AI output (${aiOutput}) vs human baseline (${humanBaseline})`,
+      floor: null,
+      icon: <Award size={14} className="text-blue-400" />
+    },
+    {
+      key: "quality",
+      name: "Quality (Q)",
+      weight: 20,
+      val: metrics.quality,
+      calc: `0.7*Accuracy(${(accuracy*100).toFixed(0)}%) + 0.2*Consistency(${(consistency*100).toFixed(0)}%) + 0.1*(1-Hallucination(${(hallucination*100).toFixed(0)}%))`,
+      floor: null,
+      icon: <Sparkles size={14} className="text-purple-400" />
+    },
+    {
+      key: "execution",
+      name: "Execution (E)",
+      weight: 15,
+      val: metrics.execution,
+      calc: `Successful workflow runs (${metricsPayload.execution.successful_executions}/${metricsPayload.execution.total_attempts})`,
+      floor: null,
+      icon: <CheckCircle2 size={14} className="text-emerald-400" />
+    },
+    {
+      key: "governance",
+      name: "Governance (G)",
+      weight: 20,
+      val: metrics.governance,
+      calc: `Policy Adherence: ${violationsCount} violations in ${totalActions} actions`,
+      floor: 0.60,
+      icon: <ShieldCheck size={14} className="text-teal-400" />
+    },
+    {
+      key: "risk",
+      name: "Risk (R)",
+      weight: 15,
+      val: metrics.risk,
+      calc: `Incident-load scoring (${incidents.length} active incidents, ceiling: ${rMax})`,
+      floor: 0.50,
+      icon: <ShieldAlert size={14} className="text-red-400" />
+    },
+    {
+      key: "validation",
+      name: "Validation (V)",
+      weight: 10,
+      val: metrics.validation,
+      calc: `GxP Validation scopes verified (${validatedComponents}/${totalRequired} scopes)`,
+      floor: 0.60,
+      icon: <Clock size={14} className="text-amber-400" />
+    },
+    {
+      key: "cost",
+      name: "Cost (C)",
+      weight: 5,
+      val: metrics.cost,
+      calc: `ROI Factor (Human Cost: $${humanCost}/hr, Agent: $${aiCost.toFixed(2)}/day, Util: ${(utilization*100).toFixed(0)}%)`,
+      floor: null,
+      icon: <Coins size={14} className="text-yellow-400" />
+    }
+  ];
+
+  const handleReset = () => {
+    setHumanBaseline(8);
+    setHumanCost(50);
+    setUtilization(0.90);
+    setRMax(10);
+    setAccuracy(0.95);
+    setConsistency(0.90);
+    setHallucination(0.05);
+  };
+
+  const svgRadius = 70;
+  const svgCircumference = 2 * Math.PI * svgRadius;
+  const strokeDashoffset = svgCircumference - (svgCircumference * score_final) / 100;
+
+  const totalIncidentsRiskVal = incidents.reduce((totalRisk, inc) => {
+    const severity_weights: Record<string, number> = { critical: 1.0, high: 0.5, medium: 0.2, low: 0.05 };
+    const sev = String(inc.severity ?? "low").toLowerCase();
+    return totalRisk + (severity_weights[sev] ?? 0.05);
+  }, 0);
+
+  return (
+    <Reveal className="glass overflow-hidden p-6 rounded-2xl border border-white/10 bg-slate-950/40 relative shadow-[0_4px_30px_rgba(0,0,0,0.2)]">
+      {/* Background radial highlight */}
+      <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-emerald-500/5 to-transparent rounded-full blur-3xl pointer-events-none" />
+      
+      <div className="relative flex flex-col gap-5">
+        {/* Header Row */}
+        <div className="flex items-center justify-between border-b border-white/5 pb-4">
+          <div className="flex-1">
+            <SectionHead 
+              label="DIGITAL FTE PERFORMANCE INDEX (DPI-LS)" 
+              sub="Appraisal Rating · Compliance Gates · GxP Audit Fitness" 
+            />
+          </div>
+          <button
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[0.65rem] font-bold uppercase tracking-wider transition-all duration-300 ${
+              isSettingsOpen 
+                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.1)]" 
+                : "bg-white/5 border-white/10 hover:border-white/20 text-frost/85"
+            }`}
+          >
+            <Sliders size={12} className={isSettingsOpen ? "animate-pulse" : ""} />
+            {isSettingsOpen ? "Close Tuner" : "Tune Parameters"}
+          </button>
+        </div>
+
+        {/* Responsive Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          {/* Radial Score Gauge Column */}
+          <div className="flex flex-col items-center justify-center p-4 bg-white/[0.02] border border-white/5 rounded-xl min-h-[340px] gap-4 relative">
+            
+            {/* Syncing Status Indicator */}
+            {isSyncing && (
+              <div className="absolute top-3 right-3 flex items-center gap-1.5 text-[0.6rem] uppercase tracking-wider text-muted font-mono bg-white/5 px-2 py-0.5 rounded">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
+                Syncing
+              </div>
+            )}
+
+            <div className="relative flex items-center justify-center">
+              <svg width="180" height="180" viewBox="0 0 180 180" className="transform -rotate-90">
+                <defs>
+                  <linearGradient id="emeraldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#34d399" />
+                    <stop offset="100%" stopColor="#059669" />
+                  </linearGradient>
+                  <linearGradient id="tealGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#2dd4bf" />
+                    <stop offset="100%" stopColor="#0d9488" />
+                  </linearGradient>
+                  <linearGradient id="amberGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#fb923c" />
+                    <stop offset="100%" stopColor="#ea580c" />
+                  </linearGradient>
+                  <linearGradient id="redGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#f87171" />
+                    <stop offset="100%" stopColor="#dc2626" />
+                  </linearGradient>
+                  <filter id="glowFilter" x="-10%" y="-10%" width="120%" height="120%">
+                    <feDropShadow dx="0" dy="0" stdDeviation="4" floodOpacity="0.4" />
+                  </filter>
+                </defs>
+                
+                {/* Background track circle */}
+                <circle
+                  cx="90"
+                  cy="90"
+                  r={svgRadius}
+                  fill="transparent"
+                  stroke="rgba(255, 255, 255, 0.05)"
+                  strokeWidth="8"
+                />
+                
+                {/* Score value indicator circle */}
+                <motion.circle
+                  cx="90"
+                  cy="90"
+                  r={svgRadius}
+                  fill="transparent"
+                  stroke={`url(#${gradientId})`}
+                  strokeWidth="10"
+                  strokeDasharray={svgCircumference}
+                  initial={{ strokeDashoffset: svgCircumference }}
+                  animate={{ strokeDashoffset }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                  strokeLinecap="round"
+                  filter="url(#glowFilter)"
+                />
+              </svg>
+
+              {/* Centered text display inside gauge */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span className="text-3xl font-extrabold text-frost tracking-tighter">
+                  {score_final.toFixed(1)}
+                </span>
+                <span className="text-[0.55rem] font-bold uppercase tracking-[0.2em] text-muted-foreground mt-0.5">
+                  DPI Score
+                </span>
+                <div className="mt-1.5 px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10">
+                  <span className={`text-[0.55rem] font-bold uppercase tracking-wider ${bandColorClass}`}>
+                    {rating_band}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Compliance gate banner or normal rating status */}
+            {gate_breached ? (
+              <div className="w-full mt-1">
+                <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex items-start gap-2.5 text-red-400 text-[0.7rem] font-mono shadow-[0_0_15px_rgba(239,68,68,0.1)]">
+                  <AlertTriangle size={15} className="mt-0.5 animate-pulse shrink-0" />
+                  <div>
+                    <div className="font-bold tracking-wider uppercase mb-1">GXP SECURITY FLOOR BREACH</div>
+                    <div className="space-y-0.5 text-frost/70 text-[0.62rem]">
+                      {violations.governance && <div>• Governance: {(metrics.governance * 100).toFixed(0)}% &lt; 60%</div>}
+                      {violations.risk && <div>• Risk Score: {(metrics.risk * 100).toFixed(0)}% &lt; 50%</div>}
+                      {violations.validation && <div>• Validation: {(metrics.validation * 100).toFixed(0)}% &lt; 60%</div>}
+                    </div>
+                    <div className="text-[0.58rem] text-red-400/80 mt-1.5 leading-relaxed font-semibold">
+                      * Performance score capped at 69.0 (Needs Optimization) by GxP compliance engine requirements.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center mt-1">
+                <div className="flex items-center gap-1.5 justify-center">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-[0.65rem] font-semibold text-frost/85 tracking-wide uppercase font-mono">
+                    All GxP compliance gates passing
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Metric Breakdown Progress Bars Column */}
+          <div className={`flex flex-col gap-4 p-4 bg-white/[0.01] border border-white/5 rounded-xl ${isSettingsOpen ? "lg:col-span-1" : "lg:col-span-2"}`}>
+            <span className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-muted border-b border-white/5 pb-2">
+              7 Core Metric Dimensions Breakdown
+            </span>
+            <div className="space-y-4">
+              {dimensions.map((dim) => {
+                const valuePercent = dim.val * 100;
+                const isBreached = dim.floor !== null && dim.val < dim.floor;
+                
+                // Color mapping for metric filling
+                const barColor = isBreached 
+                  ? "bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.2)]" 
+                  : valuePercent >= 85 
+                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.3)]" 
+                    : valuePercent >= 70 
+                      ? "bg-teal-400 shadow-[0_0_8px_rgba(45,212,191,0.2)]" 
+                      : valuePercent >= 50 
+                        ? "bg-orange-400" 
+                        : "bg-red-400";
+
+                return (
+                  <div key={dim.key} className="group relative flex flex-col gap-1.5">
+                    {/* Header info for metric */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        {dim.icon}
+                        <span className="text-[0.68rem] font-bold text-frost/95 tracking-wide uppercase font-mono">
+                          {dim.name}
+                        </span>
+                        {dim.floor !== null && (
+                          <span className="text-[0.55rem] text-muted font-mono">
+                            (floor: {(dim.floor*100).toFixed(0)}%)
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isBreached && (
+                          <span className="text-[0.55rem] font-extrabold text-red-400 bg-red-500/15 border border-red-500/30 px-1 rounded font-mono animate-pulse">
+                            BREACH
+                          </span>
+                        )}
+                        <span className="text-[0.68rem] font-semibold text-frost/90 font-mono">
+                          {valuePercent.toFixed(1)}%
+                        </span>
+                        <span className="text-[0.55rem] text-muted font-mono">
+                          (wt: {dim.weight}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Progress slider bar representation */}
+                    <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden relative">
+                      {/* Floor mark overlay if applicable */}
+                      {dim.floor !== null && (
+                        <div 
+                          className="absolute top-0 bottom-0 w-0.5 bg-white/30 z-10" 
+                          style={{ left: `${dim.floor * 100}%` }}
+                        />
+                      )}
+                      <motion.div
+                        className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+                        style={{ width: `${valuePercent}%` }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${valuePercent}%` }}
+                      />
+                    </div>
+
+                    {/* Dynamic calculation summary shown as tooltip or inline on hover */}
+                    <div className="text-[0.55rem] text-muted font-mono truncate max-w-full opacity-60 group-hover:opacity-100 transition-opacity duration-300">
+                      {dim.calc}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Settings Panel Column (only if toggled open) */}
+          <AnimatePresence>
+            {isSettingsOpen && (
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                transition={{ duration: 0.25, ease: "easeOut" }}
+                className="flex flex-col gap-4 p-4 bg-white/[0.02] border border-white/5 rounded-xl"
+              >
+                <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                  <span className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-muted">
+                    Parameter Settings Tuner
+                  </span>
+                  <button
+                    onClick={handleReset}
+                    className="text-[0.58rem] font-bold uppercase text-emerald-400 hover:text-emerald-300 transition-colors font-mono"
+                  >
+                    Reset Defaults
+                  </button>
+                </div>
+
+                <div className="space-y-4 max-h-[380px] overflow-y-auto pr-1">
+                  
+                  {/* Slider: Productivity Baseline */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>Human Output Baseline</span>
+                      <span className="font-bold text-emerald-400">{humanBaseline} tasks</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="20"
+                      step="1"
+                      value={humanBaseline}
+                      onChange={(e) => setHumanBaseline(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                    <span className="text-[0.52rem] text-muted">Tasks per day a human FTE completes.</span>
+                  </div>
+
+                  {/* Slider: SME Evaluation Accuracy */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>SME Accuracy Score</span>
+                      <span className="font-bold text-emerald-400">{(accuracy * 100).toFixed(0)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.30"
+                      max="1.0"
+                      step="0.01"
+                      value={accuracy}
+                      onChange={(e) => setAccuracy(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                  </div>
+
+                  {/* Slider: SME Evaluation Consistency */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>SME Consistency Score</span>
+                      <span className="font-bold text-emerald-400">{(consistency * 100).toFixed(0)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.30"
+                      max="1.0"
+                      step="0.01"
+                      value={consistency}
+                      onChange={(e) => setConsistency(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                  </div>
+
+                  {/* Slider: SME Hallucination Rate */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>SME Hallucination Rate</span>
+                      <span className="font-bold text-red-400">{(hallucination * 100).toFixed(1)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="0.50"
+                      step="0.005"
+                      value={hallucination}
+                      onChange={(e) => setHallucination(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                  </div>
+
+                  {/* Slider: R_max Threshold */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>Risk Limit (R_Max)</span>
+                      <span className="font-bold text-emerald-400">{rMax} units</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="2"
+                      max="30"
+                      step="1"
+                      value={rMax}
+                      onChange={(e) => setRMax(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                    <span className="text-[0.52rem] text-muted">Weight ceiling for risk incidents (Crit: 1.0, High: 0.5, Med: 0.2, Low: 0.05). Current: {totalIncidentsRiskVal.toFixed(2)}</span>
+                  </div>
+
+                  {/* Slider: Human Cost Rate */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>Human Cost Rate</span>
+                      <span className="font-bold text-emerald-400">${humanCost}/hr</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="15"
+                      max="150"
+                      step="5"
+                      value={humanCost}
+                      onChange={(e) => setHumanCost(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                  </div>
+
+                  {/* Slider: Utilization */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[0.65rem] font-mono text-frost/90">
+                      <span>FTE Utilization Rate</span>
+                      <span className="font-bold text-emerald-400">{(utilization * 100).toFixed(0)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.50"
+                      max="1.0"
+                      step="0.05"
+                      value={utilization}
+                      onChange={(e) => setUtilization(Number(e.target.value))}
+                      className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                    />
+                  </div>
+
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+        </div>
+      </div>
+    </Reveal>
+  );
+}
+
 export function ChandraExperience() {
   const {
     selectedKRAs,
@@ -2772,6 +3562,19 @@ export function ChandraExperience() {
           </div>
         </section>
       ) : null}
+
+      <section className="section-shell">
+        <div className="section-inner">
+          <DpiAppraisalEngine
+            observations={observations}
+            detectorIssues={detectorIssues}
+            incidents={incidentsAsIncident}
+            permissions={permissions}
+            costMetrics={costMetricsState}
+            approvalsAsRow={approvalsAsRow}
+          />
+        </div>
+      </section>
 
       <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
 

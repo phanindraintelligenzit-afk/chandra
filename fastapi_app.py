@@ -183,6 +183,11 @@ class PipelineRequest(BaseModel):
     kras: List[KRAInput] = Field(description="List of KRAs to evaluate during the observability run")
 
 
+class DpiMetricsRequest(BaseModel):
+    metrics: Dict[str, Any]
+    settings: Optional[Dict[str, Any]] = None
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -275,6 +280,18 @@ def run_pipeline(request: PipelineRequest):
         "message": f"Pipeline submitted. Poll /jobs/status/{job_id}",
         "poll_url": f"/jobs/status/{job_id}"
     })
+
+
+@app.post("/calculateDpiScore")
+def get_dpi_score(request: DpiMetricsRequest):
+    """Calculate the DPI-LS score for an agent based on input metrics and settings."""
+    from src.chandra.dpi.engine import calculate_dpi_score
+    try:
+        result = calculate_dpi_score(request.metrics, request.settings)
+        return {"status": "success", "output": result}
+    except Exception as exc:
+        logger.exception("DPI score calculation failed")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
 
 
 # ── Generic job status endpoint (shared by all async jobs) ────────────────────

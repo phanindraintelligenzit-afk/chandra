@@ -771,3 +771,44 @@ export async function getJobStatus(
 export function subscribeToOperationsStream(_handlers: OperationsStreamHandlers): () => void {
   return () => {};
 }
+
+export type DpiMetricsRequest = {
+  metrics: Record<string, any>;
+  settings?: Record<string, any>;
+};
+
+export type DpiMetricsResponse = {
+  status: string;
+  output: {
+    metrics: {
+      productivity: number;
+      quality: number;
+      execution: number;
+      governance: number;
+      risk: number;
+      validation: number;
+      cost: number;
+    };
+    score_raw: number;
+    score_final: number;
+    gate_breached: boolean;
+    violations: {
+      governance: boolean;
+      risk: boolean;
+      validation: boolean;
+    };
+    rating_band: string;
+  };
+};
+
+export async function calculateDpiScore(
+  payload: DpiMetricsRequest,
+  options: { signal?: AbortSignal } = {}
+): Promise<DpiMetricsResponse> {
+  const response = await request<DpiMetricsResponse>("/calculateDpiScore", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal: options.signal
+  }, 10_000);
+  return response;
+}
