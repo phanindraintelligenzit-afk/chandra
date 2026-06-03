@@ -199,20 +199,20 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     
     try:
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(runner, ctx)
-            try:
-                findings = future.result(timeout=timeout_s)
-            except concurrent.futures.TimeoutError:
-                logger.error("graph.observe.timeout", kra=kra, run_id=state["run_id"], timeout_s=timeout_s)
-                ctx.errors.append({
-                    "type": "observer_timeout",
-                    "kra": kra,
-                    "timeout_seconds": timeout_s,
-                    "message": f"Observer for KRA '{kra}' timed out after {timeout_s} seconds"
-                })
-            finally:
-                executor.shutdown(wait=False)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(runner, ctx)
+        try:
+            findings = future.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            logger.error("graph.observe.timeout", kra=kra, run_id=state["run_id"], timeout_s=timeout_s)
+            ctx.errors.append({
+                "type": "observer_timeout",
+                "kra": kra,
+                "timeout_seconds": timeout_s,
+                "message": f"Observer for KRA '{kra}' timed out after {timeout_s} seconds"
+            })
+        finally:
+            executor.shutdown(wait=False)
     except Exception as exc:
         logger.error("graph.observe.error", kra=kra, run_id=state["run_id"], error=str(exc))
         ctx.errors.append({
