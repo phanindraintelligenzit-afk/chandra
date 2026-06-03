@@ -11,6 +11,7 @@ from operator import add
 from typing import Annotated, Any, TypedDict
 
 from src.chandra.briefing.schemas import (
+    ActionResult,
     AnalyzedFinding,
     ApprovalDecision,
     Finding,
@@ -55,6 +56,10 @@ class ChandraState(TypedDict, total=False):
     observations: Annotated[list[Observation], add]
     analyzed_findings: list[AnalyzedFinding]
     scorecard: dict[str, int]
+    pending_writes: Annotated[list[ProposedWrite], add]
+    auto_fixed: Annotated[list[ProposedWrite], add]
+    action_results: Annotated[list[ActionResult], add]
+    approvals: list[ApprovalDecision]
     briefing_md: str
     briefing_json: dict[str, Any]
     errors: Annotated[list[dict[str, Any]], add]

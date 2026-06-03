@@ -31,6 +31,7 @@ def test_approval_node_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     proposed = ProposedWrite(
         action="EnableVersioning",
         target_arn="arn:aws:s3:::my-bucket",
+        region="us-east-1",
         payload={"VersioningConfiguration": {"Status": "Enabled"}},
         requested_by="system",
         justification="Enable versioning for data protection",
@@ -76,6 +77,7 @@ def test_proposed_write_validation() -> None:
     write = ProposedWrite(
         action="ModifyBucket",
         target_arn="arn:aws:s3:::test-bucket",
+        region="us-east-1",
         payload={"BlockPublicAcls": True},
         requested_by="detector-1",
         justification="Block public access per compliance",

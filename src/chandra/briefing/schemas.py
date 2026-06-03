@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -90,10 +90,29 @@ class ProposedWrite(BaseModel):
 
     action: str
     target_arn: str
+    region: str
     payload: dict
     requested_by: str
     justification: str
     risk_level: Literal["low", "high"] = "high"
+
+
+class ActionResult(BaseModel):
+    """Outcome of a single auto-fix execution attempt by action_executor_node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    target_arn: str
+    region: str
+    status: Literal["success", "failure", "skipped", "dry_run"]
+    message: str
+    error: str | None = None
+    audit_log: str | None = None
+    dry_run: bool = False
+    executed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 class ApprovalDecision(BaseModel):

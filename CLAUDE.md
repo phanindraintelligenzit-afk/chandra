@@ -18,15 +18,28 @@ Chandra is a **multi-layered enterprise AI cloud operations platform** with thre
 A LangGraph-orchestrated autonomous agent that observes one AWS account and emits a daily Cloud Health Briefing across **five KRAs**: cost, security, compliance, performance, reliability.
 
 ```
-START → onboard_account → fanout_observers
-                             ├─► observe_cost
-                             ├─► observe_security
-                             ├─► observe_compliance        → analyze (LLM rank + dedup)
-                             ├─► observe_performance         → compose_briefing (LLM narrative)
-                             └─► observe_reliability            → persist → END
+START → onboard_account → ingest_observations → kra_supervisor
+                                                  ├─► observe_cost
+                                                  ├─► observe_security
+                                                  ├─► observe_compliance
+                                                  ├─► observe_performance
+                                                  └─► observe_reliability
+                                                          ↓
+                                                        analyze  (LLM rank + dedup)
+                                                          ↓
+                                                  decision_router  (splits → pending_writes + auto_fixed)
+                                                          ↓
+                                                  action_executor  (consumes auto_fixed)
+                                                          ↓
+                                                       escalation  (publishes pending_writes to SNS)
+                                                          ↓
+                                                  compose_briefing  (LLM narrative)
+                                                          ↓
+                                              conditional: pending_writes non-empty → approval_node → persist → END
+                                              else                                  ↘        → persist → END
 ```
 
-Deterministic boto3 detectors gather findings. Claude Sonnet 4.5 (via Amazon Bedrock) ranks and narrates. Results persist to Postgres. **The LLM never invents findings.** It only runs in `analyze` (ranking + rationale) and `compose_briefing` (narrative). This separation is a hard architectural invariant.
+The actual node list lives in `src/chandra/graphs/chandra_graph.py` (see `build_graph`). Fan-out uses LangGraph's `Send(...)` from the `kra_supervisor`. Deterministic boto3 detectors gather findings. Claude Sonnet 4.5 (via Amazon Bedrock) ranks and narrates. Results persist to Postgres. **The LLM never invents findings.** It only runs in `analyze` (ranking + rationale) and `compose_briefing` (narrative). `decision_router`, `action_executor`, and `escalation` are deterministic — they must stay that way. This separation is a hard architectural invariant.
 
 ### 2. **Frontend operations console** (Next.js 16 + React 18 + TypeScript)
 A premium, futuristic operations console (HTML/CSS/TypeScript) for observing, triaging, and approving remediations under continuous human supervision. Ships as a static export to GitHub Pages today; will connect to a FastAPI backend for real-time WebSocket streams.
@@ -37,24 +50,33 @@ A premium, futuristic operations console (HTML/CSS/TypeScript) for observing, tr
 
 **Governance model:** Every destructive remediation is gated by human approval (`Approve / Reject / Escalate`).
 
-### 3. **Streamlit dashboard** (temporary)
+### 3. **FastAPI backend service** (at repo root)
+A second service — `fastapi_app.py` + `app.py` + `run.py` — exposes HTTP and WebSocket endpoints
+consumed by the Next.js console and (read-only) the Streamlit dashboard. It wraps a
+multi-agent orchestrator (`digitalworker_agents/`) and a LangGraph chat surface (`copilot_agents/`).
+This is the runtime the Next.js console is being wired to. **All write actions** routed from the FE
+approval center flow through this service and ultimately land in the `escalation` queue above.
+
+### 4. **Streamlit dashboard** (temporary)
 Today's read-only analytics surface. Renders the latest briefing, findings explorer, eval trend. Being replaced by the Next.js console (FE-01).
 
 ---
 
 ## Hard architectural rules (do not violate without explicit signoff from Phani)
 
-- **LangGraph is the only orchestration framework.** No LangChain `AgentExecutor`. No `create_react_agent`. Use `StateGraph` + `Send(...)` for fan-out.
+- **LangGraph is the only orchestration framework.** No LangChain `AgentExecutor`. No `create_react_agent`. Use `StateGraph` + `Send(...)` for fan-out. The canonical topology lives in `src/chandra/graphs/chandra_graph.py:build_graph`.
 - **Amazon Bedrock is the only LLM provider** — specifically `langchain_aws.ChatBedrockConverse` with Sonnet 4.5. Do not import `openai`, `anthropic` direct SDK, or any other provider.
-- **Read-only by default.** Detectors never call mutating AWS APIs. Future write actions go through `HumanApprovalNode` (LG-01) and the `pending_writes` state field.
+- **Read-only by default.** Detectors never call mutating AWS APIs. Write actions go through `action_executor_node` (auto-fix for low-risk `auto_fixed` writes — `dry_run=True` by default) + the `escalation` queue (publishes high-risk `pending_writes` to SNS) + `approval_node` (interrupts for human approval when `pending_writes` is non-empty).
 - **`chandra.briefing.composer` is the only module that may call Bedrock.** Detector modules MUST NOT import `langchain_aws`.
+- **`decision_router`, `action_executor`, and `escalation` are deterministic.** They sit between the LLM-powered `analyze` and the LLM-powered `compose_briefing`. If a future change introduces an LLM call into any of these three, it is a rule violation — surface it on the ticket.
 - **Postgres writes only in the `persist` node and Alembic migrations.** Nowhere else.
 - **Every boto3 list/describe call uses a paginator.** No silent truncation.
-- **AWS clients are created via `chandra.aws.client_factory.get_default_factory()`.** Never `boto3.client(...)` directly.
+- **AWS clients are created via `chandra.aws.client_factory.get_default_factory()`.** Never `boto3.client(...)` directly. The factory handles region discovery, caching, and IAM role assumption.
 - **No `# TODO: implement` in committed code.** If something is deferred, `raise NotImplementedError("<msg>; tracked in <TICKET-ID>")`.
 - **No `print()`.** Use `chandra.logging.get_logger(__name__)`.
 - **No `except Exception` without re-raising or structured logging.** Narrow exception classes only.
 - **Frontend is Next.js-only for new work.** The Streamlit dashboard is being sunset (FE-01). Don't add features to Streamlit; migrate them to Next.js.
+- **Don't add new top-level Python files / dirs at the repo root.** The root has drifted (FastAPI app, `digitalworker_agents/`, `database/`, `tools/`, `fix/`, ad-hoc demos). New backend code goes under `src/chandra/`.
 
 ---
 
@@ -65,6 +87,7 @@ Today's read-only analytics surface. Renders the latest briefing, findings explo
 ```bash
 make install     # uv sync --all-extras — install all runtime + dev deps
 make db-up       # docker compose up -d postgres — start Postgres for local dev
+make db-down     # docker compose down
 make migrate     # alembic upgrade head — apply schema migrations
 make fmt         # ruff format — fix code style
 make lint        # ruff check — lint rules
@@ -79,9 +102,38 @@ make tf-apply    # terraform apply on synthetic env — seeds 10 known misconfig
 make tf-destroy  # terraform destroy on synthetic env — clean up resources
 make smoke       # bash scripts/smoke.sh — end-to-end: tf apply → run → eval (Linux/macOS)
 make smoke-windows  # pwsh scripts/smoke.ps1 — end-to-end (Windows PowerShell)
+make chaos       # integration chaos tests (nightly; needs Docker/Postgres)
 make clean       # remove .pytest_cache, .ruff_cache, etc.
 make eval-offline   # chandra eval --fixture evals/fixtures/baseline_v1.jsonl — no AWS/Terraform required
+make help        # print the full target list
 ```
+
+#### Running a single test
+
+Most common patterns (full reference in `TESTING.md`):
+
+```bash
+# Single test file
+uv run pytest tests/unit/test_decision_router.py -v
+
+# Single test function
+uv run pytest tests/unit/test_decision_router.py::TestDecisionRouter::test_critical_escalated -v
+
+# By name pattern
+uv run pytest tests/unit/ -k "decision_router" -v
+
+# Skip integration tests (default for local dev)
+uv run pytest tests/unit/ -m "not integration" -v
+
+# Coverage for one module
+uv run pytest tests/unit/ --cov=src/chandra/tools --cov-report=term-missing
+
+# Stop on first failure / debug
+uv run pytest tests/unit/ -x --pdb
+```
+
+`tests/conftest.py` exposes `aws`, `cloudwatch`, `s3`, `iam`, `ec2`, `rds`, `client_factory`,
+and `detector_context` fixtures; all AWS calls are mocked via `moto` (no real AWS).
 
 ### Frontend (Next.js)
 
@@ -124,40 +176,55 @@ make check
 
 ```
 src/chandra/
-├── aws/                    # AWS client factory, region discovery, IAM/audit helpers
-│   ├── client_factory.py  # AwsClientFactory — must use this, never boto3.client(...)
-│   ├── regions.py         # Region enumeration + helpers
-│   ├── organizations.py   # OU/account traversal
-│   └── ...
-├── tools/                  # KRA detectors — deterministic boto3 (Cost, Security, Compliance, Performance, Reliability)
-│   ├── base.py            # BaseDetector interface
-│   ├── cost.py            # Cost.tool_cost_trends_by_region(), etc.
-│   ├── security.py        # detect_security_findings(), etc.
-│   ├── compliance.py      # Compliance state checks
-│   ├── performance.py     # Latency, throughput, saturation
-│   └── reliability.py     # Uptime, failover, redundancy
-├── graphs/                # LangGraph orchestration
-│   ├── state.py           # ChandraState (TypedDict) with reducers
-│   ├── chandra_graph.py   # StateGraph construction + observer fan-out
-│   └── nodes/             # Individual node implementations
-│       ├── action_executor.py  # (planned) execute approved remediations
-│       └── ...
-├── briefing/              # LLM interaction + narrative composition
-│   ├── composer.py        # Only place that calls Bedrock; ranks findings + drafts narrative
-│   ├── schemas.py         # Finding, AnalyzedFinding, Briefing pydantic models
-│   └── org_summary.py     # Organization-wide roll-ups
-├── db/                    # SQLAlchemy ORM + Alembic migrations
-│   ├── models.py          # Run, Briefing, Finding, EvalRun tables
-│   ├── session.py         # session_scope context manager
-│   └── migrations/        # Alembic versions
-├── dashboard/             # Streamlit read-only console (temporary, FE-01 sunset)
-│   └── app.py             # Latest briefing, findings table, eval trend
-├── observability/         # OpenTelemetry + pricing telemetry
-│   ├── callbacks.py       # LangGraph → OTEL instrumentation
-│   └── pricing.py         # LLM token tracking
-├── config.py              # Pydantic Settings (env-driven)
-├── logging.py             # structlog + OTEL setup
-└── cli.py                 # Typer CLI: chandra {run, eval, render, ...}
+├── aws/                       # AWS client factory, region discovery, IAM/audit helpers
+│   ├── client_factory.py     # AwsClientFactory — must use this, never boto3.client(...)
+│   ├── regions.py            # Region enumeration + helpers
+│   ├── organizations.py      # OU/account traversal
+│   ├── cloudtrail_audit.py   # CloudTrail event correlation for compliance KRA
+│   ├── compliance_models.py  # Pydantic models for compliance findings
+│   ├── config_compliance.py  # AWS Config rule evaluation
+│   ├── encryption_checks.py  # KMS / EBS / S3 encryption checks
+│   ├── security_models.py    # Pydantic models for security findings
+│   └── helpers.py
+├── tools/                     # KRA detectors — deterministic boto3
+│   ├── base.py               # BaseDetector interface
+│   ├── cost.py               # detect_cost_findings(), etc.
+│   ├── security.py           # detect_security_findings()
+│   ├── compliance.py         # Compliance state checks
+│   ├── performance.py        # Latency, throughput, saturation
+│   └── reliability.py        # Uptime, failover, redundancy
+├── graphs/                   # LangGraph orchestration
+│   ├── state.py              # ChandraState (TypedDict) with reducers
+│   ├── chandra_graph.py      # StateGraph construction + Send(...) fan-out
+│   ├── nodes.py              # Legacy duplicate of nodes/__init__.py (do not edit; consolidation pending)
+│   └── nodes/
+│       ├── __init__.py       # All node functions (observe_*, analyze, decision_router, action_executor, …)
+│       └── action_executor.py  # action_executor_node + ActionExecutor class + handler registry
+├── prompts/                  # LLM prompt templates (consumed only by composer)
+│   ├── observer.md
+│   ├── analyzer.md
+│   ├── briefer.md
+│   └── kra_context.md
+├── briefing/                 # LLM interaction + narrative composition
+│   ├── composer.py           # Only place that calls Bedrock; ranks + drafts narrative
+│   ├── schemas.py            # Finding, AnalyzedFinding, Briefing pydantic models
+│   └── org_summary.py        # Organization-wide roll-ups
+├── escalation/               # Action queue + approval workflow (deterministic)
+│   ├── schemas.py            # Action, ApprovalDecision, EscalationEnvelope
+│   ├── formatter.py          # Render escalation payloads for the FE approval center
+│   └── publisher.py          # Publish approvals to the Next.js WS stream / Postgres
+├── db/                       # SQLAlchemy ORM + Alembic migrations
+│   ├── models.py             # Run, Briefing, Finding, EvalRun, Action tables
+│   ├── session.py            # session_scope context manager
+│   └── migrations/           # Alembic versions
+├── dashboard/                # Streamlit read-only console (temporary, FE-01 sunset)
+│   └── app.py                # Latest briefing, findings table, eval trend
+├── observability/            # OpenTelemetry + pricing telemetry
+│   ├── callbacks.py          # LangGraph → OTEL instrumentation
+│   └── pricing.py            # LLM token tracking
+├── config.py                 # Pydantic Settings (env-driven)
+├── logging.py                # structlog + OTEL setup
+└── cli.py                    # Typer CLI: chandra {run, eval, render, …}
 ```
 
 ### Frontend (Next.js)
@@ -167,45 +234,89 @@ frontend/
 ├── app/
 │   ├── layout.tsx              # Root HTML shell + OnboardingProvider
 │   ├── providers.tsx           # Client-side context wrappers
-│   ├── globals.css             # Theme tokens + animations (maturity rings, telemetry glow)
 │   ├── page.tsx                # Root → /onboarding redirect
-│   ├── onboarding/page.tsx    # OnboardingWizard host
+│   ├── globals.css             # Theme tokens + animations (Tailwind base)
+│   ├── onboarding/page.tsx     # OnboardingWizard host
 │   └── dashboard/page.tsx      # ChandraExperience host + completion guard
 ├── components/
 │   ├── OnboardingWizard.tsx    # Five-step provisioning flow
 │   ├── ChandraExperience.tsx   # Full operations dashboard composition
 │   └── WorkerActionExecutionCenter.tsx  # Approval center + actions
-├── store/
-│   ├── OnboardingContext.tsx   # Identity + KRA + permissions state (sessionStorage)
+├── services/                   # Frontend HTTP / WS clients
+│   ├── api.ts                  # REST client to FastAPI app
+│   └── mapping.ts              # Backend payload → UI shape
+├── store/                      # Client state (sessionStorage-backed)
+│   ├── OnboardingContext.tsx   # Identity + KRA + permissions
 │   ├── agentProfile.ts         # Avatar catalog, employee ID generation
 │   └── kraCatalog.ts           # KRA definitions + operational metrics
 ├── public/
 │   ├── avatars/                # Six holographic agent portraits (PNG)
-│   └── icons/                  # Role SVGs (AWS, Azure, DevOps, K8s, Security, Java)
-├── package.json                # npm dependencies
+│   ├── icons/                  # Role SVGs (AWS, Azure, DevOps, K8s, Security, Java)
+│   └── intelligenz-it-logo.png.png
+├── tailwind.config.ts          # Tailwind config (theme tokens, animations)
+├── postcss.config.mjs
 ├── next.config.mjs             # basePath + assetPrefix for GitHub Pages static export
+├── package.json                # npm dependencies (next 16, react 18, framer-motion, recharts)
 └── tsconfig.json
 ```
 
 ### Shared infrastructure
 
 ```
-├── iac/synthetic_env/          # Terraform module — seeds 10 misconfigs in a burner account
+├── iac/
+│   ├── synthetic_env/          # Terraform — seeds 10 known misconfigs in a burner account
+│   └── runtime/                # Terraform — runtime infrastructure (dashboards, etc.)
 ├── evals/
 │   ├── seed_manifest.yaml      # Ground truth: what misconfigs should Chandra find?
-│   ├── harness.py              # terraform apply → run → score → report (eval harness)
-│   ├── fixtures/               # JSONL replay files for offline eval
+│   ├── harness.py              # terraform apply → run → score → report
+│   ├── detected.json           # Latest detected findings snapshot
 │   └── reports/                # JSON + Markdown reports per run
-├── tests/                      # pytest suite (unit tests with moto AWS mocks)
+├── tests/                      # pytest suite
+│   ├── conftest.py             # Shared fixtures (aws, client_factory, detector_context, …)
+│   ├── unit/                   # moto-driven unit tests; fast (~1–2s)
+│   └── integration/            # Marked @pytest.mark.integration; need Docker/Postgres
 ├── scripts/smoke.{sh,ps1}      # One-shot demo runner
-├── Makefile                    # Quality gates + CLI targets
+├── Makefile                    # Quality gates + CLI targets (run `make help`)
 ├── docker-compose.yml          # Postgres + LocalStack for local dev
 ├── Dockerfile                  # Multi-stage slim runtime image
-├── pyproject.toml              # Python dependencies, tool config (ruff, mypy, pytest)
+├── railway.toml                # Railway deploy config
+├── nginx.conf                  # Reverse proxy in front of FastAPI
+├── start.sh                    # Container entrypoint
+├── pyproject.toml              # Python deps, tool config (ruff, mypy, pytest)
 └── .github/workflows/
     ├── check.yml               # CI gate: lint + type + test
-    └── nextjs.yml              # GitHub Pages deploy on every main push
+    └── eval-offline.yml        # Nightly offline eval against fixtures
 ```
+
+### FastAPI backend app (at repo root)
+
+A separate FastAPI service lives at the repo root (not under `src/chandra/`) and serves as the
+HTTP/WS surface that the Next.js console and the Streamlit dashboard both call.
+
+```
+├── fastapi_app.py              # FastAPI app: orchestrates digital worker agents
+├── app.py                      # Alternate entrypoint / middleware wiring
+├── run.py                      # Local dev launcher (uvicorn)
+├── digitalworker_agents/       # Multi-agent orchestrator (observation → analyzer → generator → executor)
+│   ├── observation_agent.py
+│   ├── analyzer_agent.py
+│   ├── generator_agent.py
+│   ├── executor_agent.py
+│   └── orchestrator_agent.py
+├── tools/                      # AWS CloudWatch / Cost Explorer helpers used by the FastAPI app
+│   ├── aws_cloud_tools/
+│   ├── jira_tools/
+│   └── langchain_tools.py
+├── copilot_agents/             # LangGraph chat / copilot surface
+│   ├── graph.py
+│   └── call_tools.py
+├── database/                   # SQLite checkpointer store (langgraph checkpoints)
+└── fix/                        # One-off repair scripts (ad-hoc; do not add new ones)
+```
+
+The Next.js console hits this service for live telemetry; the Streamlit dashboard reads from
+Postgres only. The `digitalworker_agents/` pipeline is what powers the `/analyzeActions` job pattern
+on the FastAPI surface (see `fastapi_app.py`).
 
 ---
 
@@ -238,12 +349,11 @@ frontend/
 
 | Path | Team / owner |
 |---|---|
-| `src/chandra/graphs/`, `briefing/`, `prompts/`, `kras.py` | LangGraph team |
-| `src/chandra/aws/`, `tools/`, `iac/`, `Dockerfile`, `docker-compose.yml` | AWS team |
-| `src/chandra/dashboard/`, `api/` | Frontend team |
-| `src/chandra/db/`, `observability.py` | AWS + LangGraph jointly |
+| `src/chandra/graphs/`, `src/chandra/briefing/`, `src/chandra/prompts/`, `src/chandra/escalation/` | LangGraph team |
+| `src/chandra/aws/`, `src/chandra/tools/`, `iac/`, `Dockerfile`, `docker-compose.yml` | AWS team |
+| `src/chandra/dashboard/`, `frontend/`, `fastapi_app.py`, `app.py`, `digitalworker_agents/`, `copilot_agents/`, `tools/` (root) | Frontend team |
+| `src/chandra/db/`, `src/chandra/observability/` | AWS + LangGraph jointly |
 | `evals/`, `tests/` | LangGraph team |
-| `frontend/` | Frontend team (Aishani) |
 | `docs/` | Kshiraja |
 | `.github/`, `CODEOWNERS`, `pyproject.toml`, `Makefile` | Chandra leads (Phani) |
 
@@ -281,7 +391,8 @@ If your change touches another team's path, open a draft PR and tag them. Don't 
 - **Architecture question**: the rules above are the source of truth. If you think a rule is wrong, raise it explicitly — don't quietly route around it.
 - **Test failure**: run the affected test with `-v` and read the trace. If it's a flake, document it; don't paper over.
 - **Bedrock unavailable / throttling**: the composer's deterministic fallback exists for exactly this (see `composer.py:103`). Confirm it's hit (look for `llm.bedrock_unavailable_fallback_to_deterministic` log entries) and continue.
-- **Frontend question**: the Next.js codebase is in `frontend/`, separate from the backend. State lives in `OnboardingContext` (sessionStorage). WebSocket integration is planned; for now, timers simulate the stream.
+- **Frontend question**: the Next.js codebase is in `frontend/`, separate from the backend. State lives in `OnboardingContext` (sessionStorage). The WS surface is served by the FastAPI app at the repo root (`fastapi_app.py`); the Next.js console is being wired to it, but timers simulate the stream until that lands.
+- **LangGraph topology question**: read `src/chandra/graphs/chandra_graph.py:build_graph` first. It is the single source of truth for node names and edges. The `Send(...)` fan-out is wired from `kra_supervisor` via `_route_kra_workers`.
 
 ---
 

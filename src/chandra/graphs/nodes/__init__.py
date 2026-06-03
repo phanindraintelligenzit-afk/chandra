@@ -84,7 +84,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
     High-risk findings (critical/high severity) are added to pending_writes,
     triggering the approval_node interrupt for human review.
     Low-risk findings (medium/low/info severity) are added to auto_fixed —
-    flagged for a future executor node, no human interrupt.
+    consumed downstream by action_executor_node, no human interrupt.
     """
     analyzed = state.get("analyzed_findings", []) or []
     pending: list[ProposedWrite] = []
@@ -98,6 +98,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
         write = ProposedWrite(
             action=f"remediate_{f.detector_id}",
             target_arn=f.resource_arn,
+            region=f.region,
             payload={"recommendation": f.recommendation},
             requested_by="decision_router",
             justification=af.rationale or f.recommendation,

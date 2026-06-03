@@ -113,12 +113,16 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     for kra in ("cost", "security", "compliance", "performance", "reliability"):
         graph.add_edge(f"observe_{kra}", "analyze")
 
-    graph.add_edge("analyze", "action_executor")
+    # Sequential post-analyze chain: decision_router classifies findings,
+    # action_executor consumes decision_router's auto_fixed output, escalation
+    # publishes pending_writes to SNS, compose_briefing renders the briefing.
+    # The compose_briefing -> approval_node/persist conditional below uses
+    # pending_writes to decide whether to interrupt for human approval.
+    graph.add_edge("analyze", "decision_router")
+    graph.add_edge("decision_router", "action_executor")
     graph.add_edge("action_executor", "escalation")
     graph.add_edge("escalation", "compose_briefing")
     graph.add_edge("compose_briefing", "persist")
-    graph.add_edge("analyze", "decision_router")
-    graph.add_edge("decision_router", "compose_briefing")
 
     def route_to_approval(state: ChandraState) -> str:
         pending = state.get("pending_writes", []) or []

@@ -177,6 +177,7 @@ class TestDecisionRouter:
         write = result["pending_writes"][0]
         assert write.action == "remediate_TEST-001"
         assert write.target_arn == "arn:aws:s3:::bucket-TEST-001"
+        assert write.region == "us-east-1"
         assert write.requested_by == "decision_router"
         assert "Fix this issue" in write.justification or "test finding" in write.justification
         assert write.risk_level == "high"
