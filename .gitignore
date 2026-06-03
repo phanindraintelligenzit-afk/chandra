@@ -14,7 +14,7 @@ dist/
 build/
 database/
 .python-version
-
+logs.txt
 # Tooling caches
 .pytest_cache/
 .ruff_cache/

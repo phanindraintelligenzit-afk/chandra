@@ -7,6 +7,12 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import sys
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from src.chandra.config import settings
 from src.chandra.db.models import Base
 
@@ -15,8 +21,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Inject the live Postgres URL from src.chandra.config so we never drift.
-config.set_main_option("sqlalchemy.url", settings.postgres_url)
+# Escape '%' to '%%' because Alembic uses ConfigParser which treats '%' as interpolation
+safe_url = settings.postgres_url.replace("%", "%%") if settings.postgres_url else ""
+config.set_main_option("sqlalchemy.url", safe_url)
 
 target_metadata = Base.metadata
 

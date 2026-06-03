@@ -62,6 +62,7 @@ class ChandraState(TypedDict, total=False):
     approvals: list[ApprovalDecision]
     briefing_md: str
     briefing_json: dict[str, Any]
+    escalation_result: dict[str, Any]
     errors: Annotated[list[dict[str, Any]], add]
     bedrock_input_tokens: int
     bedrock_output_tokens: int

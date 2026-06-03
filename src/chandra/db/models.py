@@ -75,7 +75,7 @@ class Run(Base):
     account_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
     errors_json: Mapped[list | None] = mapped_column("errors_json")
-    bedrock_cost_usd: Mapped[float] = mapped_column(default=0.0)
+    bedrock_cost_usd: Mapped[float] = mapped_column(server_default=text("0.0"), default=0.0)
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"

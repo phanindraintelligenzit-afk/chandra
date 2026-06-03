@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import asyncio
 import functools
 import inspect
@@ -33,12 +33,17 @@ def traced_node(
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
                     logger.info("node.start", extra={"node": node_name})
+                    state_in = args[0] if args else kwargs.get("state", {})
+                    logger.info(f"Input received for node ({node_name}):\n{state_in}")
+                    
                     if timeout_s:
                         result = await asyncio.wait_for(
                             func(*args, **kwargs), timeout=timeout_s
                         )
                     else:
                         result = await func(*args, **kwargs)
+                        
+                    logger.info(f"Output for node ({node_name}):\n{result}")
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric(
                         "NodeLatency", 1.0, "Count", {"node": node_name}
@@ -63,7 +68,12 @@ def traced_node(
                 effective_timeout = None if sys.platform == "win32" else timeout_s
                 try:
                     logger.info("node.start", extra={"node": node_name})
+                    state_in = args[0] if args else kwargs.get("state", {})
+                    logger.info(f"Input received for node ({node_name}):\n{state_in}")
+                    
                     result = func(*args, **kwargs)
+                    
+                    logger.info(f"Output for node ({node_name}):\n{result}")
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric(
                         "NodeLatency", 1.0, "Count", {"node": node_name}

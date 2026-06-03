@@ -52,7 +52,10 @@
       "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.run_all)",
       "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.escalation)",
       "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run tests/test_nodes/onboard_account.py)",
-      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.onboard_account)"
+      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.onboard_account)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast, sys; [ast.parse\\(open\\(p\\).read\\(\\), p\\) for p in \\('src/chandra/tools/security.py','src/chandra/tools/compliance.py'\\)]; print\\('syntax OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from src.chandra.tools import security, compliance; print\\('security detectors:', [f.__name__ for f in security.ALL_DETECTORS]\\); print\\('compliance detectors:', [f.__name__ for f in compliance.ALL_DETECTORS]\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from src.chandra.tools import compliance; print\\('compliance detectors:', [f.__name__ for f in compliance.ALL_DETECTORS]\\)\")"
     ]
   }
 }

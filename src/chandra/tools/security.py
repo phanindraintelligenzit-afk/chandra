@@ -859,17 +859,19 @@ def find_security_hub_findings(ctx: DetectorContext) -> list[Finding]:
 # Registry
 # ---------------------------------------------------------------------------
 
+# TEMP (testing): high-volume detectors commented out to reduce finding count.
+# Re-enable by uncommenting the entries below once we're done with the smoke run.
 ALL_DETECTORS = (
     find_public_s3_buckets,
     find_open_security_groups,
     find_stale_access_keys,
     check_root_mfa,
     find_overly_permissive_iam,
-    find_config_noncompliant_rules,
-    find_guardduty_threats,
-    find_access_analyzer_findings,
+    # find_config_noncompliant_rules,   # SEC-006 — disabled for testing
+    # find_guardduty_threats,            # SEC-007 — disabled for testing
+    # find_access_analyzer_findings,     # SEC-008 — disabled for testing
     find_kms_rotation_disabled,
-    find_security_hub_findings,
+    # find_security_hub_findings,        # SEC-010 — disabled for testing
 )
 
 
