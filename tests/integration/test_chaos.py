@@ -1,4 +1,4 @@
-﻿"""Chaos / failure-injection integration tests for Chandra resilience."""
+"""Chaos / failure-injection integration tests for Chandra resilience."""
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -57,13 +57,34 @@ def test_iam_denied_partial_failure(monkeypatch):
     assert any(e.get("type") == "access_denied" for e in result["errors"])
 
 
-@pytest.mark.skip(reason="Depends on actual chandra.tools.performance implementation")
 def test_observer_timeout_survival(monkeypatch):
     import time
-    def slow_observer(*args, **kwargs):
-        time.sleep(10)
+    from src.chandra.config import settings
+    from src.chandra.graphs.action_nodes import KRA_RUNNERS, observe_performance
+    from src.chandra.graphs.state import ChandraState
+
+    # Mock the performance KRA runner to run slowly (1.0 second sleep)
+    def slow_runner(*args, **kwargs):
+        time.sleep(1.0)
         return []
-    result = {"status": "completed", "briefing": "Briefing with 4 of 5 KRAs (perf timed out)", "kra_findings": {"cost": 4, "security": 6, "compliance": 3, "performance": 0, "reliability": 2}, "errors": [{"type": "observer_timeout", "kra": "performance", "timeout_seconds": 5}]}
-    assert result["status"] == "completed"
-    assert result["kra_findings"]["performance"] == 0
-    assert any(e.get("type") == "observer_timeout" for e in result["errors"])
+
+    monkeypatch.setitem(KRA_RUNNERS, "performance", slow_runner)
+    # Temporarily set the observer timeout limit to 0.1 seconds
+    monkeypatch.setattr(settings, "observer_timeout_seconds", 0.1)
+
+    state = ChandraState(
+        run_id="test-run-id",
+        account_id="123456789012",
+        regions=["us-east-1"],
+        raw_findings={},
+        errors=[]
+    )
+
+    result = observe_performance(state)
+
+    assert result["raw_findings"]["performance"] == []
+    assert any(
+        err.get("type") == "observer_timeout" and err.get("kra") == "performance"
+        for err in result["errors"]
+    )
+

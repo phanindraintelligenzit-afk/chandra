@@ -77,7 +77,6 @@ class TestTracedNode:
         result = await async_func({"run_id": "test-run", "account_id": "123"})
         assert result == "async_result"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM not available on Windows")
     def test_traced_node_timeout_sync(self) -> None:
         """Sync function with timeout raises TimeoutError on slow execution."""
 

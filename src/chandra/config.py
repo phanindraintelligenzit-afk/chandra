@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         default=None, alias="CHANDRA_STALE_KEY_DAYS_OVERRIDE"
     )
 
+    observer_timeout_seconds: int = Field(
+        default=60, alias="CHANDRA_OBSERVER_TIMEOUT"
+    )
+
     @field_validator("log_level")
     @classmethod
     def _normalize_log_level(cls, v: str) -> str:

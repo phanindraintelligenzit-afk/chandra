@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import asyncio
 import functools
 import inspect
@@ -60,17 +60,27 @@ def traced_node(
 
             @functools.wraps(func)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                effective_timeout = None if sys.platform == "win32" else timeout_s
                 try:
                     logger.info("node.start", extra={"node": node_name})
-                    result = func(*args, **kwargs)
+                    if timeout_s is not None:
+                        import concurrent.futures
+                        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                        future = executor.submit(func, *args, **kwargs)
+                        try:
+                            result = future.result(timeout=timeout_s)
+                        except concurrent.futures.TimeoutError:
+                            logger.error("node.timeout", extra={"node": node_name, "timeout_s": timeout_s})
+                            raise TimeoutError(f"Node '{node_name}' execution timed out after {timeout_s} seconds")
+                        finally:
+                            executor.shutdown(wait=False)
+                    else:
+                        result = func(*args, **kwargs)
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric(
                         "NodeLatency", 1.0, "Count", {"node": node_name}
                     )
                     return result
                 except TimeoutError:
-                    logger.error("node.timeout", extra={"node": node_name, "timeout_s": effective_timeout})
                     raise
                 except Exception as exc:
                     logger.error("node.error", extra={"node": node_name, "error": str(exc)})

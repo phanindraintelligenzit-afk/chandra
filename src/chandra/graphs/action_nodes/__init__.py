@@ -38,6 +38,7 @@ from src.chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
+from src.chandra.config import settings
 from src.chandra.observability import traced_node
 from src.chandra.briefing.schemas import (
     AnalyzedFinding,
@@ -51,12 +52,9 @@ from src.chandra.db.session import session_scope
 from src.chandra.graphs.state import ChandraState
 from src.chandra.graphs.action_nodes.action_executor import action_executor_node
 from src.chandra.logging import get_logger
-from src.chandra.observability import traced_node
 from src.chandra.escalation.publisher import SNSPublisher
 from src.chandra.escalation.schemas import EscalationPayload
 from src.chandra.tools import compliance, cost, performance, reliability, security
-from src.chandra.tools.base import DetectorContext
-
 from src.chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
@@ -78,6 +76,7 @@ ESCALATE_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=30)
 def decision_router(state: ChandraState) -> dict[str, Any]:
     """Classify each AnalyzedFinding as low-risk (auto-fix) or high-risk (escalate).
 
@@ -123,6 +122,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=30)
 def onboard_account(state: ChandraState) -> dict[str, Any]:
     """Validate the run, resolve regions, and seed the inventory."""
     factory = get_default_factory()
@@ -155,6 +155,7 @@ KRAS_TO_RUN: tuple[str, ...] = (
 )
 
 
+@traced_node(timeout_s=15)
 def kra_supervisor(state: ChandraState) -> dict[str, Any]:
     """Supervisor node: dispatches to all KRA worker nodes.
 
@@ -192,7 +193,34 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
         account_id=state["account_id"],
         regions=list(state.get("regions", [])),
     )
-    findings: list[Finding] = runner(ctx)
+    
+    timeout_s = settings.observer_timeout_seconds
+    findings: list[Finding] = []
+    
+    try:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(runner, ctx)
+            try:
+                findings = future.result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                logger.error("graph.observe.timeout", kra=kra, run_id=state["run_id"], timeout_s=timeout_s)
+                ctx.errors.append({
+                    "type": "observer_timeout",
+                    "kra": kra,
+                    "timeout_seconds": timeout_s,
+                    "message": f"Observer for KRA '{kra}' timed out after {timeout_s} seconds"
+                })
+            finally:
+                executor.shutdown(wait=False)
+    except Exception as exc:
+        logger.error("graph.observe.error", kra=kra, run_id=state["run_id"], error=str(exc))
+        ctx.errors.append({
+            "type": "observer_error",
+            "kra": kra,
+            "error": str(exc)
+        })
+
     logger.info(
         "graph.observe",
         kra=kra,
@@ -206,22 +234,27 @@ def _run_observer(kra: str, state: ChandraState) -> dict[str, Any]:
     }
 
 
+@traced_node(timeout_s=90)
 def observe_cost(state: ChandraState) -> dict[str, Any]:
     return _run_observer("cost", state)
 
 
+@traced_node(timeout_s=90)
 def observe_security(state: ChandraState) -> dict[str, Any]:
     return _run_observer("security", state)
 
 
+@traced_node(timeout_s=90)
 def observe_compliance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("compliance", state)
 
 
+@traced_node(timeout_s=90)
 def observe_performance(state: ChandraState) -> dict[str, Any]:
     return _run_observer("performance", state)
 
 
+@traced_node(timeout_s=90)
 def observe_reliability(state: ChandraState) -> dict[str, Any]:
     return _run_observer("reliability", state)
 
@@ -231,6 +264,7 @@ def observe_reliability(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=60)
 def ingest_observations(state: ChandraState) -> dict[str, Any]:
     """Ingest CloudWatch alarms and EventBridge rules into state.observations."""
     ctx = DetectorContext(
@@ -301,6 +335,7 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=60)
 def analyze(state: ChandraState) -> dict[str, Any]:
     """Rank + dedup findings and compute the per-KRA scorecard.
 
@@ -332,6 +367,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=60)
 def compose_briefing(state: ChandraState) -> dict[str, Any]:
     """Render the markdown + JSON briefing for the run."""
     analyzed = state.get("analyzed_findings", []) or []
@@ -371,6 +407,7 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node
 def approval_node(state: ChandraState) -> dict[str, Any]:
     """Interrupt on pending writes for human approval.
 
@@ -401,6 +438,7 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@traced_node(timeout_s=30)
 def persist(state: ChandraState) -> dict[str, Any]:
     """Write run, findings and briefing rows. Idempotent on (run_id).
     
@@ -504,6 +542,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
     return {}
 
 
+@traced_node(timeout_s=30)
 def escalation_node(state: ChandraState) -> dict[str, Any]:
     """Publish escalation alerts to SNS."""
     region = state.get("region", "us-east-1")
