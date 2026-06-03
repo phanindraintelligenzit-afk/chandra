@@ -50,7 +50,7 @@ from src.chandra.db.session import session_scope
 from src.chandra.escalation.publisher import SNSPublisher
 from src.chandra.escalation.schemas import EscalationPayload
 from src.chandra.graphs.state import ChandraState
-from src.chandra.graphs.nodes.action_executor import action_executor_node  # noqa: F401
+from src.chandra.graphs.action_nodes.action_executor import action_executor_node  # noqa: F401
 from src.chandra.logging import get_logger
 from src.chandra.observability import traced_node
 from src.chandra.tools import compliance, cost, performance, reliability, security
@@ -291,6 +291,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
         write = ProposedWrite(
             action=f"remediate_{f.detector_id}",
             target_arn=f.resource_arn,
+            region=f.region,
             payload={"recommendation": f.recommendation},
             requested_by="decision_router",
             justification=af.rationale or f.recommendation,
@@ -419,6 +420,12 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
         recommended_action=state.get("recommended_action", "Review and remediate"),
     )
     result = publisher.publish(payload)
+    if result.status == "skipped":
+        logger.warning(f"Escalation skipped: {result.error}")
+    elif result.status == "failed":
+        logger.error(f"Escalation failed: {result.error}")
+    else:
+        logger.info(f"Escalation succeeded: {result.message_id}")
     return {"escalation_result": result.model_dump()}
 
 

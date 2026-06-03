@@ -48,7 +48,11 @@
       "Bash(curl -s http://localhost:6001/logs?limit=1)",
       "Bash(curl -s http://localhost:3000)",
       "Bash(mkdir -p build)",
-      "Bash(pdflatex -interaction=nonstopmode -halt-on-error -output-directory=build main.tex)"
+      "Bash(pdflatex -interaction=nonstopmode -halt-on-error -output-directory=build main.tex)",
+      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.run_all)",
+      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.escalation)",
+      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run tests/test_nodes/onboard_account.py)",
+      "Bash(CHANDRA_TEST_NODES_MOCK=1 uv run python -m tests.test_nodes.onboard_account)"
     ]
   }
 }

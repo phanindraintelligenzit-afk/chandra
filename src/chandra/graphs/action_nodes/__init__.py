@@ -49,7 +49,7 @@ from src.chandra.briefing.schemas import (
 from src.chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
 from src.chandra.db.session import session_scope
 from src.chandra.graphs.state import ChandraState
-from src.chandra.graphs.nodes.action_executor import action_executor_node
+from src.chandra.graphs.action_nodes.action_executor import action_executor_node
 from src.chandra.logging import get_logger
 from src.chandra.observability import traced_node
 from src.chandra.escalation.publisher import SNSPublisher

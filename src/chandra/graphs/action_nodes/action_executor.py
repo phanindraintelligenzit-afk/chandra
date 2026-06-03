@@ -207,9 +207,17 @@ class ActionExecutor:
             }
 
     def _fix_public_s3(self, bucket_name: str, region: str) -> None:
-        """Make S3 bucket private."""
+        """Make S3 bucket private by enabling Block Public Access (modern AWS standard)."""
         logger.info(f"Fixing public S3: {bucket_name}")
-        self.s3_client.put_bucket_acl(Bucket=bucket_name, ACL="private")
+        self.s3_client.put_public_access_block(
+            Bucket=bucket_name,
+            PublicAccessBlockConfiguration={
+                'BlockPublicAcls': True,
+                'IgnorePublicAcls': True,
+                'BlockPublicPolicy': True,
+                'RestrictPublicBuckets': True
+            }
+        )
 
     def _fix_open_sg(self, sg_id: str, region: str) -> None:
         """Close open security group."""

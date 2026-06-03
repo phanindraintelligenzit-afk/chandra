@@ -44,6 +44,16 @@ class SNSPublisher:
             )
 
         except Exception as e:
+            try:
+                import botocore.exceptions
+                if isinstance(e, botocore.exceptions.ClientError):
+                    if e.response["Error"]["Code"] == "NotFound":
+                        return EscalationResult(
+                            status="skipped",
+                            error="Topic does not exist",
+                        )
+            except ImportError:
+                pass
             return EscalationResult(
                 status="failed",
                 error=str(e),

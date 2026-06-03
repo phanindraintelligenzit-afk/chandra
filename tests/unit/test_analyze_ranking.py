@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from src.chandra.briefing import composer
 from src.chandra.briefing.schemas import Finding
-from src.chandra.graphs.nodes import analyze
+from src.chandra.graphs.action_nodes import analyze
 from src.chandra.graphs.state import ChandraState
 
 

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.chandra.briefing.schemas import ApprovalDecision, ProposedWrite
-from src.chandra.graphs.nodes import approval_node
+from src.chandra.graphs.action_nodes import approval_node
 from src.chandra.graphs.state import ChandraState
 
 

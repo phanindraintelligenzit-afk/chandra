@@ -17,8 +17,8 @@ import pytest
 from botocore.exceptions import ClientError
 
 from src.chandra.briefing.schemas import ProposedWrite
-from src.chandra.graphs.nodes import action_executor_node
-from src.chandra.graphs.nodes.action_executor import (
+from src.chandra.graphs.action_nodes import action_executor_node
+from src.chandra.graphs.action_nodes.action_executor import (
     _iam_key_id_from_arn,
     _s3_bucket_from_arn,
     _sg_id_from_arn,

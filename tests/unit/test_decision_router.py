@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.chandra.briefing.schemas import AnalyzedFinding, Finding, Severity
-from src.chandra.graphs.nodes import decision_router
+from src.chandra.graphs.action_nodes import decision_router
 from src.chandra.graphs.state import ChandraState
 
 

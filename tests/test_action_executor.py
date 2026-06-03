@@ -10,7 +10,7 @@ exercise the LangGraph node and the detector-id -> handler registry.
 
 import pytest
 
-from src.chandra.graphs.nodes.action_executor import ActionExecutor
+from src.chandra.graphs.action_nodes.action_executor import ActionExecutor
 
 
 def test_dry_run_mode():
