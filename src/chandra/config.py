@@ -61,6 +61,10 @@ class Settings(BaseSettings):
         default=60, alias="CHANDRA_OBSERVER_TIMEOUT"
     )
 
+    chaos_mode: bool = Field(
+        default=False, alias="CHANDRA_CHAOS_MODE"
+    )
+
     @field_validator("log_level")
     @classmethod
     def _normalize_log_level(cls, v: str) -> str:

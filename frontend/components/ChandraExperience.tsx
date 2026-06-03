@@ -1675,39 +1675,15 @@ function CostMonitoring({
   );
 }
 
-function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
-  const [logs, setLogs] = useState<BackendLog[]>([]);
+function LiveOpsStream({ sync, logs }: { sync?: ObservationsSyncState; logs: BackendLog[] }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: number;
-    let autoScroll = true;
-
-    async function poll() {
-      if (cancelled) return;
-      try {
-        const batch = await fetchBackendLogs(25);
-        if (cancelled) return;
-        setLogs(batch);
-        
-        if (autoScroll && containerRef.current) {
-          containerRef.current.scrollTop = containerRef.current.scrollHeight;
-        }
-      } catch (e) {
-        // silently ignore polling errors
-      }
-      timer = window.setTimeout(poll, 1500);
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-    
-    poll();
-    
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, []);
+  }, [logs]);
 
   return (
     <Reveal className="glass overflow-hidden p-4 h-full">
@@ -1738,7 +1714,7 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
                 {logs.length > 0 ? logs.map((l, idx) => (
                   <div key={idx} className="text-frost/70 mb-1">
                     <span className="text-muted mr-2">[{new Date(l.timestamp * 1000).toISOString().substring(11, 23)}]</span>
-                    <span className={cx(l.level === "ERROR" ? "text-signal" : l.level === "WARN" ? "text-amber" : "text-emerald-300", "mr-2")}>
+                    <span className={cx(l.level === "ERROR" ? "text-signal" : l.level === "WARNING" || l.level === "WARN" ? "text-amber" : "text-emerald-300", "mr-2")}>
                       {l.level.padEnd(5)}
                     </span>
                     <span className="text-frost/90">{l.message}</span>
@@ -2407,6 +2383,57 @@ function DetectorIssuesMonitoring({ issues }: { issues: DetectorIssuesOutput | n
   );
 }
 
+function ChaosAndSystemAlerts({ logs }: { logs: BackendLog[] }) {
+  const errorLogs = useMemo(() => {
+    return logs.filter(
+      (l) =>
+        l.level === "ERROR" ||
+        l.level === "CRITICAL" ||
+        l.message.toLowerCase().includes("timeout") ||
+        l.message.toLowerCase().includes("chaos") ||
+        l.message.toLowerCase().includes("failed")
+    );
+  }, [logs]);
+
+  if (errorLogs.length === 0) return null;
+
+  // De-duplicate errors by message to keep UI clean
+  const uniqueErrors = errorLogs.reduce((acc: BackendLog[], current) => {
+    const isDup = acc.some((item) => item.message === current.message);
+    if (!isDup) acc.push(current);
+    return acc;
+  }, []).slice(0, 3); // Show top 3 recent errors
+
+  return (
+    <div className="px-5 md:px-10 mb-6 mx-auto max-w-[1480px]">
+      <div className="relative overflow-hidden rounded-2xl border border-signal/30 bg-signal/5 p-4 shadow-[0_0_30px_rgba(255,59,59,0.08)] backdrop-blur">
+        <div className="absolute top-0 left-0 h-full w-1 bg-signal animate-pulse" />
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded bg-signal/15 p-1 text-signal">
+            <AlertTriangle size={16} className="pulse-core animate-pulse" />
+          </div>
+          <div className="flex-1">
+            <div className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-signal mb-1">
+              SYSTEM ALERT: ACTIVE BACKEND ERRORS & TIMEOUTS INJECTED
+            </div>
+            <div className="space-y-1.5 mt-2">
+              {uniqueErrors.map((err, idx) => (
+                <div key={idx} className="flex items-center gap-2 text-[0.7rem] text-frost/95 font-mono">
+                  <span className="text-muted shrink-0">[{new Date(err.timestamp * 1000).toLocaleTimeString()}]</span>
+                  <span className={`font-semibold shrink-0 uppercase ${err.level === "ERROR" || err.level === "CRITICAL" ? "text-signal" : "text-amber"}`}>
+                    {err.level}
+                  </span>
+                  <span className="text-frost/80">{err.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChandraExperience() {
   const {
     selectedKRAs,
@@ -2469,6 +2496,29 @@ export function ChandraExperience() {
         }
       });
     return () => { cancelled = true; };
+  }, []);
+
+  const [backendLogs, setBackendLogs] = useState<BackendLog[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number;
+    async function pollLogs() {
+      if (cancelled) return;
+      try {
+        const batch = await fetchBackendLogs(100);
+        if (cancelled) return;
+        setBackendLogs(batch);
+      } catch (e) {
+        // ignore
+      }
+      timer = window.setTimeout(pollLogs, 3000);
+    }
+    pollLogs();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   const [costDays, setCostDays] = useState(7);
@@ -2663,6 +2713,8 @@ export function ChandraExperience() {
     <main className="bg-obsidian text-frost">
       <CommandHeader liveObservations={observations} liveSummary={liveSummary} sync={observationsSync} />
 
+      <ChaosAndSystemAlerts logs={backendLogs} />
+
       {hasCost ? (
       <section className="section-shell">
         <div className="section-inner">
@@ -2703,7 +2755,7 @@ export function ChandraExperience() {
 
       <section className="section-shell">
         <div className="section-inner">
-          <LiveOpsStream sync={observationsSync} />
+          <LiveOpsStream sync={observationsSync} logs={backendLogs} />
         </div>
       </section>
 

@@ -88,3 +88,75 @@ def test_observer_timeout_survival(monkeypatch):
         for err in result["errors"]
     )
 
+
+def test_chaos_mode_latency_and_error(monkeypatch):
+    from src.chandra.config import settings
+    from src.chandra.graphs.action_nodes import observe_cost, KRA_RUNNERS
+    from src.chandra.graphs.state import ChandraState
+
+    # Ensure chaos mode is on
+    monkeypatch.setattr(settings, "chaos_mode", True)
+
+    # Mock the runner to just return empty list immediately
+    monkeypatch.setitem(KRA_RUNNERS, "cost", lambda *args, **kwargs: [])
+
+    # Mock random to force RuntimeError
+    # First random.random() < 0.10: returns 0.05
+    # Second random.random() < 0.5: returns 0.2
+    import random
+    monkeypatch.setattr(random, "uniform", lambda a, b: 0.01)
+    
+    random_calls = [0.05, 0.2]
+    def mock_random():
+        if random_calls:
+            return random_calls.pop(0)
+        return 0.9
+    monkeypatch.setattr(random, "random", mock_random)
+
+    state = ChandraState(
+        run_id="test-run-chaos-err",
+        account_id="123456789012",
+        regions=["us-east-1"],
+        raw_findings={},
+        errors=[]
+    )
+
+    with pytest.raises(RuntimeError, match="Chaos injected failure"):
+        observe_cost(state)
+
+
+def test_chaos_mode_timeout(monkeypatch):
+    from src.chandra.config import settings
+    from src.chandra.graphs.action_nodes import observe_cost, KRA_RUNNERS
+    from src.chandra.graphs.state import ChandraState
+
+    # Ensure chaos mode is on
+    monkeypatch.setattr(settings, "chaos_mode", True)
+
+    # Mock the runner
+    monkeypatch.setitem(KRA_RUNNERS, "cost", lambda *args, **kwargs: [])
+
+    # Mock random to force TimeoutError
+    # First random.random() < 0.10: returns 0.05
+    # Second random.random() < 0.5: returns 0.8
+    import random
+    monkeypatch.setattr(random, "uniform", lambda a, b: 0.01)
+
+    random_calls = [0.05, 0.8]
+    def mock_random():
+        if random_calls:
+            return random_calls.pop(0)
+        return 0.9
+    monkeypatch.setattr(random, "random", mock_random)
+
+    state = ChandraState(
+        run_id="test-run-chaos-timeout",
+        account_id="123456789012",
+        regions=["us-east-1"],
+        raw_findings={},
+        errors=[]
+    )
+
+    with pytest.raises(TimeoutError, match="Chaos injected timeout"):
+        observe_cost(state)
+

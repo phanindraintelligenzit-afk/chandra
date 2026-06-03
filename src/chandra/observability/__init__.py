@@ -33,12 +33,30 @@ def traced_node(
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
                     logger.info("node.start", extra={"node": node_name})
+                    
+                    async def target() -> Any:
+                        from src.chandra.config import settings
+                        import random
+                        import asyncio
+                        if settings.chaos_mode and (node_name.startswith("observe_") or node_name in ("analyze", "compose_briefing")):
+                            sleep_s = random.uniform(1.0, 5.0)
+                            logger.info("chaos.sleep", extra={"node": node_name, "seconds": sleep_s})
+                            await asyncio.sleep(sleep_s)
+                            if random.random() < 0.10:
+                                if random.random() < 0.5:
+                                    logger.info("chaos.injected_error", extra={"node": node_name})
+                                    raise RuntimeError("Chaos injected failure")
+                                else:
+                                    logger.info("chaos.injected_timeout", extra={"node": node_name})
+                                    raise asyncio.TimeoutError()
+                        return await func(*args, **kwargs)
+
                     if timeout_s:
                         result = await asyncio.wait_for(
-                            func(*args, **kwargs), timeout=timeout_s
+                            target(), timeout=timeout_s
                         )
                     else:
-                        result = await func(*args, **kwargs)
+                        result = await target()
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric(
                         "NodeLatency", 1.0, "Count", {"node": node_name}
@@ -62,19 +80,40 @@ def traced_node(
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
                     logger.info("node.start", extra={"node": node_name})
+                    
+                    def target() -> Any:
+                        from src.chandra.config import settings
+                        import random
+                        import time
+                        if settings.chaos_mode and (node_name.startswith("observe_") or node_name in ("analyze", "compose_briefing")):
+                            sleep_s = random.uniform(1.0, 5.0)
+                            logger.info("chaos.sleep", extra={"node": node_name, "seconds": sleep_s})
+                            time.sleep(sleep_s)
+                            if random.random() < 0.10:
+                                if random.random() < 0.5:
+                                    logger.info("chaos.injected_error", extra={"node": node_name})
+                                    raise RuntimeError("Chaos injected failure")
+                                else:
+                                    logger.info("chaos.injected_timeout", extra={"node": node_name})
+                                    raise TimeoutError("Chaos injected timeout")
+                        return func(*args, **kwargs)
+
                     if timeout_s is not None:
                         import concurrent.futures
                         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                        future = executor.submit(func, *args, **kwargs)
+                        future = executor.submit(target)
                         try:
                             result = future.result(timeout=timeout_s)
-                        except concurrent.futures.TimeoutError:
-                            logger.error("node.timeout", extra={"node": node_name, "timeout_s": timeout_s})
-                            raise TimeoutError(f"Node '{node_name}' execution timed out after {timeout_s} seconds")
+                        except concurrent.futures.TimeoutError as exc:
+                            if not future.done():
+                                logger.error("node.timeout", extra={"node": node_name, "timeout_s": timeout_s})
+                                raise TimeoutError(f"Node '{node_name}' execution timed out after {timeout_s} seconds") from exc
+                            else:
+                                raise
                         finally:
                             executor.shutdown(wait=False)
                     else:
-                        result = func(*args, **kwargs)
+                        result = target()
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric(
                         "NodeLatency", 1.0, "Count", {"node": node_name}
