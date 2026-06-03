@@ -110,12 +110,13 @@ def task_context(run_id: str, account_id: str):
 def configure_observability(
     otel_endpoint: str | None = None,
     log_level: str = "INFO",
+    environment: str = "production",
 ) -> None:
     """Configure observability (OTEL tracing + structlog)."""
     if otel_endpoint is None:
         logger.info("observability.configured: noop")
         return
-    logger.info(f"observability.configured: endpoint={otel_endpoint}, level={log_level}")
+    logger.info(f"observability.configured: endpoint={otel_endpoint}, level={log_level}, env={environment}")
 
 
 def _emit_metric(

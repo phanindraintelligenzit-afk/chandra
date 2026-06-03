@@ -1,0 +1,10 @@
+{"detector_id": "SEC-001-public-s3", "kra": "security", "expected_arn": "arn:aws:s3:::chandra-public-bucket", "title": "S3 Bucket is Public"}
+{"detector_id": "SEC-002-open-sg-ssh", "kra": "security", "expected_arn": "arn:aws:ec2:us-east-1:827295473120:security-group/sg-0123456789abcdef0", "title": "SSH Port Exposed to Public"}
+{"detector_id": "SEC-003-stale-key", "kra": "security", "expected_arn": "arn:aws:iam::827295473120:user/stale-user", "title": "Access Key is Stale"}
+{"detector_id": "SEC-004-wildcard-iam", "kra": "security", "expected_arn": "arn:aws:iam::827295473120:policy/wildcard-policy", "title": "Wildcard IAM Policy Permissions"}
+{"detector_id": "COST-001-idle-ec2", "kra": "cost", "expected_arn": "arn:aws:ec2:us-east-1:827295473120:instance/i-0123456789abcdef0", "title": "EC2 Instance is Idle"}
+{"detector_id": "COST-002-unattached-ebs", "kra": "cost", "expected_arn": "arn:aws:ec2:us-east-1:827295473120:volume/vol-0123456789abcdef0", "title": "Unattached EBS Volume"}
+{"detector_id": "COMP-001-rds-unencrypted", "kra": "compliance", "expected_arn": "arn:aws:rds:us-east-1:827295473120:db:unencrypted-db", "title": "RDS Storage is Unencrypted"}
+{"detector_id": "COMP-002-no-cloudtrail", "kra": "compliance", "expected_arn": "arn:aws:cloudtrail:us-east-1:827295473120:trail/no-cloudtrail", "title": "No CloudTrail Configured"}
+{"detector_id": "PERF-001-no-asg", "kra": "performance", "expected_arn": "arn:aws:ec2:us-east-1:827295473120:instance/i-0987654321fedcba0", "title": "EC2 Running Outside ASG"}
+{"detector_id": "REL-001-rds-single-az", "kra": "reliability", "expected_arn": "arn:aws:rds:us-east-1:827295473120:db:single-az-db", "title": "RDS Single-AZ Deployment"}

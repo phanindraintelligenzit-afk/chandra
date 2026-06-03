@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Chandra Eval Harness â€” D13
 
@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from collections import defaultdict
 from typing import Any
+from datetime import datetime, timezone
 from uuid import uuid4
 from dotenv import load_dotenv
 load_dotenv()
@@ -348,6 +349,10 @@ def score(
                     "title": f.title,
                 }
             )
+
+    precision_overall = (
+        round(len(recalled) / max(1, len(findings)), 4) if findings else 1.0
+    )
 
 
     thresholds = manifest.get("thresholds", {}) or {}
