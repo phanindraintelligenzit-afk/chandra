@@ -5,6 +5,8 @@ import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agen
 import { getKraMetric } from "@/store/kraCatalog";
 import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
+import DPIScorecard from "./DPIScorecard";
+import CostOptimizationWorker from "./CostOptimizationWorker";
 import {
   buildKraPayload,
   deriveApprovals,
@@ -2726,6 +2728,25 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <DetectorIssuesMonitoring issues={detectorIssues} />
+        </div>
+      </section>
+
+
+      {/* ── DPI-LS: Digital Worker Appraisal (interactive scorecard) ────────── */}
+      <section className="section-shell">
+        <div className="section-inner">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-[0.65rem] uppercase tracking-[0.24em] text-muted">DPI-LS · DIGITAL FTE PERFORMANCE INDEX</span>
+          </div>
+          <div className="grid gap-6 lg:grid-cols-2">
+            <DPIScorecard
+              workerName={agentName || "AWS Cloud Engineer"}
+              workerRole={role || "AWS Cloud Engineer"}
+              maturityLevel={maturity || "L3"}
+              interactive={true}
+            />
+            <CostOptimizationWorker />
+          </div>
         </div>
       </section>
 

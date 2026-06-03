@@ -32,6 +32,7 @@ from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from tools.aws_cloud_tools.metrics_fetcher import CloudWatchMetricsFetcher
 from tools.aws_cloud_tools.tool_findings import run_all_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
+from src.chandra.dpi.routes import router as dpi_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,6 +141,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── DPI-LS: Digital Worker Scoring API ───────────────────────────────────────
+app.include_router(dpi_router, prefix="/api/dpi", tags=["DPI-LS Scoring"])
 
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
 # Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
