@@ -74,6 +74,8 @@ COPY --from=frontend-builder /app/frontend/package.json /app/frontend/
 
 # Copy all project files
 COPY . /app/
+COPY --chown=chandra:chandra scripts/healthcheck.py /app/healthcheck.py
+
 
 # WORKDIR must be set BEFORE the RUN so that `uv pip install -e .` finds
 # pyproject.toml in /app rather than running from / (root).
@@ -83,6 +85,9 @@ RUN chmod +x /app/start.sh && \
     sed -i 's/\r$//' /app/start.sh && \
     uv pip install --python /app/.venv -e /app && \
     chown -R chandra:chandra /app
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python /app/healthcheck.py || exit 1
+
 
 USER chandra
 
