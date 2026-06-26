@@ -6,7 +6,7 @@ import type {
   KraStatus,
   LiveIssue
 } from "./api";
-import { predefinedKraCatalog } from "@/store/kraCatalog";
+import { predefinedKraCatalog, type CustomKra } from "@/store/kraCatalog";
 
 export type Severity = "P1" | "P2" | "P3" | "P4";
 export type ApprovalState = "Awaiting Review" | "Approved" | "Rejected" | "Escalated" | "Timed Out";
@@ -67,6 +67,7 @@ export type LiveCostCard = {
 export type LiveKraEvaluation = {
   code: string;
   name: string;
+  description: string;
   status: string;
   achievement: string;
   completedPercentage: number;
@@ -77,18 +78,38 @@ export type LiveKraEvaluation = {
 
 const KRA_CODE_OFFSET = predefinedKraCatalog.length;
 
+export type KraPayloadEntry = {
+  code: string;
+  name?: string;
+  description: string;
+};
+
+/**
+ * Build the KRA payload sent to the backend.
+ * Each entry is { code, name?, description } where:
+ *  - code is auto-generated as KRA-XX (predefined first, then custom)
+ *  - name is the KRA's short title (only set for custom KRAs where the user provided kraName)
+ *  - description is the KRA's free-form goal/objective
+ *
+ * For predefined KRAs, description comes from the catalog.
+ * For custom KRAs, name comes from the user-provided kraName and description from kraDescription.
+ */
 export function buildKraPayload(
   selectedPredefined: string[],
-  customKras: string[]
-): { code: string; description: string }[] {
-  const payload: { code: string; description: string }[] = [];
+  customKras: CustomKra[]
+): KraPayloadEntry[] {
+  const payload: KraPayloadEntry[] = [];
   predefinedKraCatalog.forEach((kra, index) => {
     if (selectedPredefined.includes(kra.id)) {
       payload.push({ code: formatKraCode(index + 1), description: kra.desc });
     }
   });
   customKras.forEach((kra, index) => {
-    payload.push({ code: formatKraCode(KRA_CODE_OFFSET + index + 1), description: kra });
+    payload.push({
+      code: formatKraCode(KRA_CODE_OFFSET + index + 1),
+      name: kra.name,
+      description: kra.description || kra.name
+    });
   });
   return payload;
 }
@@ -97,19 +118,37 @@ export function formatKraCode(seq: number): string {
   return `KRA-${String(seq).padStart(2, "0")}`;
 }
 
-export function kraCodeToName(code: string, customKras: string[]): string {
-  if (!code) return "";
+/**
+ * Resolve a KRA code (e.g. "KRA-05") back to its display name + description.
+ * For predefined KRAs, returns the catalog id + desc.
+ * For custom KRAs, returns the user-provided name + description.
+ */
+export function kraCodeToEntry(
+  code: string,
+  customKras: CustomKra[]
+): { name: string; description: string; isCustom: boolean } {
+  const empty = { name: code, description: "", isCustom: false };
+  if (!code) return empty;
   const match = code.match(/KRA-0*(\d+)/i);
-  if (!match) return code;
+  if (!match) return { ...empty, isCustom: false };
   const seq = parseInt(match[1], 10);
   if (seq >= 1 && seq <= predefinedKraCatalog.length) {
-    return predefinedKraCatalog[seq - 1].id;
+    const def = predefinedKraCatalog[seq - 1];
+    return { name: def.id, description: def.desc, isCustom: false };
   }
   const customIndex = seq - KRA_CODE_OFFSET - 1;
   if (customIndex >= 0 && customIndex < customKras.length) {
-    return customKras[customIndex];
+    const custom = customKras[customIndex];
+    return { name: custom.name, description: custom.description, isCustom: true };
   }
-  return code;
+  return empty;
+}
+
+/**
+ * Backward-compatible wrapper that returns just the KRA name.
+ */
+export function kraCodeToName(code: string, customKras: CustomKra[]): string {
+  return kraCodeToEntry(code, customKras).name;
 }
 
 function statusTone(status: string): string {
@@ -122,16 +161,17 @@ function statusTone(status: string): string {
 
 export function deriveKraEvaluations(
   kraStatuses: KraStatus[],
-  customKras: string[]
+  customKras: CustomKra[]
 ): LiveKraEvaluation[] {
   return kraStatuses.map((entry) => {
-    const name = kraCodeToName(entry.kra_code, customKras);
+    const resolved = kraCodeToEntry(entry.kra_code, customKras);
     const code = entry.kra_code;
     const seq = parseInt(code.replace(/[^0-9]/g, ""), 10);
-    const isCustom = !Number.isNaN(seq) && seq > KRA_CODE_OFFSET;
+    const isCustom = resolved.isCustom || (!Number.isNaN(seq) && seq > KRA_CODE_OFFSET);
     return {
       code,
-      name,
+      name: resolved.name,
+      description: resolved.description,
       status: entry.status,
       achievement: entry.achievement,
       completedPercentage: entry.completedPercentage,

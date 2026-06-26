@@ -2,7 +2,15 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from "react";
 import { generateEmployeeId, type AgentGender } from "./agentProfile";
-import { buildKraAgentPayload, buildSelectedKras, normalizeKraName, predefinedKraIds, type KraAgentPayload } from "./kraCatalog";
+import {
+  buildKraAgentPayload,
+  buildSelectedKras,
+  normalizeCustomKra,
+  normalizeKraName,
+  predefinedKraIds,
+  type CustomKra,
+  type KraAgentPayload
+} from "./kraCatalog";
 import type { AgentObservation, CostMetricsOutput } from "@/services/api";
 
 export type OnboardingState = {
@@ -14,7 +22,7 @@ export type OnboardingState = {
   maturity: string;
   permissions: string[];
   predefinedKras: string[];
-  customKras: string[];
+  customKras: CustomKra[];
   selectedKRAs: string[];
   kraPayload: KraAgentPayload;
   onboardingCompleted: boolean;
@@ -31,8 +39,8 @@ export type OnboardingState = {
   setMaturity: (m: string) => void;
   togglePermission: (permission: string) => void;
   toggleKRA: (kra: string) => void;
-  addCustomKRA: (kra: string) => void;
-  removeCustomKRA: (kra: string) => void;
+  addCustomKRA: (name: string, description?: string) => void;
+  removeCustomKRA: (name: string) => void;
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
   completeOnboarding: () => void;
@@ -88,6 +96,25 @@ function readSessionStorage(): Partial<OnboardingState> | null {
   }
 }
 
+/**
+ * Normalize a list of custom KRAs from sessionStorage.
+ * Handles both the new { name, description } format and the legacy string format.
+ */
+function normalizeCustomKraList(value: unknown): CustomKra[] {
+  if (!Array.isArray(value)) return [];
+  const result: CustomKra[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const normalized = normalizeCustomKra(entry);
+    if (!normalized) continue;
+    const key = normalized.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [agentName, setAgentName] = useState<string>("");
   const [employeeId, setEmployeeId] = useState<string>("");
@@ -97,7 +124,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [maturity, setMaturity] = useState<string>("L2");
   const [permissions, setPermissions] = useState<string[]>([]);
   const [predefinedKras, setPredefinedKras] = useState<string[]>([]);
-  const [customKras, setCustomKras] = useState<string[]>([]);
+  const [customKras, setCustomKras] = useState<CustomKra[]>([]);
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(false);
   const [observations, setObservationsState] = useState<AgentObservation | null>(null);
   const [observationsError, setObservationsError] = useState<string | null>(null);
@@ -108,9 +135,13 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const kraPayload = useMemo(() => buildKraAgentPayload(predefinedKras, customKras), [predefinedKras, customKras]);
 
   const predefinedKrasRef = useRef(predefinedKras);
+  const customKrasRef = useRef(customKras);
   useEffect(() => {
     predefinedKrasRef.current = predefinedKras;
   }, [predefinedKras]);
+  useEffect(() => {
+    customKrasRef.current = customKras;
+  }, [customKras]);
 
   const hydratedRef = useRef(false);
 
@@ -134,10 +165,15 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       } else if (Array.isArray(parsed.selectedKRAs)) {
         setPredefinedKras(parsed.selectedKRAs.filter((kra: string) => predefinedKraIds.includes(kra)));
       }
+      // Hydrate custom KRAs — supports both new { name, description } and legacy string formats
       if (Array.isArray(parsed.customKras)) {
-        setCustomKras(parsed.customKras);
+        setCustomKras(normalizeCustomKraList(parsed.customKras));
       } else if (Array.isArray(parsed.selectedKRAs)) {
-        setCustomKras(parsed.selectedKRAs.filter((kra: string) => !predefinedKraIds.includes(kra)));
+        const legacyCustoms = parsed.selectedKRAs
+          .filter((kra: string) => !predefinedKraIds.includes(kra))
+          .map((name: string) => normalizeCustomKra(name))
+          .filter((kra: CustomKra | null): kra is CustomKra => Boolean(kra));
+        setCustomKras(legacyCustoms);
       }
       if (typeof parsed.onboardingCompleted === "boolean") setOnboardingCompleted(parsed.onboardingCompleted);
       if (parsed.observations) setObservationsState(parsed.observations as AgentObservation);
@@ -183,17 +219,23 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setPermissions((current) => (current.includes(permission) ? current.filter((item) => item !== permission) : [...current, permission]));
   }, []);
 
-  const addCustomKRA = useCallback((kra: string) => {
-    const normalized = normalizeKraName(kra);
-    if (!normalized) return;
+  const addCustomKRA = useCallback((name: string, description?: string) => {
+    const normalizedName = normalizeKraName(name);
+    if (!normalizedName) return;
+    const normalizedDescription = (description ?? "").replace(/\s+/g, " ").trim();
     setCustomKras((current) => {
-      const exists = buildSelectedKras(predefinedKrasRef.current, current).some((item) => item.toLowerCase() === normalized.toLowerCase());
-      return exists ? current : [...current, normalized];
+      const exists = current.some((item) => item.name.toLowerCase() === normalizedName.toLowerCase());
+      if (exists) return current;
+      const entry: CustomKra = {
+        name: normalizedName,
+        description: normalizedDescription || normalizedName
+      };
+      return [...current, entry];
     });
   }, []);
 
-  const removeCustomKRA = useCallback((kra: string) => {
-    setCustomKras((current) => current.filter((item) => item !== kra));
+  const removeCustomKRA = useCallback((name: string) => {
+    setCustomKras((current) => current.filter((item) => item.name !== name));
   }, []);
 
   const completeOnboarding = useCallback(() => {

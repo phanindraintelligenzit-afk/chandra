@@ -175,6 +175,7 @@ except Exception as _e:
 
 class KRAInput(BaseModel):
     code: Optional[str] = Field(default=None, description="Optional KRA identifier (e.g. KRA-01). Auto-labelled if omitted.")
+    name: Optional[str] = Field(default=None, description="Optional short name/title for the KRA (e.g. 'Disaster Recovery Drills'). For custom KRAs this is the user-provided kraName.")
     description: str = Field(description="Free-form goal or objective. Can be an observability target (e.g. 'IAM drift monitoring') or any operational task (e.g. 'Deploy code from github.com/org/repo to EC2 in us-east-1').")
 
 

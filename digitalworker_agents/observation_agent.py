@@ -154,7 +154,14 @@ class AwsObservabilityAgent:
         lines = []
         for i, k in enumerate(kras, start=1):
             code = getattr(k, "code", None) or f"KRA-{i:02d}"
-            lines.append(f"**{code}** {k.description}")
+            name = getattr(k, "name", None)
+            description = getattr(k, "description", "")
+            if name and str(name).strip() and str(name).strip() != str(description).strip():
+                # Both name and description provided — show name as title, description as detail
+                lines.append(f"**{code}** {name}\n   Description: {description}")
+            else:
+                # Only description (or name == description) — show as before
+                lines.append(f"**{code}** {description}")
         return "\n".join(lines)
 
     def TriggerToolsNode(self, state: AgentState) -> dict:

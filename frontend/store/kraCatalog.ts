@@ -3,6 +3,11 @@ export type KraDefinition = {
   desc: string;
 };
 
+export type CustomKra = {
+  name: string;
+  description: string;
+};
+
 export type KraOperationalMetric = {
   subtitle: string;
   value: string;
@@ -17,7 +22,7 @@ export type KraOperationalMetric = {
 
 export type KraAgentPayload = {
   predefinedKras: string[];
-  customKras: string[];
+  customKras: CustomKra[];
   selectedKras: string[];
 };
 
@@ -85,11 +90,47 @@ export function normalizeKraName(name: string) {
   return name.replace(/\s+/g, " ").trim();
 }
 
-export function buildSelectedKras(predefinedKras: string[], customKras: string[]) {
-  return [...predefinedKras, ...customKras];
+export function normalizeKraDescription(description: string) {
+  return description.replace(/\s+/g, " ").trim();
 }
 
-export function buildKraAgentPayload(predefinedKras: string[], customKras: string[]): KraAgentPayload {
+/**
+ * Normalize a custom KRA entry. Accepts either:
+ *  - a string (legacy format) → wraps it as { name, description }
+ *  - a { name, description } object
+ * Returns null if the entry is invalid.
+ */
+export function normalizeCustomKra(entry: unknown): CustomKra | null {
+  if (typeof entry === "string") {
+    const name = normalizeKraName(entry);
+    if (!name) return null;
+    return { name, description: name };
+  }
+  if (entry && typeof entry === "object") {
+    const row = entry as Record<string, unknown>;
+    const name = normalizeKraName(String(row.name ?? row.code ?? ""));
+    const description = normalizeKraDescription(String(row.description ?? row.desc ?? ""));
+    if (!name) return null;
+    return { name, description: description || name };
+  }
+  return null;
+}
+
+/**
+ * Build the list of selected KRA identifiers (predefined IDs + custom names).
+ * Used for the `selectedKRAs` array in the onboarding context.
+ */
+export function buildSelectedKras(predefinedKras: string[], customKras: CustomKra[]): string[] {
+  return [...predefinedKras, ...customKras.map((k) => k.name)];
+}
+
+/**
+ * Build the KRA payload sent to the backend.
+ * Each entry is { code, description } where:
+ *  - code is auto-generated as KRA-XX (predefined first, then custom)
+ *  - description is the KRA's free-form goal/objective
+ */
+export function buildKraAgentPayload(predefinedKras: string[], customKras: CustomKra[]): KraAgentPayload {
   return {
     predefinedKras,
     customKras,
@@ -97,8 +138,10 @@ export function buildKraAgentPayload(predefinedKras: string[], customKras: strin
   };
 }
 
-export function generateCustomKraMetric(kra: string): KraOperationalMetric {
-  const normalized = normalizeKraName(kra);
+export function generateCustomKraMetric(kra: CustomKra | string): KraOperationalMetric {
+  const name = typeof kra === "string" ? kra : kra.name;
+  const description = typeof kra === "string" ? kra : kra.description;
+  const normalized = normalizeKraName(name);
   const seed = hashKraName(normalized);
   const confidence = 86 + (seed % 11);
   const automation = 58 + (seed % 29);
@@ -108,7 +151,7 @@ export function generateCustomKraMetric(kra: string): KraOperationalMetric {
   return {
     subtitle: "Custom Operational Goal",
     value: `${score}% score`,
-    detail: `${normalized} is modeled as an active custom KRA with generated operational telemetry.`,
+    detail: `${normalized} — ${description || "Custom KRA with generated operational telemetry."}`,
     tone: seed % 3 === 0 ? "text-amber" : seed % 3 === 1 ? "text-emerald-300" : "text-frost",
     target: `${throughput}% attainment`,
     actual: `${Math.max(68, throughput - 4 + (seed % 9))}%`,
@@ -118,6 +161,9 @@ export function generateCustomKraMetric(kra: string): KraOperationalMetric {
   };
 }
 
-export function getKraMetric(kra: string) {
-  return predefinedKraMetrics[kra] ?? generateCustomKraMetric(kra);
+export function getKraMetric(kra: string | CustomKra) {
+  if (typeof kra === "string") {
+    return predefinedKraMetrics[kra] ?? generateCustomKraMetric(kra);
+  }
+  return generateCustomKraMetric(kra);
 }

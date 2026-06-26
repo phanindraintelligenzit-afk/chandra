@@ -3,11 +3,16 @@ export type KraInput = {
   description: string;
 };
 
+export type CustomKraInput = {
+  name: string;
+  description: string;
+};
+
 export type AgentObservationsRequest = {
   region: string;
   kras: KraInput[];
   selected_kras?: string[];
-  custom_kras?: string[];
+  custom_kras?: (string | CustomKraInput)[];
   maturity_level?: string;
   deployment?: {
     role: string;
