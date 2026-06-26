@@ -1,0 +1,55 @@
+{
+  "runs": [
+    {
+      "timestamp": "2026-06-26T11:35:02",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "╷"
+      ],
+      "fixes_applied": [
+        "THIS ITERATION'S EXACT ERROR (ground truth — fix THIS now):\nCommand 'terraform init' failed (rc=1)",
+        "PRIOR ITERATION HISTORY (already attempted — do NOT repeat these mistakes):\nTHIS ITERATION'S EXACT ERROR (ground truth — fix THIS now):\nCommand 'terraform init' failed (rc=1)"
+      ],
+      "lesson": "Always verify that the subnet’s availability zone matches the specified availability zone — mismatched zones cause InvalidParameterValue errors when launching EC2 instances."
+    },
+    {
+      "timestamp": "2026-06-26T11:56:18",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "THIS ITERATION'S EXACT ERROR (ground truth — fix THIS now):\nCommand 'terraform validate' failed (rc=1)"
+      ],
+      "lesson": "Always use dynamic AWS AMI lookup (e.g., `aws_ami` data source) instead of hardcoded IDs to ensure region compatibility and avoid deployment failures."
+    },
+    {
+      "timestamp": "2026-06-26T12:10:26",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform by running `terraform init`, but the command failed with rc=1",
+        "The automation ran `terraform init` successfully, installing the required AWS, local, and TLS provider plugins and initializing the backend",
+        "The automation successfully deployed an EC2 instance using Terraform by executing `terraform init`, `validate`, `plan`, and `apply -auto-approve`, all of which completed with no errors"
+      ],
+      "lesson": "Always use dynamic AMI lookup via `aws_ami` data source instead of hardcoded IDs to ensure cross-region compatibility."
+    },
+    {
+      "timestamp": "2026-06-26T12:51:27",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to initialize a Terraform deployment to create a t2",
+        "The automation attempted to deploy an EC2 instance using Terraform, successfully running `terraform init` to install the required AWS and TLS provider plugins",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use dynamic AMI lookup with `aws_ami` data source instead of hardcoding AMI IDs to ensure region compatibility and avoid deployment failures."
+    }
+  ]
+}
