@@ -531,6 +531,8 @@ export default function OnboardingWizard() {
                 WHAT SHOULD {(agentName || normalizedName || "THIS AGENT").toUpperCase()} HANDLE?
               </h3>
               <p className="text-muted mt-2">Choose the responsibilities that will shape the operational dashboard.</p>
+
+              {/* Predefined KRAs grid */}
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 {predefinedKraCatalog.map((kra) => (
                   <label key={kra.id} className="flex cursor-pointer items-start gap-4 rounded-3xl border border-white/10 bg-black/30 p-5 transition hover:-translate-y-0.5 hover:border-emerald-300/20">
@@ -547,6 +549,55 @@ export default function OnboardingWizard() {
                   </label>
                 ))}
               </div>
+
+              {/* Custom KRAs list — shown ABOVE the inputs */}
+              {customKras.length > 0 && (
+                <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">
+                  <div className="mb-3 text-[0.58rem] uppercase tracking-[0.18em] text-muted">
+                    Your custom KRAs ({customKras.length})
+                  </div>
+                  <div className="space-y-3">
+                    {customKras.map((kra: CustomKra) => (
+                      <div
+                        key={kra.name}
+                        className="flex items-start gap-4 rounded-2xl border border-emerald-300/25 bg-emerald-300/[0.04] p-4 transition hover:border-emerald-300/40"
+                      >
+                        <input
+                          type="checkbox"
+                          checked
+                          readOnly
+                          aria-label={`Custom KRA ${kra.name} is always selected`}
+                          className="mt-1 h-4 w-4 shrink-0 accent-emerald-300"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold uppercase tracking-[0.04em] text-frost break-words">
+                            {kra.name}
+                          </div>
+                          {kra.description ? (
+                            <div className="mt-1.5 text-sm text-frost/75 break-words">
+                              {kra.description}
+                            </div>
+                          ) : (
+                            <div className="mt-1.5 text-[0.7rem] italic text-muted">
+                              No description provided
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeCustomKRA(kra.name)}
+                          className="shrink-0 rounded-lg border border-signal/30 bg-signal/10 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-signal transition hover:bg-signal/20"
+                          aria-label={`Remove ${kra.name}`}
+                        >
+                          REMOVE
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ADD CUSTOM KRA — placed AT THE BOTTOM of step 3 */}
               <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">
                 <div className="mb-3 text-[0.62rem] uppercase tracking-[0.2em] text-amber">ADD CUSTOM KRA</div>
                 <div className="flex flex-col gap-3">
@@ -575,34 +626,19 @@ export default function OnboardingWizard() {
                     rows={3}
                     className="min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-frost outline-none transition placeholder:text-muted focus:border-emerald-300/40 focus:ring-2 focus:ring-emerald-300/15"
                   />
-                  <button
-                    type="button"
-                    onClick={addCustomKraFromInput}
-                    disabled={!customKraName.trim()}
-                    className="self-end rounded-2xl border border-white/10 bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 transition hover:border-emerald-300/30 disabled:opacity-50"
-                  >
-                    ADD
-                  </button>
-                </div>
-                {customKras.length > 0 ? (
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    {customKras.map((kra: CustomKra) => (
-                      <label key={kra.name} className="flex cursor-pointer items-start gap-4 rounded-3xl border border-white/10 bg-black/30 p-5 transition hover:border-emerald-300/20">
-                        <input
-                          type="checkbox"
-                          checked
-                          onChange={() => removeCustomKRA(kra.name)}
-                          className="mt-1 h-4 w-4 accent-emerald-300"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="font-semibold uppercase tracking-[0.04em] text-frost">{kra.name}</div>
-                          <div className="mt-2 text-sm text-frost/70">{kra.description}</div>
-                        </div>
-                      </label>
-                    ))}
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={addCustomKraFromInput}
+                      disabled={!customKraName.trim()}
+                      className="rounded-2xl border border-white/10 bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 transition hover:border-emerald-300/30 disabled:opacity-50"
+                    >
+                      ADD
+                    </button>
                   </div>
-                ) : null}
+                </div>
               </div>
+
               <div className="mt-6 flex items-center gap-3">
                 <button onClick={prev} className="rounded-2xl border border-white/10 px-4 py-3 text-sm uppercase tracking-[0.14em] text-muted">BACK</button>
                 <button onClick={next} disabled={!canNext} className="ml-auto rounded-2xl bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50">CONTINUE</button>
