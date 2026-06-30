@@ -55,6 +55,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
+from tools.jira_tools.create_jira_ticket import add_summary_comment, update_ticket_status
 
 load_dotenv(override=True)
 
@@ -67,7 +68,7 @@ logger = logging.getLogger("ExecutionAgents")
 MAX_ITERATIONS = 5
 DEFAULT_COMMAND_TIMEOUT = 300  # seconds
 # Trigger mid-run HITL when the same error class repeats this many times with no fix
-STUCK_THRESHOLD = 2
+STUCK_THRESHOLD = 3
 
 
 # ── Persistent cross-run memory ───────────────────────────────────────────────
@@ -991,7 +992,7 @@ Generate the complete set of files now."""
         if input_path:
             sandbox_dir = str(Path(input_path).resolve())
         else:
-            sandbox_dir = str(Path(f"sandbox_{secrets.token_hex(6)}").resolve())
+            sandbox_dir = str(Path(f"aws_executed_files/sandbox_{secrets.token_hex(6)}").resolve())
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
 
@@ -1922,6 +1923,20 @@ Rules:
             results = [ExecutionResult(**r) for r in final.get("execution_results", [])]
             final_status = final.get("final_status", "failed")
             sandbox_path_final: Optional[str] = final.get("sandbox_path") or None
+            final_summary_text = final.get("final_summary") or final.get("executor_summary")
+
+            jira_url = action.get("jiraUrl")
+            if jira_url and final_summary_text:
+                try:
+                    issue_key = jira_url.rstrip("/").split("/")[-1]
+                    add_summary_comment(issue_key, final_summary_text)
+                    logger.info("Added final summary comment to Jira ticket %s", issue_key)
+                    
+                    target_status = "Done" if final_status == "success" else "Backlog"
+                    update_ticket_status(issue_key, target_status)
+                    logger.info("Transitioned Jira ticket %s to %s", issue_key, target_status)
+                except Exception as e:
+                    logger.warning("Failed to update Jira with final summary and status: %s", e)
 
             if final_status == "success":
                 # Sandbox intentionally kept: contains terraform.tfstate and .pem key
@@ -1933,7 +1948,7 @@ Rules:
                     iterations_used=final.get("iteration", len(records)),
                     iterations=records,
                     execution_results=results,
-                    summary=final.get("final_summary") or final.get("executor_summary"),
+                    summary=final_summary_text,
                 )
 
             # failed / exhausted
@@ -1946,7 +1961,7 @@ Rules:
                 iterations_used=final.get("iteration", len(records)),
                 iterations=records,
                 execution_results=results,
-                summary=final.get("final_summary") or final.get("executor_summary"),
+                summary=final_summary_text,
             )
 
         except Exception as exc:
@@ -1975,14 +1990,22 @@ Rules:
 #     if hasattr(sys.stdout, "reconfigure"):
 #         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
-#     agent = ExecutionAgents(max_iterations=3)
+#     agent = ExecutionAgents(max_iterations=6)
 
 #     action_payload = {
 #         "actionName": "Deploy EC2 Instance with Terraform",
 #         "actionDescription": (
-#             "Deploy a simple t2.micro EC2 instance on AWS using Terraform"
+#             "Deploy a t2.micro EC2 instance using Terraform to satisfy KRA-05. The us-east-1 region has active monitoring and is the primary compute zone, making it the ideal deployment target."
 #         ),
-#         "steps": [],
+#         "jiraUrl": "https://dummyintelligenzit.atlassian.net/browse/DEV-422",  # Replace with actual Jira URL
+#         "steps": [
+#             "1. Create a new Terraform configuration file (main.tf) defining a t2.micro EC2 instance with default AMI, key pair, and VPC.",
+#             "2. Configure AWS provider in Terraform to use us-east-1 region and AWS credentials with EC2 and IAM permissions.",
+#             "3. Run 'terraform init' to initialize the backend and providers.",
+#             "4. Run 'terraform plan' to validate the configuration and review the execution plan.",
+#             "5. Run 'terraform apply' to deploy the EC2 instance.",
+#             "6. Verify instance creation using 'aws ec2 describe-instances --filters Name=instance-type,Values=t2.micro' and confirm it appears in CloudWatch metrics."
+#         ],
 #     }
 #     response = agent.RunPipeline(
 #         action=action_payload,

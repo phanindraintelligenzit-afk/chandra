@@ -147,6 +147,52 @@ def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+def add_summary_comment(issue_key: str, summary: str) -> dict:
+    """Add a final summary comment on an existing Jira ticket."""
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if not summary:
+        return {"status": "skipped", "message": "No summary provided"}
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira.add_comment(issue_key, summary)
+        print(f"Summary comment added to {issue_key}")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Failed to add summary comment to {issue_key}: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def update_ticket_status(issue_key: str, status_name: str) -> dict:
+    """Transition a Jira ticket to a new status (e.g., 'Done', 'Backlog')."""
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        transitions = jira.transitions(issue_key)
+        
+        transition_id = None
+        for t in transitions:
+            if t['name'].lower() == status_name.lower() or t['to']['name'].lower() == status_name.lower():
+                transition_id = t['id']
+                break
+        
+        if transition_id:
+            jira.transition_issue(issue_key, transition_id)
+            print(f"Successfully transitioned {issue_key} to '{status_name}'")
+            return {"status": "success"}
+        else:
+            print(f"Transition to '{status_name}' not found for {issue_key}")
+            return {"status": "error", "message": f"Transition '{status_name}' not found"}
+    except Exception as e:
+        print(f"Failed to transition {issue_key}: {e}")
+        return {"status": "error", "message": str(e)}
+
 # ==========================================
 # HOW TO USE THE FUNCTION:
 # ==========================================

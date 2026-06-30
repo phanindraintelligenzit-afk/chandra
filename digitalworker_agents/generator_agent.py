@@ -336,11 +336,11 @@ Generate the complete set of files."""
         input_path = state.get("input_sandbox_path") or ""
         if input_path:
             sandbox_dir = input_path
-            Path(sandbox_dir).mkdir(exist_ok=True)
+            Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
         else:
             rand_id = str(random.randint(100_000, 999_999))
-            sandbox_dir = f"sandbox_{rand_id}"
-            Path(sandbox_dir).mkdir(exist_ok=True)
+            sandbox_dir = f"aws_executed_files/sandbox_{rand_id}"
+            Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
 
         toolkit = FileManagementToolkit(root_dir=sandbox_dir)
         write_tool = {t.name: t for t in toolkit.get_tools()}["write_file"]

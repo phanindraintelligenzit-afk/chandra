@@ -50,6 +50,49 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use dynamic AMI lookup with `aws_ami` data source instead of hardcoding AMI IDs to ensure region compatibility and avoid deployment failures."
+    },
+    {
+      "timestamp": "2026-06-30T12:31:01",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported argument"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region to satisfy KRA-05, but the execution failed during the `terraform init` command",
+        "The automation attempted to deploy a t2",
+        "The automation attempted to deploy an EC2 instance using Terraform by first successfully initializing the providers (aws, tls, random) but failed during `terraform validate` due to configuration error"
+      ],
+      "lesson": "Always use `aws_security_group` data source with `name` (not `names`) and avoid malformed or unsupported blocks like empty ones."
+    },
+    {
+      "timestamp": "2026-06-30T12:37:09",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region to satisfy KRA-05, but the `terraform init` command failed due to invalid Terraform configuration",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use dynamic AMI lookup with `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and avoid deployment failures."
+    },
+    {
+      "timestamp": "2026-06-30T12:57:09",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Reference to undeclared resource"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region but failed during the `terraform init` command due to an invalid configuration",
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region but failed during the `terraform plan` phase",
+        "The automation attempted to deploy a t2",
+        "The automation attempted to deploy an EC2 instance using Terraform, successfully initializing the provider plugins and backend, but failed during `terraform validate` due to a reference to an undeclar"
+      ],
+      "lesson": "Always use Terraform’s `local-exec` provisioner with environment variables explicitly passed via `environment` or define them as Terraform variables — never rely on unquoted shell env vars like `${env.WINDOWS_USERNAME}` without declaring the `env` data source or using `var.` syntax."
     }
   ]
 }

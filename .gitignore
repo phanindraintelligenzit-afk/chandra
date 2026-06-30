@@ -21,6 +21,7 @@ logs.txt
 .mypy_cache/
 .coverage
 htmlcov/
+aws_executed_files/
 coverage.xml
 
 # Environment
