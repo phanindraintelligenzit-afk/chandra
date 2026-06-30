@@ -3,7 +3,7 @@
 import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2 } from "lucide-react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
@@ -15,6 +15,7 @@ type ExecutingAction = {
   priorityLevel: string;
   steps: string[];
   jiraKey: string;
+  jiraUrl?: string;
   status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted";
   jobId: string;
   threadId: string;
@@ -24,8 +25,8 @@ type ExecutingAction = {
   errorMessage?: string;
   progress?: number;
   jobMessage?: string;
+  summary?: string;
   questions?: string[];
-  generatorThreadId?: string;
   sandboxPath?: string;
 };
 
@@ -212,8 +213,8 @@ export const WorkerActionExecutionCenter = forwardRef<
                     errorMessage: errorMsg,
                     progress: 100,
                     jobMessage: jobStatus.message,
+                    summary: result?.summary || "",
                     questions: result?.questions || [],
-                    generatorThreadId: result?.generator_thread_id || "",
                     sandboxPath: result?.sandbox_path || ""
                   }
                 : a
@@ -285,13 +286,13 @@ export const WorkerActionExecutionCenter = forwardRef<
         action: {
           actionName: action.actionName,
           actionDescription: action.actionDescription,
-          steps: action.steps
+          steps: action.steps,
+          service: action.service || "AWS"
         },
-        jira_issue_key: action.jiraKey,
+        jiraUrl: action.jiraUrl,
         command_timeout: 300,
         max_iterations: 5,
         thread_id: action.threadId,
-        generator_thread_id: action.generatorThreadId,
         sandbox_path: action.sandboxPath,
         answers: answers
       });
@@ -359,6 +360,7 @@ export const WorkerActionExecutionCenter = forwardRef<
       priorityLevel: action.severity || action.priorityLevel || "P3",
       steps: action.steps || [],
       jiraKey,
+      jiraUrl: action.jiraUrl,
       status: "pending",
       jobId: "",
       threadId: "",
@@ -377,9 +379,10 @@ export const WorkerActionExecutionCenter = forwardRef<
         action: {
           actionName: executing.actionName,
           actionDescription: executing.actionDescription,
-          steps: executing.steps
+          steps: executing.steps,
+          service: executing.service || "AWS"
         },
-        jira_issue_key: executing.jiraKey,
+        jiraUrl: executing.jiraUrl,
         command_timeout: 300,
         max_iterations: 5
       });
@@ -539,6 +542,27 @@ export const WorkerActionExecutionCenter = forwardRef<
                           )}
                         </div>
                         <div className="mt-2 text-[0.68rem] text-frost/75">{action.actionDescription}</div>
+
+                        {action.summary && (
+                          <div className="mt-3 rounded-lg border border-frost/30 bg-frost/5 p-3 cursor-text" onClick={(e) => e.stopPropagation()}>
+                            <div className="text-[0.6rem] uppercase tracking-[0.18em] text-frost/70 mb-2 font-semibold">EXECUTION SUMMARY</div>
+                            <div className="text-[0.65rem] text-frost whitespace-pre-wrap leading-relaxed">{action.summary}</div>
+                            {action.sandboxPath && action.status === "completed" && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                  window.open(`${apiUrl}/download_sandbox?path=${encodeURIComponent(action.sandboxPath!)}`, '_blank');
+                                }}
+                                className="mt-3 flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
+                              >
+                                <Download size={12} />
+                                Download Execution Artifacts
+                              </button>
+                            )}
+                          </div>
+                        )}
+
                         {action.jobMessage && (action.status === "running" || action.status === "pending") && (
                           <div className="mt-1 text-[0.62rem] text-blue-300/70 italic">{action.jobMessage}</div>
                         )}

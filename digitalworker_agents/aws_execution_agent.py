@@ -1579,21 +1579,10 @@ Rules:
         # ── Exhausted iterations ──────────────────────────────────────────────
         if iteration >= max_iter:
             self._banner(f"✗ PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
-            last_raw_error = ""
-            for r in state.get("execution_results") or []:
-                if not r.get("success"):
-                    last_raw_error = (
-                        f"Command '{r['command']}' failed "
-                        f"(rc={r['return_code']}"
-                        f"{', timed out' if r.get('timed_out') else ''}).\n"
-                        f"stderr: {r['stderr'][:1000]}"
-                    )
-                    break
             summary = (
                 f"Action '{state['action'].get('actionName')}' could not be completed after "
-                f"{iteration} iteration(s).\n"
-                f"Last error: {last_raw_error or '(no execution results)'}\n"
-                f"AI summary: {state.get('executor_summary')}"
+                f"{iteration} iteration(s).\n\n"
+                f"{state.get('executor_summary') or '(No AI summary generated)'}"
             )
             return {
                 "records": records,
@@ -1644,12 +1633,18 @@ Rules:
 
         # Extract the repeated error for display
         error_snippet = ""
-        for r in state.get("execution_results") or []:
+        for r in reversed(state.get("execution_results") or []):
             if not r.get("success"):
-                raw = re.sub(r"\x1b\[[0-9;]*m", "", r.get("stderr", ""))
-                error_snippet = "\n".join(
-                    ln for ln in raw.splitlines() if ln.strip() and "│" not in ln
-                )[:400]
+                raw = re.sub(r"\x1b\[[0-9;]*m", "", r.get("stderr", "") or "")
+                
+                lines = []
+                for ln in raw.splitlines():
+                    # Strip Terraform box drawing characters without discarding the line
+                    cleaned = re.sub(r"[╷╵│─╭╮╰╯]+", "", ln).strip()
+                    if cleaned:
+                        lines.append(cleaned)
+                        
+                error_snippet = "\n".join(lines)[:600]
                 break
 
         questions = [

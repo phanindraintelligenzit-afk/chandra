@@ -93,6 +93,114 @@
         "The automation attempted to deploy an EC2 instance using Terraform, successfully initializing the provider plugins and backend, but failed during `terraform validate` due to a reference to an undeclar"
       ],
       "lesson": "Always use Terraform’s `local-exec` provisioner with environment variables explicitly passed via `environment` or define them as Terraform variables — never rely on unquoted shell env vars like `${env.WINDOWS_USERNAME}` without declaring the `env` data source or using `var.` syntax."
+    },
+    {
+      "timestamp": "2026-06-30T13:50:42",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The automation ran `terraform init` successfully, installing the required providers (aws, tls, random) and initializing the backend, but `terraform validate` failed due to an invalid data source: `dat",
+        "The automation executed Terraform commands to deploy a t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use aws_ami data source — hardcoded AMI IDs are region-specific and will fail in other regions."
+    },
+    {
+      "timestamp": "2026-06-30T14:15:36",
+      "action_name": "Deploy VPC with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a VPC in us-east-1 using Terraform but failed during the `terraform init` phase",
+        "The AWS automation action successfully deployed a VPC using Terraform by executing `terraform init`, `validate`, `plan`, and `apply -auto-approve` commands, all of which completed with zero errors"
+      ],
+      "lesson": "Always define VPC CIDR blocks and subnet ranges explicitly in Terraform to avoid auto-assignment conflicts and ensure consistent network topology across environments."
+    },
+    {
+      "timestamp": "2026-06-30T14:58:06",
+      "action_name": "Deploy t2.micro EC2 instance via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Reference to undeclared input variable"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The automation executed Terraform to deploy a t2"
+      ],
+      "lesson": "Always declare all input variables in variables.tf before referencing them in resources to avoid \"undeclared input variable\" errors."
+    },
+    {
+      "timestamp": "2026-06-30T15:12:12",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The automation ran `terraform init`, which successfully initialized the AWS, local, and TLS providers and generated a lock file, but failed during `terraform validate` due to an unexpected argument",
+        "The AWS automation successfully executed a Terraform deployment to create a t2"
+      ],
+      "lesson": "Always use an AWS AMI data source to dynamically fetch the latest Amazon Linux 2 or Ubuntu image for the correct region — hardcoded AMI IDs cause region-specific deployment failures."
+    },
+    {
+      "timestamp": "2026-06-30T15:33:33",
+      "action_name": "Deploy t2.micro EC2 instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to execute `terraform init` to prepare deployment of a t2",
+        "The automation attempted to deploy a t2",
+        "The AWS automation attempted to deploy a t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use `aws_ami` data source to dynamically fetch the latest Amazon Linux 2 AMI — hardcoded AMI IDs are region-specific and will cause deployment failures in other regions."
+    },
+    {
+      "timestamp": "2026-06-30T15:58:12",
+      "action_name": "Deploy VPC using Terraform with public/private subnets",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a VPC using Terraform, successfully initializing the AWS provider (v6",
+        "The automation successfully deployed a VPC using Terraform, creating a VPC with CIDR block 10",
+        "The AWS automation successfully executed a Terraform deployment to provision a VPC with public and private subnets, as required by KRA-07"
+      ],
+      "lesson": "Always define public and private subnets with explicit availability zones and associate public subnets with a natural gateway to ensure proper routing and internet access."
+    },
+    {
+      "timestamp": "2026-06-30T16:13:01",
+      "action_name": "Deploy EC2 instance using Terraform",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The automation attempted to deploy an EC2 instance using Terraform, successfully initializing the provider plugins (aws v5",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use aws_ami data source to dynamically fetch the latest AMI — hardcoded AMI IDs are region-specific and cause deployments to fail in other regions."
+    },
+    {
+      "timestamp": "2026-06-30T16:30:12",
+      "action_name": "Create default S3 bucket in us-east-1",
+      "iterations_used": 5,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform, but the `terraform init` command failed with the error: “Terraform encountered problems durin",
+        "The automation attempted to create an S3 bucket named `kra05-default-bucket-ff1f9698dbcad028` in us-east-1 using Terraform, after successfully initializing providers, validating configuration, and pla",
+        "The automation attempted to create an S3 bucket named `kra05-default-bucket-ff1f9698dbcad028` in us-east-1 using Terraform, successfully initializing, validating, and planning the deployment",
+        "The automation attempted to create an S3 bucket named `kra05-default-bucket-ff1f9698dbcad028` in us-east-1 using Terraform, with successful initialization, validation, and plan execution",
+        "The automation successfully created an S3 bucket and its public access block using Terraform in us-east-1"
+      ],
+      "lesson": "Always use region-specific S3 bucket names and ensure unique bucket naming globally — S3 bucket names must be unique across all AWS accounts and regions."
     }
   ]
 }

@@ -711,14 +711,14 @@ export type OrchestrateRequest = {
     actionName: string;
     actionDescription: string;
     steps?: string[];
+    service?: string;
   };
   sandbox_path?: string;
   reference_folder?: string;
   thread_id?: string;
   answers?: string[];
-  generator_thread_id?: string;
   command_timeout?: number;
-  jira_issue_key?: string;
+  jiraUrl?: string;
   max_iterations?: number;
 };
 
@@ -727,7 +727,12 @@ export type OrchestratorResponse = {
   status: string;
   exception?: string | null;
   thread_id: string;
-  output?: unknown;
+  sandbox_path?: string;
+  iterations_used?: number;
+  iterations?: any[];
+  execution_results?: any[];
+  summary?: string;
+  questions?: string[];
 };
 
 export type OrchestrateJobResponse = {

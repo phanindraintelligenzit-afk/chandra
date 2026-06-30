@@ -11,10 +11,12 @@ import uuid
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 import os
+import io
+import zipfile
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -25,9 +27,7 @@ from digitalworker_agents.observation_agent import (
     DEFAULT_REGION,
 )
 from digitalworker_agents.analyzer_agent import AnalyzerAgent, AnalyzerPipelineResponse, ActionResult
-from digitalworker_agents.generator_agent import GeneratorAgent, GeneratorPipelineResponse
-from digitalworker_agents.executor_agent import ExecutorAgent, ExecutorPipelineResponse
-from digitalworker_agents.orchestrator_agent import OrchestratorAgent, OrchestratorResponse
+from digitalworker_agents.aws_execution_agent import ExecutionAgents, PipelineResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from tools.aws_cloud_tools.metrics_fetcher import CloudWatchMetricsFetcher
 from tools.aws_cloud_tools.tool_findings import run_all_detectors
@@ -150,27 +150,6 @@ try:
 except Exception as _e:
     logger.error("Failed to initialize copilot agent: %s", _e)
     _copilot_agent = None
-
-try:
-    _generator_agent = GeneratorAgent()
-    logger.info("Generator agent initialized successfully")
-except Exception as _e:
-    logger.error("Failed to initialize generator agent: %s", _e)
-    _generator_agent = None
-
-try:
-    _executor_agent = ExecutorAgent()
-    logger.info("Executor agent initialized successfully")
-except Exception as _e:
-    logger.error("Failed to initialize executor agent: %s", _e)
-    _executor_agent = None
-
-try:
-    _orchestrator_agent = OrchestratorAgent()
-    logger.info("Orchestrator agent initialized successfully")
-except Exception as _e:
-    logger.error("Failed to initialize orchestrator agent: %s", _e)
-    _orchestrator_agent = None
 
 
 class KRAInput(BaseModel):
@@ -422,7 +401,7 @@ def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
 class ActionInput(BaseModel):
     actionName: str = Field(description="Short name of the action")
     actionDescription: str = Field(description="Detailed description of what needs to be done")
-    service: str = Field(description="AWS service this action applies to")
+    service: Optional[str] = Field(default="AWS", description="AWS service this action applies to")
     kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
     priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
     steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
@@ -526,134 +505,9 @@ def copilot_chat_endpoint(request: CopilotRequest):
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 
-class GeneratorActionInput(BaseModel):
-    actionName: str = Field(description="Short name or title of the action")
-    actionDescription: str = Field(description="Detailed description of what needs to be done and why")
-    steps: Optional[List[str]] = Field(default=None, description="Optional ordered implementation steps")
-
-
-class GenerateRequest(BaseModel):
-    action: GeneratorActionInput = Field(description="Action to generate code for")
-    thread_id: Optional[str] = Field(
-        default=None,
-        description="Thread ID from a previous needs_clarification response. Omit on first call.",
-    )
-    answers: Optional[List[str]] = Field(
-        default=None,
-        description="Answers to the clarification questions, in the same order they were returned.",
-    )
-    sandbox_path: Optional[str] = Field(
-        default=None,
-        description="Path to an existing sandbox folder. If provided and contains files, the agent updates them instead of generating from scratch.",
-    )
-    feedbackSummary: Optional[str] = Field(
-        default=None,
-        description="Optional free-text feedback or change instructions to apply when updating existing files.",
-    )
-
-
-@app.post("/generateCode", response_model=GeneratorPipelineResponse)
-def generate_code(request: GenerateRequest):
-    """
-    Example request:
-    {
-        "action": {
-            "actionName": "Automate Bedrock inference disablement for untagged usage",
-            "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
-            "steps": [
-                "Create an IAM role with CloudWatch Events and Bedrock:InvokeModel permissions",
-                "Write Lambda function that checks userIdentity.principalId against allowed tag values",
-                "If principal has no Environment=prod tag, deny the request",
-                "Deploy Lambda and link to CloudWatch Event rule filtering on InvokeModel events",
-                "Test by simulating an untagged Bedrock call"
-            ]
-        },
-        "thread_id": null,
-        "answers": null
-    }
-    """
-    logger.info(
-        "POST /generateCode | action=%s | thread_id=%s | resuming=%s",
-        request.action.actionName,
-        request.thread_id,
-        request.answers is not None,
-    )
-    try:
-        response = _generator_agent.RunPipeline(
-            action=request.action.model_dump(),
-            thread_id=request.thread_id,
-            answers=request.answers,
-            sandbox_path=request.sandbox_path,
-            feedback_summary=request.feedbackSummary,
-        )
-    except Exception as exc:
-        logger.exception("GeneratorAgent failed: %s", exc)
-        response = GeneratorPipelineResponse(
-            statusCode=500,
-            status="error",
-            exception=str(exc),
-        )
-
-    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
-
-
-class ExecuteActionInput(BaseModel):
-    actionName: str = Field(description="Short name or title of the action")
-    actionDescription: str = Field(description="Detailed description of what needs to be done and why")
-    priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
-    executeFolder: str = Field(description="Path to the folder containing generated scripts / tf files")
-    executableSteps: Optional[List[Dict[str, str]]] = Field(
-        default=None,
-        description="Ordered steps from /generateCode, each with 'description' (human-readable) and 'command' (shell command). If None, will do LLM-based planning from folder contents."
-    )
-
-
-@app.post("/executeCode", response_model=ExecutorPipelineResponse)
-def execute_code(request: ExecuteActionInput):
-    """
-    Example request (with executableSteps from /generateCode):
-    {
-        "actionName": "Automate Bedrock inference disablement for untagged usage",
-        "actionDescription": "Create a Lambda function triggered by CloudTrail that blocks Bedrock inference requests from untagged roles — auto-remediates unexpected spend to meet KRA-01's 60% auto-remediate target.",
-        "priorityLevel": "P1",
-        "executeFolder": "sandbox_9876",
-        "executableSteps": [
-            {"description": "Install Python dependencies", "command": "pip install -r lambda/requirements.txt -t lambda/package"},
-            {"description": "Initialize Terraform", "command": "terraform -chdir=infrastructure init"},
-            {"description": "Validate Terraform configuration", "command": "terraform -chdir=infrastructure validate"},
-            {"description": "Plan Terraform deployment", "command": "terraform -chdir=infrastructure plan"},
-            {"description": "Apply Terraform configuration", "command": "terraform -chdir=infrastructure apply -auto-approve"}
-        ]
-    }
-    """
-    logger.info(
-        "POST /executeCode | action=%s | folder=%s | steps=%d",
-        request.actionName,
-        request.executeFolder,
-        len(request.executableSteps) if request.executableSteps else 0,
-    )
-    try:
-        response = _executor_agent.RunPipeline(
-            action={
-                "actionName": request.actionName,
-                "actionDescription": request.actionDescription,
-            },
-            executeFolder=request.executeFolder,
-            executableSteps=request.executableSteps,
-        )
-    except Exception as exc:
-        logger.exception("ExecutorAgent failed: %s", exc)
-        response = ExecutorPipelineResponse(
-            statusCode=500,
-            status="error",
-            exception=str(exc),
-        )
-
-    return JSONResponse(status_code=response.statusCode, content=response.model_dump())
-
 
 class OrchestrateRequest(BaseModel):
-    action: GeneratorActionInput = Field(description="Action to generate and execute")
+    action: ActionInput = Field(description="Action to generate and execute")
     sandbox_path: Optional[str] = Field(
         default=None,
         description="Path to an existing sandbox folder. If provided, the orchestrator updates existing files.",
@@ -670,21 +524,47 @@ class OrchestrateRequest(BaseModel):
         default=None,
         description="Answers to clarification questions from a previous response.",
     )
-    generator_thread_id: Optional[str] = Field(
-        default=None,
-        description="Generator thread ID for resuming HITL.",
-    )
     command_timeout: int = Field(
         default=300,
         description="Per-command timeout in seconds (default: 300 = 5 minutes).",
     )
-    jira_issue_key: Optional[str] = Field(
+    jiraUrl: Optional[str] = Field(
         default=None,
-        description="Jira issue key to post final summary comment to after orchestration completes.",
+        description="Full Jira URL to post final summary comment to after orchestration completes.",
     )
     max_iterations: int = Field(
         default=5,
         description="Maximum number of generate-execute iterations (default: 5).",
+    )
+
+
+@app.get("/download_sandbox")
+def download_sandbox(path: str):
+    """Zip and download the sandbox directory for a completed job."""
+    if not path or not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
+        
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for root, dirs, files in os.walk(path):
+            # Skip heavy/unnecessary directories
+            if ".terraform" in dirs:
+                dirs.remove(".terraform")
+            if ".git" in dirs:
+                dirs.remove(".git")
+            if "__pycache__" in dirs:
+                dirs.remove("__pycache__")
+                
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, path)
+                zip_file.write(file_path, arcname)
+    
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer, 
+        media_type="application/zip", 
+        headers={"Content-Disposition": "attachment; filename=execution_artifacts.zip"}
     )
 
 
@@ -710,10 +590,10 @@ def orchestrate_action(request: OrchestrateRequest):
     job_id = str(uuid.uuid4())
     
     logger.info(
-        "POST /orchestrate submitted | job_id=%s | action=%s | jira_issue_key=%s",
+        "POST /orchestrate submitted | job_id=%s | action=%s | jiraUrl=%s",
         job_id,
         request.action.actionName,
-        request.jira_issue_key or "None",
+        request.jiraUrl or "None",
     )
     
     # Initialize job record
@@ -773,16 +653,19 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
         
         # Run the actual orchestration
-        orchestrator = OrchestratorAgent(max_iterations=request.max_iterations)
+        orchestrator = ExecutionAgents(max_iterations=request.max_iterations)
+        
+        action_dict = request.action.model_dump()
+        if request.jiraUrl:
+            action_dict["jiraUrl"] = request.jiraUrl
+
         response = orchestrator.RunPipeline(
-            action=request.action.model_dump(),
+            action=action_dict,
             sandbox_path=request.sandbox_path,
             reference_folder=request.reference_folder,
             thread_id=request.thread_id,
             answers=request.answers,
-            generator_thread_id=request.generator_thread_id,
             command_timeout=request.command_timeout,
-            jira_issue_key=request.jira_issue_key,
         )
         
         # Update job with result
