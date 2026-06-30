@@ -201,6 +201,37 @@
         "The automation successfully created an S3 bucket and its public access block using Terraform in us-east-1"
       ],
       "lesson": "Always use region-specific S3 bucket names and ensure unique bucket naming globally — S3 bucket names must be unique across all AWS accounts and regions."
+    },
+    {
+      "timestamp": "2026-06-30T17:28:49",
+      "action_name": "Deploy VPC with Terraform in us-east-1",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a custom VPC in us-east-1 using Terraform, successfully initializing providers, validating configuration, and planning resource creation—including two NAT EIPs (nat[",
+        "The automation ran `terraform init` and `terraform validate` successfully, initializing the AWS provider and detecting a deprecated `vpc = true` argument in the EIP configuration",
+        "The automation ran `terraform init` successfully, reusing the existing AWS provider (v5",
+        "The AWS automation successfully deployed a custom VPC in us-east-1 using Terraform, replacing any default VPCs to meet KRA-07 requirements for network isolation"
+      ],
+      "lesson": "Always define VPC CIDR blocks and subnet configurations explicitly in Terraform — this ensures consistent, region-independent deployment across AWS accounts and environments."
+    },
+    {
+      "timestamp": "2026-06-30T18:00:32",
+      "action_name": "Enable GuardDuty and fix IAM permissions",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: getting user: operation error IAM: GetUser, https response error StatusCode: 403, RequestID: f1ae85e8-571d-447b-82f0-7660e0f57744, api error AccessDenied: User: arn:aws:iam::827295473120:user/observation_agent is not authorized to perform: iam:GetUser on resource: user observation_agent because no identity-based policy allows the iam:GetUser action"
+      ],
+      "fixes_applied": [
+        "The automation attempted to enable AWS GuardDuty and validate IAM permissions using Terraform, successfully initializing providers and validating the configuration",
+        "The automation attempted to enable GuardDuty and fix IAM permissions by running `terraform init` (which succeeded) followed by `terraform validate` (which failed)",
+        "The automation attempted to enable GuardDuty and grant the `guardduty:ListDetectors` permission to the `observation_agent` IAM user using Terraform",
+        "The automation attempted to enable AWS GuardDuty and grant the `guardduty:ListDetectors` permission to the `observation_agent` IAM user using Terraform",
+        "The automation ran `terraform init` and `terraform validate` successfully, then executed `terraform plan`, which generated a plan to create an AWS GuardDuty detector and an IAM policy named \"GuardDuty"
+      ],
+      "lesson": "Always ensure the IAM user or role has the `iam:GetUser` permission before attempting to enable GuardDuty or perform IAM-related operations."
     }
   ]
 }

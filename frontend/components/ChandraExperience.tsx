@@ -1077,7 +1077,7 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
         {isOpen && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="pt-4">
-      <div className="operational-scroll flex max-h-[360px] gap-3 overflow-x-auto py-1">
+      <div className="operational-scroll flex max-h-[600px] gap-3 overflow-x-auto py-1">
         {isLoading || (!visibleApprovals.length && sync && sync.status !== "success") ? (
           <div className="w-full flex items-center justify-center">
             <div className="text-center space-y-3">
@@ -1144,7 +1144,9 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
                     <div className="text-[0.55rem] uppercase tracking-[0.2em] text-amber">REMEDIATION STEPS</div>
                     <ol className="mt-1 list-decimal space-y-1 pl-4 text-[0.66rem] leading-5 text-frost/85">
                       {approval.steps.map((step, index) => (
-                        <li key={`${approval.id}-step-${index}`}>{step}</li>
+                        <li key={`${approval.id}-step-${index}`} className="break-words whitespace-pre-wrap">
+                          {step}
+                        </li>
                       ))}
                     </ol>
                   </div>
@@ -1688,7 +1690,7 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
     async function poll() {
       if (cancelled) return;
       try {
-        const batch = await fetchBackendLogs(25);
+        const batch = await fetchBackendLogs(1000);
         if (cancelled) return;
         setLogs(batch);
         

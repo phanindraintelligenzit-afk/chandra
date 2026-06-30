@@ -3,7 +3,7 @@
 import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download } from "lucide-react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
@@ -57,8 +57,6 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
       ? "AWAITING INPUT"
       : status === "exhausted"
       ? "EXHAUSTED"
-      : status === "running" && progress != null && progress > 0
-      ? `RUNNING ${progress}%`
       : status;
 
   return (
@@ -84,6 +82,14 @@ export const WorkerActionExecutionCenter = forwardRef<
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const logsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cachedLogsRef = useRef<BackendLog[]>([]);
+
+  const formatDuration = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
 
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction
@@ -504,7 +510,7 @@ export const WorkerActionExecutionCenter = forwardRef<
           </div>
         </div>
 
-        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+        <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
         {executingActions.length === 0 ? (
           <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-4 text-center text-[0.68rem] uppercase tracking-[0.16em] text-muted">
             No actions executing. Auto-approved actions will appear here.
@@ -545,8 +551,25 @@ export const WorkerActionExecutionCenter = forwardRef<
 
                         {action.summary && (
                           <div className="mt-3 rounded-lg border border-frost/30 bg-frost/5 p-3 cursor-text" onClick={(e) => e.stopPropagation()}>
-                            <div className="text-[0.6rem] uppercase tracking-[0.18em] text-frost/70 mb-2 font-semibold">EXECUTION SUMMARY</div>
+                            <div className="flex items-center justify-between mb-3 border-b border-white/10 pb-2">
+                              <div className="text-[0.6rem] uppercase tracking-[0.18em] text-frost/70 font-semibold">EXECUTION SUMMARY</div>
+                              <div className="flex gap-4 text-[0.55rem] tracking-[0.05em] text-muted">
+                                <div><span className="text-frost/40 mr-1">START:</span>{new Date(action.startedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'medium' })}</div>
+                                {action.completedAt && (
+                                  <>
+                                    <div><span className="text-frost/40 mr-1">END:</span>{new Date(action.completedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'medium' })}</div>
+                                    <div className="font-mono text-frost"><span className="text-frost/40 mr-1 font-sans">TIME:</span>{formatDuration(action.completedAt - action.startedAt)}</div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
                             <div className="text-[0.65rem] text-frost whitespace-pre-wrap leading-relaxed">{action.summary}</div>
+                          </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        {(action.sandboxPath || action.status === "failed" || action.status === "exhausted") && (
+                          <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.sandboxPath && action.status === "completed" && (
                               <button 
                                 onClick={(e) => {
@@ -554,10 +577,23 @@ export const WorkerActionExecutionCenter = forwardRef<
                                   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
                                   window.open(`${apiUrl}/download_sandbox?path=${encodeURIComponent(action.sandboxPath!)}`, '_blank');
                                 }}
-                                className="mt-3 flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
+                                className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >
                                 <Download size={12} />
                                 Download Execution Artifacts
+                              </button>
+                            )}
+                            {(action.status === "failed" || action.status === "exhausted") && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleExecuteAction(action);
+                                  setExecutingActions((current) => current.filter((a) => a.id !== action.id));
+                                }}
+                                className="flex items-center gap-2 rounded border border-signal/30 bg-signal/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-signal hover:bg-signal/20 transition"
+                              >
+                                <RotateCcw size={12} />
+                                Retry Execution
                               </button>
                             )}
                           </div>
@@ -650,7 +686,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                             if (el) logsContainerRefs.current.set(action.id, el);
                             else logsContainerRefs.current.delete(action.id);
                           }}
-                          className="max-h-[300px] space-y-0.5 overflow-y-auto pr-1 scrollbar-mini font-mono"
+                          className="max-h-[600px] space-y-0.5 overflow-y-auto pr-1 scrollbar-mini font-mono"
                         >
                           {action.logs.length ? (
                             action.logs.map((log, idx) => (
