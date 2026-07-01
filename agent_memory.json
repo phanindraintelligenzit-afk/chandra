@@ -232,6 +232,47 @@
         "The automation ran `terraform init` and `terraform validate` successfully, then executed `terraform plan`, which generated a plan to create an AWS GuardDuty detector and an IAM policy named \"GuardDuty"
       ],
       "lesson": "Always ensure the IAM user or role has the `iam:GetUser` permission before attempting to enable GuardDuty or perform IAM-related operations."
+    },
+    {
+      "timestamp": "2026-07-01T11:10:43",
+      "action_name": "Create default S3 bucket in us-east-1",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket named 'default-s3-bucket-us-east-1' using Terraform, but the `terraform init` command failed due to invalid configuration, as stated in the error: \"Terr",
+        "The AWS automation successfully executed a Terraform workflow to create a default S3 bucket in us-east-1 to fulfill KRA-05, as no such bucket existed in tooling data or logs"
+      ],
+      "lesson": "Always specify the region explicitly when creating S3 buckets, as they are region-specific and defaulting to us-east-1 avoids regional mismatch errors."
+    },
+    {
+      "timestamp": "2026-07-01T11:30:45",
+      "action_name": "Create S3 bucket in us-east-1",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported block type"
+      ],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform, successfully initializing the provider and backend",
+        "The automation ran `terraform init` successfully but failed during `terraform validate` due to an \"Unsupported block type\" error in `main",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform, successfully initializing the provider plugins and backend",
+        "The automation ran `terraform init` successfully, reusing existing AWS and Random provider versions, but failed during `terraform validate` due to an \"Unsupported block type\" error"
+      ],
+      "lesson": "Always use `public_access_block` as a direct nested block within `aws_s3_bucket`, not under a nested or invalid context — check Terraform provider docs for correct syntax."
+    },
+    {
+      "timestamp": "2026-07-01T11:47:08",
+      "action_name": "Create S3 Bucket in us-east-1",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket in us-east-1 using Terraform, but the `terraform init` command failed with the error: \"Terraform encountered problems during initialisation, including p",
+        "The AWS automation successfully created an S3 bucket in us-east-1 using Terraform to fulfill KRA-05, with infrastructure defined as a bucket, public access block, and versioning configuration"
+      ],
+      "lesson": "Always specify the region explicitly when creating S3 buckets — while S3 is global, the API call must target a valid region like us-east-1 to succeed."
     }
   ]
 }

@@ -16,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 import os
 import io
+import sys
+import subprocess
 import zipfile
 from dotenv import load_dotenv
 
@@ -566,6 +568,48 @@ def download_sandbox(path: str):
         media_type="application/zip", 
         headers={"Content-Disposition": "attachment; filename=execution_artifacts.zip"}
     )
+
+class DestroyRequest(BaseModel):
+    path: str
+    job_id: Optional[str] = None
+
+@app.post("/destroy_sandbox")
+def destroy_sandbox(request: DestroyRequest):
+    """Run terraform destroy on a completed sandbox directory."""
+    if request.job_id:
+        _thread_local.job_id = request.job_id
+        
+    if not request.path or not os.path.exists(request.path):
+        return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
+        
+    script_path = os.path.join(os.path.dirname(__file__), "scripts", "destroy_terraform.py")
+    try:
+        logger.info(f"Starting infrastructure destruction for: {request.path}")
+        proc = subprocess.Popen(
+            [sys.executable, script_path, request.path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace"
+        )
+        
+        output = []
+        for line in proc.stdout:
+            clean_line = line.rstrip('\\n')
+            output.append(clean_line)
+            # Log to the parent process logger so it goes to the UI stream
+            logger.info(clean_line)
+            
+        proc.wait()
+        full_output = "\\n".join(output)
+        
+        if proc.returncode != 0:
+            return JSONResponse(status_code=500, content={"error": "Destroy failed", "details": full_output})
+        return JSONResponse(status_code=200, content={"status": "success", "message": full_output})
+    except Exception as e:
+        logger.exception("Failed to destroy sandbox at %s: %s", request.path, e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 @app.post("/orchestrate", response_model=OrchestrateJobResponse)

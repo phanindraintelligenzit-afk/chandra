@@ -3,7 +3,7 @@
 import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw } from "lucide-react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2 } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
@@ -16,7 +16,7 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   jiraUrl?: string;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed";
   jobId: string;
   threadId: string;
   startedAt: number;
@@ -41,7 +41,9 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     completed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     failed: "border-signal/45 bg-signal/15 text-signal",
     awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
-    exhausted: "border-orange-400/40 bg-orange-400/12 text-orange-300"
+    exhausted: "border-orange-400/40 bg-orange-400/12 text-orange-300",
+    destroying: "border-red-500/40 bg-red-500/12 text-red-400",
+    destroyed: "border-gray-500/40 bg-gray-500/12 text-gray-400"
   };
   const icons: Record<string, JSX.Element> = {
     pending: <Clock size={12} />,
@@ -49,7 +51,9 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     completed: <CheckCircle2 size={12} />,
     failed: <AlertTriangle size={12} />,
     awaiting_input: <Clock size={12} />,
-    exhausted: <AlertTriangle size={12} />
+    exhausted: <AlertTriangle size={12} />,
+    destroying: <Loader2 size={12} className="animate-spin" />,
+    destroyed: <Trash2 size={12} />
   };
 
   const displayLabel =
@@ -57,6 +61,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
       ? "AWAITING INPUT"
       : status === "exhausted"
       ? "EXHAUSTED"
+      : status === "destroying"
+      ? "DESTROYING..."
       : status;
 
   return (
@@ -77,6 +83,7 @@ export const WorkerActionExecutionCenter = forwardRef<
 >(function WorkerActionExecutionCenter({ onActionApproved }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -571,6 +578,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         {(action.sandboxPath || action.status === "failed" || action.status === "exhausted") && (
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.sandboxPath && action.status === "completed" && (
+                              <>
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -582,6 +590,87 @@ export const WorkerActionExecutionCenter = forwardRef<
                                 <Download size={12} />
                                 Download Execution Artifacts
                               </button>
+                              {confirmDestroyId === action.id ? (
+                                <div className="flex items-center gap-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[0.65rem] tracking-[0.1em] text-red-400">
+                                  <span className="mr-2 uppercase">Are you sure?</span>
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      setConfirmDestroyId(null);
+                                      
+                                      // Instantly update UI to show it's destroying
+                                      setExecutingActions(current => 
+                                        current.map(a => a.id === action.id ? { ...a, status: "destroying" } : a)
+                                      );
+
+                                      startLogsPolling();
+                                      const logUpdater = setInterval(() => {
+                                        const allLogs = cachedLogsRef.current;
+                                        const jobIdLower = action.jobId.toLowerCase();
+                                        const actionLogs = allLogs.filter(log => log.job_id && log.job_id.toLowerCase() === jobIdLower);
+                                        if (actionLogs.length > 0) {
+                                            setExecutingActions(current => 
+                                                current.map(a => a.id === action.id ? { ...a, logs: actionLogs } : a)
+                                            );
+                                        }
+                                      }, 2000);
+
+                                      try {
+                                        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                        const response = await fetch(`${apiUrl}/destroy_sandbox`, {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ path: action.sandboxPath!, job_id: action.jobId })
+                                        });
+                                        if (!response.ok) {
+                                          const errData = await response.json().catch(() => ({}));
+                                          alert("Failed to destroy infrastructure: " + (errData.error || errData.details || response.statusText));
+                                          setExecutingActions(current => 
+                                            current.map(a => a.id === action.id ? { ...a, status: "completed" } : a)
+                                          );
+                                          return;
+                                        }
+                                        // Silently update state to destroyed without popup
+                                        setExecutingActions(current => 
+                                          current.map(a => a.id === action.id ? { ...a, status: "destroyed" } : a)
+                                        );
+                                      } catch (error) {
+                                        console.error(error);
+                                        alert("Error occurred while destroying infrastructure.");
+                                        setExecutingActions(current => 
+                                          current.map(a => a.id === action.id ? { ...a, status: "completed" } : a)
+                                        );
+                                      } finally {
+                                        clearInterval(logUpdater);
+                                      }
+                                    }}
+                                    className="bg-red-500/20 hover:bg-red-500/40 px-2 py-0.5 rounded transition uppercase"
+                                  >
+                                    Yes, Destroy
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setConfirmDestroyId(null);
+                                    }}
+                                    className="bg-frost/10 hover:bg-frost/20 text-frost px-2 py-0.5 rounded transition uppercase"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDestroyId(action.id);
+                                  }}
+                                  className="flex items-center gap-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-red-400 hover:bg-red-500/20 transition"
+                                >
+                                  <Trash2 size={12} />
+                                  Destroy Infrastructure
+                                </button>
+                              )}
+                              </>
                             )}
                             {(action.status === "failed" || action.status === "exhausted") && (
                               <button 
