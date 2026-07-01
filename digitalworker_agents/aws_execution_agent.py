@@ -42,6 +42,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from itertools import zip_longest
 from pathlib import Path
@@ -455,6 +457,50 @@ class PipelineResponse(BaseModel):
 # for direct programmatic calls adds unnecessary overhead and risks silent behaviour
 # changes if LangChain ever alters how handle_tool_error defaults propagate.
 
+_active_subprocesses = {}
+_cancelled_threads = set()
+_subprocesses_lock = threading.Lock()
+
+def check_cancelled():
+    if threading.get_ident() in _cancelled_threads:
+        raise InterruptedError("Execution cancelled by user")
+
+def register_subprocess(proc: subprocess.Popen):
+    thread_id = threading.get_ident()
+    with _subprocesses_lock:
+        if thread_id not in _active_subprocesses:
+            _active_subprocesses[thread_id] = []
+        _active_subprocesses[thread_id].append(proc)
+
+def unregister_subprocess(proc: subprocess.Popen):
+    thread_id = threading.get_ident()
+    with _subprocesses_lock:
+        if thread_id in _active_subprocesses and proc in _active_subprocesses[thread_id]:
+            _active_subprocesses[thread_id].remove(proc)
+
+def cancel_thread_execution(thread_id: int):
+    with _subprocesses_lock:
+        _cancelled_threads.add(thread_id)
+        procs = _active_subprocesses.get(thread_id, [])
+        for proc in procs:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, check=False)
+                else:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+            except Exception:
+                pass
+
+def cleanup_thread_state():
+    """Remove this thread's cancellation and subprocess state. Call in finally."""
+    thread_id = threading.get_ident()
+    with _subprocesses_lock:
+        _cancelled_threads.discard(thread_id)
+        _active_subprocesses.pop(thread_id, None)
+
 def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any]:
     """Execute a shell command in a specific directory with a timeout."""
     proc_env = os.environ.copy()
@@ -473,9 +519,19 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
         encoding="utf-8",
         errors="replace",
     )
+    
+    register_subprocess(proc)
 
     try:
-        stdout_data, stderr_data = proc.communicate(timeout=timeout)
+        deadline = time.time() + timeout
+        while True:
+            check_cancelled()
+            try:
+                stdout_data, stderr_data = proc.communicate(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired as exc:
+                if time.time() > deadline:
+                    raise exc
     except subprocess.TimeoutExpired as exc:
         if sys.platform == "win32":
             subprocess.run(
@@ -493,6 +549,10 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
         except subprocess.TimeoutExpired:
             stdout_data, stderr_data = "", ""
         raise TimeoutError(stderr_data or "Command timed out") from exc
+    finally:
+        unregister_subprocess(proc)
+
+    check_cancelled()
 
     return {
         "stdout": stdout_data or "",
@@ -1959,9 +2019,9 @@ Rules:
                 summary=final_summary_text,
             )
 
-        except Exception as exc:
-            logger.exception("RunPipeline error: %s", exc)
-            # FIX-A13: attempt to clean up the sandbox if one was created before the crash.
+        except BaseException as exc:
+            logger.exception("RunPipeline error or interrupt: %s", exc)
+            # FIX-A13: attempt to clean up the sandbox if one was created before the crash/stop.
             try:
                 snapshot = self.Graph.get_state(config)
                 orphaned_sandbox = snapshot.values.get("sandbox_path") if snapshot.values else None
@@ -1969,6 +2029,11 @@ Rules:
                     self._cleanup_sandbox(orphaned_sandbox)
             except Exception:
                 pass  # best-effort only; don't mask the original exception
+            
+            # If it's a SystemExit or KeyboardInterrupt, we MUST re-raise it so the thread dies properly
+            if isinstance(exc, (SystemExit, KeyboardInterrupt, InterruptedError)):
+                raise
+
             return PipelineResponse(
                 statusCode=500,
                 status="error",

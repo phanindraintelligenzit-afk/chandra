@@ -65,7 +65,7 @@ def main():
             logger.info(f"Deleting sandbox folder: {folder_path}")
             import shutil
             try:
-                shutil.rmtree(folder_path)
+                shutil.rmtree(folder_path, ignore_errors=True)
                 logger.info("Sandbox folder deleted successfully.")
             except Exception as e:
                 logger.error(f"Failed to delete sandbox folder: {e}")

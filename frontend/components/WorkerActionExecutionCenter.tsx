@@ -3,7 +3,7 @@
 import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2 } from "lucide-react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
@@ -16,7 +16,7 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   jiraUrl?: string;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped";
   jobId: string;
   threadId: string;
   startedAt: number;
@@ -43,7 +43,9 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
     exhausted: "border-orange-400/40 bg-orange-400/12 text-orange-300",
     destroying: "border-red-500/40 bg-red-500/12 text-red-400",
-    destroyed: "border-gray-500/40 bg-gray-500/12 text-gray-400"
+    destroyed: "border-gray-500/40 bg-gray-500/12 text-gray-400",
+    stopping: "border-red-400/40 bg-red-400/12 text-red-300",
+    stopped: "border-red-400/40 bg-red-400/12 text-red-300"
   };
   const icons: Record<string, JSX.Element> = {
     pending: <Clock size={12} />,
@@ -53,17 +55,19 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     awaiting_input: <Clock size={12} />,
     exhausted: <AlertTriangle size={12} />,
     destroying: <Loader2 size={12} className="animate-spin" />,
-    destroyed: <Trash2 size={12} />
+    destroyed: <Trash2 size={12} />,
+    stopping: <Loader2 size={12} className="animate-spin" />,
+    stopped: <StopCircle size={12} />
   };
 
   const displayLabel =
     status === "awaiting_input"
       ? "AWAITING INPUT"
-      : status === "exhausted"
-      ? "EXHAUSTED"
       : status === "destroying"
       ? "DESTROYING..."
-      : status;
+      : status === "stopping"
+      ? "STOPPING..."
+      : status.toUpperCase();
 
   return (
     <div className={cx("inline-flex items-center gap-1.5 border px-2 py-1 text-[0.6rem] uppercase tracking-[0.18em] rounded", tones[status] || "border-white/20 bg-white/10")}>
@@ -84,6 +88,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
+  const [confirmStopId, setConfirmStopId] = useState<string | null>(null);
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -193,20 +198,27 @@ export const WorkerActionExecutionCenter = forwardRef<
         const jobDone =
           jobStatus.status === "completed" ||
           jobStatus.status === "failed" ||
+          jobStatus.status === "stopped" ||
           jobStatus.status === "not_found";
 
         if (jobDone) {
           stopPolling(actionId);
+          // Clear any pending stop-confirm dialog for this action so it can't get stuck
+          setConfirmStopId((cur) => (cur === actionId ? null : cur));
 
           const result = jobStatus.result as any;
           const statusCode: number = result?.statusCode ?? 0;
 
           let finalStatus: ExecutingAction["status"] = "failed";
-          if (jobStatus.status === "completed") {
+          if (jobStatus.status === "stopped") {
+            finalStatus = "stopped";
+          } else if (jobStatus.status === "completed") {
             if (statusCode === 200 || statusCode === 0) finalStatus = "completed";
             else if (statusCode === 202) finalStatus = "awaiting_input";
             else if (statusCode === 207) finalStatus = "exhausted";
             else finalStatus = "failed";
+          } else if (jobStatus.status === "failed") {
+            finalStatus = "failed";
           }
 
           const errorMsg =
@@ -228,7 +240,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                     jobMessage: jobStatus.message,
                     summary: result?.summary || "",
                     questions: result?.questions || [],
-                    sandboxPath: result?.sandbox_path || ""
+                    sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
                   }
                 : a
             )
@@ -459,7 +471,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
   const executedCount = executingActions.filter(a => a.status === "completed").length;
-  const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input").length;
+  const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input" || a.status === "stopping").length;
   const failedCount = executingActions.filter(a => a.status === "failed" || a.status === "exhausted").length;
 
   const donutData = [
@@ -574,8 +586,8 @@ export const WorkerActionExecutionCenter = forwardRef<
                           </div>
                         )}
 
-                        {/* Action Buttons */}
-                        {(action.sandboxPath || action.status === "failed" || action.status === "exhausted") && (
+                        {/* Action Buttons — only for terminal states that have buttons */}
+                        {(action.sandboxPath || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.sandboxPath && action.status === "completed" && (
                               <>
@@ -672,7 +684,9 @@ export const WorkerActionExecutionCenter = forwardRef<
                               )}
                               </>
                             )}
-                            {(action.status === "failed" || action.status === "exhausted") && (
+
+
+                            {(action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -702,15 +716,72 @@ export const WorkerActionExecutionCenter = forwardRef<
                           </div>
                         )}
                       </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeAction(action.id);
-                        }}
-                        className="text-muted hover:text-frost transition"
-                      >
-                        <X size={16} />
-                      </button>
+                      { (action.status === "pending" || action.status === "running") ? (
+                        confirmStopId === action.id ? (
+                          <div className="flex items-center gap-1 text-[0.6rem] tracking-[0.1em] border border-red-500/30 bg-red-500/5 px-2 py-0.5 rounded" onClick={(e) => e.stopPropagation()}>
+                            <span className="mr-1 uppercase text-red-400">Stop?</span>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setConfirmStopId(null);
+                                // Stop polling FIRST so no poll can race and overwrite 'stopping'
+                                stopPolling(action.id);
+                                // Show 'stopping' spinner immediately
+                                setExecutingActions(current => 
+                                  current.map(a => a.id === action.id ? { ...a, status: "stopping" } : a)
+                                );
+                                try {
+                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                  await fetch(`${apiUrl}/orchestrate/stop/${action.jobId}`, { method: "POST" });
+                                } catch (error) {
+                                  console.error("Failed to stop action:", error);
+                                } finally {
+                                  // Transition to fully stopped once API call resolves
+                                  setExecutingActions(current => 
+                                    current.map(a => a.id === action.id && a.status === "stopping" ? { ...a, status: "stopped" } : a)
+                                  );
+                                }
+                              }}
+                              className="bg-red-500/20 hover:bg-red-500/40 text-red-400 px-1.5 py-0.5 rounded transition uppercase"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmStopId(null);
+                              }}
+                              className="bg-frost/10 hover:bg-frost/20 text-frost px-1.5 py-0.5 rounded transition uppercase"
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmStopId(action.id);
+                            }}
+                            className="flex items-center gap-1 text-[0.6rem] font-semibold uppercase tracking-[0.1em] text-red-400/80 hover:text-red-400 border border-red-500/20 bg-red-500/5 px-2 py-1 rounded transition"
+                          >
+                            <Octagon size={12} className="mr-1" />
+                            Stop Action
+                          </button>
+                        )
+                      ) : action.status === "stopping" ? (
+                        // While stopping: show nothing — badge already shows STOPPING...
+                        <div className="w-6" />
+                      ) : (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeAction(action.id);
+                          }}
+                          className="text-muted hover:text-frost transition"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -808,7 +879,8 @@ export const WorkerActionExecutionCenter = forwardRef<
 
                       <div className="mt-3 pt-3 border-t border-white/8 text-[0.6rem] text-muted">
                         Started: {new Date(action.startedAt).toLocaleTimeString()}{" "}
-                        {action.completedAt && `• Completed: ${new Date(action.completedAt).toLocaleTimeString()}`}
+                        {action.completedAt && action.status === "stopped" && `• Stopped: ${new Date(action.completedAt).toLocaleTimeString()}`}
+                        {action.completedAt && action.status !== "stopped" && `• Completed: ${new Date(action.completedAt).toLocaleTimeString()}`}
                         {action.jobId && ` • Job: ${action.jobId.slice(0, 8)}…`}
                       </div>
                     </motion.div>

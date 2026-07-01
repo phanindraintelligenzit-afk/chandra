@@ -100,13 +100,14 @@ class JobStatusResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")  # Ignore extra fields from job dict
 
     job_id: str
-    status: str  # "pending", "running", "completed", "failed"
+    status: str  # "pending", "running", "completed", "failed", "stopped"
     progress: int = 0  # 0-100
     message: str = ""
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
+    sandbox_path: Optional[str] = None
 
 class OrchestrateJobResponse(BaseModel):
     job_id: str
@@ -610,6 +611,76 @@ def destroy_sandbox(request: DestroyRequest):
         logger.exception("Failed to destroy sandbox at %s: %s", request.path, e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post("/delete_sandbox")
+def delete_sandbox(request: DestroyRequest):
+    """Delete a sandbox folder without running terraform destroy."""
+    import shutil
+    try:
+        path = Path(request.path)
+        if not path.exists() or not path.is_dir():
+            return JSONResponse(status_code=404, content={"error": f"Directory not found: {request.path}"})
+        logger.info("Deleting sandbox folder: %s", request.path)
+        shutil.rmtree(str(path), ignore_errors=True)
+        logger.info("Sandbox folder deleted: %s", request.path)
+        return JSONResponse(status_code=200, content={"status": "success", "message": f"Deleted {request.path}"})
+    except Exception as e:
+        logger.exception("Failed to delete sandbox: %s", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/orchestrate/stop/{job_id}")
+def stop_orchestration(job_id: str):
+    import time
+    import ctypes
+    import shutil
+    from digitalworker_agents.aws_execution_agent import cancel_thread_execution
+
+    with _job_store_lock:
+        if job_id not in _job_store:
+            return JSONResponse(status_code=404, content={"error": "Job not found"})
+        
+        current_status = _job_store[job_id].get("status")
+        # If the job is already in a terminal state, the thread has been released.
+        # Killing it now would accidentally kill whatever new job is reusing the thread.
+        if current_status in ["completed", "failed", "exhausted", "stopped", "destroyed"]:
+            return JSONResponse(status_code=200, content={"status": "already_finished", "message": f"Job is already {current_status}"})
+            
+        thread_id = _job_store[job_id].get("thread_id")
+        sandbox_path = _job_store[job_id].get("sandbox_path")
+        # Mark stopped FIRST so any exception handler won't overwrite it
+        _job_store[job_id]["status"] = "stopped"
+        _job_store[job_id]["message"] = "Execution stopped by user"
+        _job_store[job_id]["completed_at"] = time.time()
+
+    # Kill active terraform/shell subprocesses
+    if thread_id:
+        cancel_thread_execution(thread_id)
+        # Inject SystemExit into the blocking thread — this interrupts
+        # even a blocking LLM / LangGraph .invoke() call
+        try:
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(thread_id),
+                ctypes.py_object(SystemExit)
+            )
+        except Exception:
+            pass
+
+    # Auto-delete sandbox folder in a background thread so we don't block the response
+    def _delete_sandbox(path: str):
+        try:
+            import time as _time
+            _time.sleep(2)  # Small delay to let the process fully die before deleting
+            if Path(path).exists():
+                shutil.rmtree(path, ignore_errors=True)
+                logger.info("Auto-deleted sandbox folder after stop: %s", path)
+        except Exception as e:
+            logger.warning("Failed to auto-delete sandbox %s: %s", path, e)
+
+    if sandbox_path:
+        _thread_pool.submit(_delete_sandbox, sandbox_path)
+
+    return JSONResponse(status_code=200, content={"status": "success"})
+
 
 
 @app.post("/orchestrate", response_model=OrchestrateJobResponse)
@@ -650,6 +721,7 @@ def orchestrate_action(request: OrchestrateRequest):
             "error": None,
             "started_at": None,
             "completed_at": None,
+            "sandbox_path": request.sandbox_path or None,
         }
     
     # Submit to thread pool
@@ -677,8 +749,9 @@ def get_orchestrate_status(job_id: str):
                 message="Job ID not found",
                 error="No job with this ID exists"
             )
-        job = _job_store[job_id]
-    
+        # Copy inside the lock so we don't race with the task thread modifying the dict
+        job = dict(_job_store[job_id])
+
     return JobStatusResponse(job_id=job_id, **job)
 
 def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
@@ -686,19 +759,25 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
     import time
     start_time = time.time()
     _thread_local.job_id = job_id
-    
+
     try:
         with _job_store_lock:
+            # GUARD: if stop was clicked before this thread even started, bail immediately
+            if _job_store[job_id].get("status") == "stopped":
+                logger.info("ORCHESTRATION TASK [%s] was stopped before it could start", job_id)
+                return
             _job_store[job_id]["status"] = "running"
             _job_store[job_id]["message"] = f"Starting orchestration for {request.action.actionName}"
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 5
-        
+            # Register thread ID NOW so stop endpoint can target this exact thread
+            _job_store[job_id]["thread_id"] = threading.get_ident()
+
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
-        
+
         # Run the actual orchestration
         orchestrator = ExecutionAgents(max_iterations=request.max_iterations)
-        
+
         action_dict = request.action.model_dump()
         if request.jiraUrl:
             action_dict["jiraUrl"] = request.jiraUrl
@@ -711,36 +790,51 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             answers=request.answers,
             command_timeout=request.command_timeout,
         )
-        
-        # Update job with result
-        is_success = response.statusCode == 200
-        
+
+        # Update job with result — only if not already stopped
         with _job_store_lock:
+            if _job_store[job_id].get("status") == "stopped":
+                logger.info("ORCHESTRATION TASK [%s] finished naturally but was already stopped", job_id)
+                return
+            is_success = response.statusCode == 200
             _job_store[job_id]["status"] = "completed"
             _job_store[job_id]["progress"] = 100
             _job_store[job_id]["result"] = response.model_dump()
             _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["sandbox_path"] = response.sandbox_path or _job_store[job_id].get("sandbox_path")
             _job_store[job_id]["message"] = (
                 f"Completed successfully in {_job_store[job_id]['completed_at'] - start_time:.1f}s"
                 if is_success else response.summary or "Orchestration completed with errors"
             )
-        
+
         logger.info(
             "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
             job_id,
             response.statusCode,
-            _job_store[job_id]["completed_at"] - start_time
+            time.time() - start_time
         )
-        
-    except Exception as exc:
+
+    except (InterruptedError, SystemExit):
+        # Both are raised by our stop mechanism — status is already "stopped", do nothing
+        logger.info("ORCHESTRATION TASK [%s] was stopped by the user", job_id)
+    except BaseException as exc:
         logger.exception("ORCHESTRATION TASK [%s] failed with exception", job_id)
         with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+            # Only write failed if not already stopped
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "failed"
+                _job_store[job_id]["error"] = str(exc)
+                _job_store[job_id]["completed_at"] = time.time()
+                _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
     finally:
         _thread_local.job_id = None
+        # Clean up cancellation state so this thread ID can be safely reused by the pool
+        try:
+            from digitalworker_agents.aws_execution_agent import cleanup_thread_state
+            cleanup_thread_state()
+        except Exception:
+            pass
+
 
 
 if __name__ == "__main__":
