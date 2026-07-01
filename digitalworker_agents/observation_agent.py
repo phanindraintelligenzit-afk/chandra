@@ -269,12 +269,19 @@ Produce a structured report following these rules:
 
 2. **observations** — All noteworthy findings from the tool data even when no fix is required.
 
-3. **actions** — Recommended actions driven entirely by the KRAs above, NOT derived from the issues list.
+3. **actions** — Recommended actions MUST be generated EXCLUSIVELY to fulfill the User-defined KRAs provided above. 
+   - Do NOT create actions to fix general issues, alerts, or observations found by the tools unless they directly map to a specific input KRA.
+   - The tool data (observations/alerts) is ONLY provided as context to help you write accurate `steps` for the requested KRA (e.g., finding existing VPCs, regions, or current state). It is NOT to be used to invent unrequested actions or cleanup tasks.
+
    For EVERY KRA provided, reason about its objective type and generate the appropriate actions:
 
-   - **Observability / monitoring KRAs** (e.g. cost anomaly detection, IAM drift, compliance): Use the tool data to assess the current state and recommend what must be done to achieve or maintain the KRA target.
-   - **Operational / task KRAs** (e.g. "deploy code from GitHub to EC2", "migrate database", "set up CI/CD pipeline"): Use any relevant resource data from the tools (instance IDs, VPCs, regions, existing roles, etc.) and produce a concrete action plan with ordered `steps`.
-   - **Any other KRA type**: Apply the same principle — assess what the KRA requires, use available data as context, and recommend actions that directly advance it.
+   - **Observability / monitoring KRAs** (e.g. cost anomaly detection, IAM drift, compliance): Recommend what must be done to achieve or maintain the KRA target.
+   - **Operational / task KRAs** (e.g. "deploy code from GitHub to EC2", "migrate database", "set up CI/CD pipeline"): Produce a concrete action plan with ordered `steps` strictly to achieve the KRA.
+   - **Any other KRA type**: Assess what the KRA requires, and recommend actions that directly advance it.
+
+   **CRITICAL RULES FOR ACTIONS & STEPS:**
+   - **NO HARDCODED IDS OF ANY KIND**: NEVER hallucinate or assume hardcoded infrastructure IDs (e.g. AMIs like `ami-0c55b159cbfafe1f0`, VPC IDs like `vpc-12345`, Subnet IDs, Security Group IDs, Role ARNs, Account IDs, etc.). LLMs often memorize these from training data tutorials — DO NOT DO THIS. **Exception:** If an ID is EXPLICITLY provided in the User-defined KRA input, you MUST use it. Otherwise, if an existing resource ID is required, you MUST instruct the step to use a Terraform `data` source (e.g. `data "aws_ami"`, `data "aws_vpc"`) to fetch it dynamically, or use AWS CLI queries. You may use standard string constants (e.g. `instance_type="t2.micro"`, standard IAM policies, resource names, or tags).
+   - **NO UNREQUESTED DESTRUCTION/CLEANUP**: Do NOT add steps to terminate, delete, or clean up existing resources based on observations (e.g. "Terminate problematic instances") UNLESS the KRA explicitly requests it. Actions must strictly fulfill the KRA and not proactively alter existing infrastructure based on unrelated observations.
 
    For each action:
    - `kraCode`: must exactly match one of the KRA codes listed above.

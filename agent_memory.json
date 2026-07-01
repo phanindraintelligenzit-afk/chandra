@@ -286,6 +286,34 @@
         "The AWS automation successfully executed a Terraform workflow to create an S3 bucket named `kra05-default-bucket-us-east-1-92d2a2bd` in us-east-1, along with a public access block to enforce security "
       ],
       "lesson": "Always specify the region explicitly when creating S3 buckets — default regions can cause unexpected failures, but explicitly using `us-east-1` ensured success."
+    },
+    {
+      "timestamp": "2026-07-01T14:43:36",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: creating Secrets Manager Secret (t2-micro-ssh-key): operation error Secrets Manager: CreateSecret, https response error StatusCode: 400, RequestID: f126ed6c-a4a2-4aa3-b863-8e63a0b4bd1a, api error AccessDeniedException: User: arn:aws:iam::827295473120:user/observation_agent is not authorized to perform: secretsmanager:CreateSecret on resource: t2-micro-ssh-key because no identity-based policy allows the secretsmanager:CreateSecret action"
+      ],
+      "fixes_applied": [
+        "The automation attempted to initialize a Terraform deployment to create a t2",
+        "The automation attempted to deploy a t2",
+        "The AWS automation attempted to deploy a t2"
+      ],
+      "lesson": "Always ensure the IAM user has `secretsmanager:CreateSecret` permissions before deploying Terraform configs that create Secrets Manager secrets."
+    },
+    {
+      "timestamp": "2026-07-01T14:58:52",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 5,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The automation attempted to deploy an EC2 t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always define the AMI using the `aws_ami` data source with filters to ensure region-compatible, up-to-date images — hardcoding AMI IDs causes failures across regions."
     }
   ]
 }
