@@ -632,7 +632,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                                         const response = await fetch(`${apiUrl}/destroy_sandbox`, {
                                           method: "POST",
                                           headers: { "Content-Type": "application/json" },
-                                          body: JSON.stringify({ path: action.sandboxPath!, job_id: action.jobId })
+                                          body: JSON.stringify({ path: action.sandboxPath!, job_id: action.jobId, jiraUrl: action.jiraUrl })
                                         });
                                         if (!response.ok) {
                                           const errData = await response.json().catch(() => ({}));

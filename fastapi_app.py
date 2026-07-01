@@ -573,6 +573,7 @@ def download_sandbox(path: str):
 class DestroyRequest(BaseModel):
     path: str
     job_id: Optional[str] = None
+    jiraUrl: Optional[str] = None
 
 @app.post("/destroy_sandbox")
 def destroy_sandbox(request: DestroyRequest):
@@ -584,10 +585,15 @@ def destroy_sandbox(request: DestroyRequest):
         return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
         
     script_path = os.path.join(os.path.dirname(__file__), "scripts", "destroy_terraform.py")
+    
+    cmd = [sys.executable, script_path, request.path]
+    if request.jiraUrl:
+        cmd.extend(["--jiraUrl", request.jiraUrl])
+        
     try:
         logger.info(f"Starting infrastructure destruction for: {request.path}")
         proc = subprocess.Popen(
-            [sys.executable, script_path, request.path],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

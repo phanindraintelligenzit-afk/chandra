@@ -314,6 +314,34 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always define the AMI using the `aws_ami` data source with filters to ensure region-compatible, up-to-date images — hardcoding AMI IDs causes failures across regions."
+    },
+    {
+      "timestamp": "2026-07-01T15:17:05",
+      "action_name": "Create S3 bucket in us-east-1",
+      "iterations_used": 5,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to initialize Terraform to create an S3 bucket named 'kra05-default-bucket' in us-east-1, but failed during the `terraform init` step",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' using Terraform, successfully initializing the AWS provider and backend",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' using Terraform, successfully initializing the AWS provider but failing during `terraform validate`",
+        "The automation successfully executed a Terraform workflow to create an S3 bucket named ‘kra05-default-bucket’ in us-east-1 as required by KRA-05"
+      ],
+      "lesson": "Always specify the region explicitly when creating S3 buckets — although us-east-1 is default, explicitly setting it avoids ambiguity and ensures consistent behavior across environments."
+    },
+    {
+      "timestamp": "2026-07-01T15:29:58",
+      "action_name": "Create default S3 bucket in us-east-1",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to initialize Terraform to create a default S3 bucket in us-east-1 for KRA-05, but the `terraform init` command failed due to invalid configuration: \"Terraform encountered pro",
+        "The automation attempted to create an S3 bucket in us-east-1 using Terraform, successfully initializing the AWS and random providers and generating a lock file",
+        "The automation successfully executed a Terraform workflow to create a default S3 bucket in us-east-1 to fulfill KRA-05, including proper versioning and public access blocking"
+      ],
+      "lesson": "Always use region-specific defaults and validate bucket uniqueness — S3 bucket names must be globally unique across all AWS accounts."
     }
   ]
 }

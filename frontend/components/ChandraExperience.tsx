@@ -1077,9 +1077,9 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
         {isOpen && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="pt-4">
-      <div className="operational-scroll flex max-h-[600px] gap-3 overflow-x-auto py-1">
+      <div className="operational-scroll grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 max-h-[600px] gap-4 overflow-y-auto py-1 pr-2">
         {isLoading || (!visibleApprovals.length && sync && sync.status !== "success") ? (
-          <div className="w-full flex items-center justify-center">
+          <div className="w-full flex items-center justify-center col-span-full">
             <div className="text-center space-y-3">
               <div className="h-8 w-8 rounded-full border-2 border-signal/30 border-t-signal animate-spin mx-auto" />
               <div className="text-[0.7rem] uppercase tracking-[0.16em] text-muted">
@@ -1089,7 +1089,7 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
           </div>
         ) : visibleApprovals.length ? (
           visibleApprovals.map((approval) => (
-            <div key={approval.id} className="glass flex-shrink-0 w-[340px] border border-white/10 p-3">
+            <div key={approval.id} className="glass w-full border border-white/10 p-4 flex flex-col h-fit">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2 text-[0.65rem] uppercase tracking-[0.14em] text-amber">
@@ -1106,22 +1106,22 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
                       </span>
                     ) : null}
                   </div>
-                  <div className="mt-1 text-sm font-semibold text-frost">{approval.incident}</div>
-                  <div className="mt-1 text-[0.68rem] text-muted">{approval.account} · {approval.severity} · {approval.requested}</div>
+                  <div className="mt-1 text-sm font-semibold text-frost break-words">{approval.incident}</div>
+                  <div className="mt-1 text-[0.68rem] text-muted break-words">{approval.account} · {approval.severity} · {approval.requested}</div>
                   {approval.jiraUrl ? (
                     <div className="mt-2">
-                      <a href={approval.jiraUrl} target="_blank" rel="noopener noreferrer" className="text-[0.65rem] text-signal hover:text-signal/80 underline">
+                      <a href={approval.jiraUrl} target="_blank" rel="noopener noreferrer" className="text-[0.65rem] text-signal hover:text-signal/80 underline break-all">
                         View Jira Issue
                       </a>
                     </div>
                   ) : null}
                 </div>
-                <div className="flex flex-col gap-2 w-[110px]">
+                <div className="flex flex-col gap-2 w-[90px] flex-shrink-0">
                   {approval.state === "Awaiting Review" ? (
                     <>
-                      <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition">Approve</button>
-                      <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition">Reject</button>
-                      <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost hover:bg-white/10 transition">Escalate</button>
+                      <button onClick={() => markApproval(approval.id, "Approved")} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition w-full">Approve</button>
+                      <button onClick={() => markApproval(approval.id, "Rejected")} className="rounded-md border border-signal/30 bg-signal/10 px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition w-full">Reject</button>
+                      <button onClick={() => markApproval(approval.id, "Escalated")} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[0.68rem] uppercase tracking-[0.08em] text-frost hover:bg-white/10 transition w-full">Escalate</button>
                     </>
                   ) : (
                     <div className={`text-[0.6rem] uppercase tracking-[0.16em] text-center py-1 font-semibold ${
@@ -1136,15 +1136,15 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
               <div className="mt-3 grid gap-2 text-[0.68rem] text-frost/75">
                 <div className="flex items-center justify-between border-t border-white/8 pt-2">
                   <span className="text-muted">Lock</span>
-                  <span>{approval.lockState}</span>
+                  <span className="break-words">{approval.lockState}</span>
                 </div>
-                <div className="normal-case leading-5">{approval.note}</div>
+                <div className="normal-case leading-5 break-words">{approval.note}</div>
                 {approval.steps && approval.steps.length ? (
-                  <div className="rounded-2xl border border-white/8 bg-black/30 p-2">
-                    <div className="text-[0.55rem] uppercase tracking-[0.2em] text-amber">REMEDIATION STEPS</div>
-                    <ol className="mt-1 list-decimal space-y-1 pl-4 text-[0.66rem] leading-5 text-frost/85">
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-4 mt-2 overflow-hidden">
+                    <div className="text-[0.6rem] font-medium uppercase tracking-[0.2em] text-amber mb-3">REMEDIATION STEPS</div>
+                    <ol className="list-decimal space-y-3 pl-5 text-xs leading-relaxed text-frost/90">
                       {approval.steps.map((step, index) => (
-                        <li key={`${approval.id}-step-${index}`} className="break-words whitespace-pre-wrap">
+                        <li key={`${approval.id}-step-${index}`} className="break-all whitespace-pre-wrap">
                           {step}
                         </li>
                       ))}

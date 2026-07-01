@@ -18,6 +18,7 @@ def main():
     parser.add_argument("folderPath", help="Path to the folder containing Terraform configuration")
     parser.add_argument("--auto-approve", action="store_true", default=True, help="Automatically approve the destruction (default: True)")
     parser.add_argument("--no-auto-approve", action="store_false", dest="auto_approve", help="Prompt for approval before destroying")
+    parser.add_argument("--jiraUrl", help="Jira URL to update after successful destruction", default=None)
     
     args = parser.parse_args()
     folder_path = Path(args.folderPath).resolve()
@@ -62,6 +63,37 @@ def main():
             sys.exit(proc.returncode)
         else:
             logger.info("Terraform destroy completed successfully.")
+            
+            # Update Jira if requested
+            if args.jiraUrl:
+                try:
+                    sys.path.append(str(Path(__file__).resolve().parent.parent))
+                    from tools.jira_tools.create_jira_ticket import add_summary_comment, update_ticket_status, add_label_to_ticket
+                    
+                    issue_key = args.jiraUrl.rstrip("/").split("/")[-1]
+                    logger.info(f"Updating Jira ticket {issue_key}")
+                    add_summary_comment(issue_key, "*Infrastructure Destroyed*\n\nThe resources provisioned for this task have been successfully destroyed via Terraform.")
+                    
+                    # Add label to indicate destruction
+                    logger.info(f"Adding label 'infrastructure-destroyed' to {issue_key}")
+                    add_label_to_ticket(issue_key, "infrastructure-destroyed")
+                    
+                    # Try multiple final statuses depending on the Jira workflow configuration
+                    statuses_to_try = ["Closed", "Done", "Resolved"]
+                    transitioned = False
+                    
+                    for status in statuses_to_try:
+                        logger.info(f"Attempting to transition Jira ticket {issue_key} to '{status}'")
+                        result = update_ticket_status(issue_key, status)
+                        if result.get("status") == "success":
+                            transitioned = True
+                            break
+                            
+                    if not transitioned:
+                        logger.warning(f"Could not transition {issue_key} to any of {statuses_to_try}. Check your Jira workflow.")
+                except Exception as e:
+                    logger.warning(f"Failed to update Jira ticket {args.jiraUrl}: {e}")
+
             logger.info(f"Deleting sandbox folder: {folder_path}")
             import shutil
             try:

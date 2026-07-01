@@ -193,6 +193,27 @@ def update_ticket_status(issue_key: str, status_name: str) -> dict:
         print(f"Failed to transition {issue_key}: {e}")
         return {"status": "error", "message": str(e)}
 
+def add_label_to_ticket(issue_key: str, label: str) -> dict:
+    """Add a label to an existing Jira ticket."""
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        issue = jira.issue(issue_key)
+        # Ensure we don't duplicate the label
+        if label not in issue.fields.labels:
+            issue.fields.labels.append(label)
+            issue.update(fields={"labels": issue.fields.labels})
+            print(f"Successfully added label '{label}' to {issue_key}")
+        else:
+            print(f"Label '{label}' already exists on {issue_key}")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Failed to add label to {issue_key}: {e}")
+        return {"status": "error", "message": str(e)}
+
 # ==========================================
 # HOW TO USE THE FUNCTION:
 # ==========================================
