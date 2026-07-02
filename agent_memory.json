@@ -1,0 +1,112 @@
+{
+  "runs": [
+    {
+      "timestamp": "2026-07-02T13:29:14",
+      "action_name": "Deploy VPC with Terraform",
+      "iterations_used": 5,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation failed due to a syntax error in the directory creation command",
+        "The AWS VPC deployment failed because `terraform validate` encountered an unsupported argument error",
+        "The Terraform VPC deployment failed immediately because the PowerShell command used incorrect shell syntax—`${env:USERPROFILE}` is not valid PowerShell syntax for environment variable expansion, causi",
+        "The PowerShell command to create a Terraform working directory failed due to a syntax error—specifically a \"Missing argument in parameter list\" caused by an extraneous comma in the `-Path` parameter",
+        "The Terraform automation successfully deployed a complete VPC infrastructure in us-east-1"
+      ],
+      "lesson": "When deploying VPCs with Terraform, always specify explicit availability zones using data sources or variables — relying on defaults can cause subnet conflicts or inconsistent deployments across regions."
+    },
+    {
+      "timestamp": "2026-07-02T13:38:42",
+      "action_name": "Deploy EC2 t2.micro via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Terraform encountered problems during initialisation, including problems"
+      ],
+      "fixes_applied": [
+        "The automation failed immediately when attempting to create the working directory",
+        "The automation attempted to deploy a t2",
+        "The automation failed during directory navigation",
+        "The automation failed to create any actual Terraform configuration files before attempting to plan and deploy",
+        "The automation successfully created a Terraform configuration for a t2"
+      ],
+      "lesson": "Always run `terraform fmt` and `terraform validate` before `terraform init` to catch configuration syntax errors early."
+    },
+    {
+      "timestamp": "2026-07-02T14:10:07",
+      "action_name": "Create Terraform VPC Configuration",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The Terraform formatting step succeeded, but validation failed because the AWS provider was not initialized",
+        "The automation failed at the first step because it could not locate the `terraform` directory",
+        "The Terraform VPC configuration executed successfully across all steps: directory creation, provider initialization with AWS 5"
+      ],
+      "lesson": "Since no errors were encountered, the most important lesson is: **Validate Terraform configurations with `terraform plan` before applying to catch issues early without making changes.**"
+    },
+    {
+      "timestamp": "2026-07-02T14:28:54",
+      "action_name": "Deploy VPC with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform code formatting succeeded for `vpc",
+        "Terraform successfully initialized, validated, and applied the VPC configuration within the 300s timeout, creating all 6 planned resources including the VPC, internet gateway, two subnets, route table"
+      ],
+      "lesson": "No errors encountered—Terraform's declarative approach with proper state management and modular resource definitions ensured reliable, repeatable VPC deployment."
+    },
+    {
+      "timestamp": "2026-07-02T14:37:50",
+      "action_name": "Create S3 Bucket in us-east-1",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation failed to create the S3 bucket due to Terraform configuration issues",
+        "The automation successfully created an S3 bucket in the us-east-1 region using Terraform"
+      ],
+      "lesson": "Always specify the region explicitly in the provider configuration when working with us-east-1, as AWS SDKs and tools may otherwise use cached credentials or default regions that could lead to misconfiguration."
+    },
+    {
+      "timestamp": "2026-07-02T14:51:53",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation failed during Terraform validation because the AWS provider was not initialized",
+        "Terraform initialized successfully and generated a valid execution plan to create a t2",
+        "The Terraform deployment completed successfully with no command timeouts or errors"
+      ],
+      "lesson": "When deploying EC2 instances across multiple regions, always use the aws_ami data source to dynamically fetch the correct AMI ID rather than hardcoding region-specific values."
+    },
+    {
+      "timestamp": "2026-07-02T15:13:23",
+      "action_name": "Deploy VPC with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The Terraform VPC deployment failed because no configuration files were created",
+        "The VPC deployment using Terraform completed successfully with all commands executing within their 300-second timeout"
+      ],
+      "lesson": "Since no errors were encountered, this confirms that using Terraform's declarative configuration with proper variable definitions and state management enables reliable, repeatable VPC deployments across environments."
+    },
+    {
+      "timestamp": "2026-07-02T15:30:43",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The deployment failed because the `terraform` command was executed without a subcommand, resulting in an exit code 127 and the help menu being displayed",
+        "The Terraform deployment failed during initialization",
+        "Terraform initialized successfully and validated the configuration, then generated a plan to create a t2",
+        "The Terraform deployment completed successfully with all phases executing without errors: `terraform init`, `terraform validate`, `terraform plan`, and `terraform apply -auto-approve`"
+      ],
+      "lesson": "Always use aws_ami data source instead of hardcoded AMI IDs — they are region-specific and will fail in other regions."
+    }
+  ]
+}

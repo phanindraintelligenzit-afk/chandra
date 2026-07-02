@@ -79,6 +79,7 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
 
 export type WorkerActionExecutionCenterHandle = {
   execute: (action: any) => void;
+  submitActionAnswers: (actionId: string, answers: string[]) => Promise<void>;
 };
 
 export const WorkerActionExecutionCenter = forwardRef<
@@ -86,10 +87,12 @@ export const WorkerActionExecutionCenter = forwardRef<
   { 
     actions?: any[]; 
     onActionApproved?: (action: any) => void;
-    onActionCompleted?: (kraCode: string | undefined) => void;
-    onActionDestroyed?: (kraCode: string | undefined) => void;
+    onActionCompleted?: (kraCode: string | undefined, actionId: string) => void;
+    onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
+    onAwaitingInput?: (action: ExecutingAction) => void;
+    onInputResolved?: (actionId: string) => void;
   }
->(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed }, ref) {
+>(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onAwaitingInput, onInputResolved }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
@@ -106,9 +109,13 @@ export const WorkerActionExecutionCenter = forwardRef<
   const executingActionsRef = useRef<ExecutingAction[]>(executingActions);
   const onActionCompletedRef = useRef(onActionCompleted);
   const onActionApprovedRef = useRef(onActionApproved);
+  const onAwaitingInputRef = useRef(onAwaitingInput);
+  const onInputResolvedRef = useRef(onInputResolved);
   useEffect(() => { executingActionsRef.current = executingActions; }, [executingActions]);
   useEffect(() => { onActionCompletedRef.current = onActionCompleted; }, [onActionCompleted]);
-  useEffect(() => { onActionApprovedRef.current = onActionApproved; }, [onActionApproved]);
+  useEffect(() => { onActionApprovedRef.current  = onActionApproved;  }, [onActionApproved]);
+  useEffect(() => { onAwaitingInputRef.current = onAwaitingInput; }, [onAwaitingInput]);
+  useEffect(() => { onInputResolvedRef.current = onInputResolved; }, [onInputResolved]);
 
   const formatDuration = (ms: number) => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -119,8 +126,11 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
   useImperativeHandle(ref, () => ({
-    execute: handleExecuteAction
-  }), [executingActions]); // re-bind when state changes so dedup check reads fresh list
+    execute: handleExecuteAction,
+    submitActionAnswers: async (actionId, answers) => {
+      await submitAnswers(actionId, answers);
+    }
+  }));
 
   // Cleanup all intervals on unmount
   useEffect(() => {
@@ -244,10 +254,16 @@ export const WorkerActionExecutionCenter = forwardRef<
           // ✅ Read from ref — always the latest executingActions, not stale closure value
           const currentAction = executingActionsRef.current.find(a => a.id === actionId);
           const kraCodeToFire = currentAction?.kraCode || "";
+          
+          let updatedActionForCallback: ExecutingAction | null = null;
 
           setExecutingActions((current) =>
             current.map((a) => {
               if (a.id === actionId) {
+                  // Fallback for poorly formed backend responses that return 202 but forget the questions array
+                  const fallbackQuestions = finalStatus === "awaiting_input" ? ["Please provide the required input to proceed."] : [];
+                  const extractedQuestions = (result?.questions && result.questions.length > 0) ? result.questions : fallbackQuestions;
+                  
                   const updated: ExecutingAction = {
                     ...a,
                     status: finalStatus,
@@ -258,20 +274,28 @@ export const WorkerActionExecutionCenter = forwardRef<
                     progress: 100,
                     jobMessage: jobStatus.message,
                     summary: result?.summary || "",
-                    questions: result?.questions || [],
+                    questions: extractedQuestions,
                     sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
                   };
+                  updatedActionForCallback = updated;
                   return updated;
               }
               return a;
             })
           );
+          
+          if (finalStatus === "awaiting_input" && updatedActionForCallback && currentAction?.status !== "awaiting_input") {
+            if (onAwaitingInputRef.current) {
+              onAwaitingInputRef.current(updatedActionForCallback);
+            }
+          }
+
           scrollLogsToBottom(actionId);
 
           if (finalStatus === "completed") {
             // ✅ Read callbacks from refs — always latest props, not stale closure
             if (onActionApprovedRef.current && currentAction) onActionApprovedRef.current({ ...currentAction, status: "completed", progress: 100 });
-            if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire);
+            if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire, actionId);
           }
         } else {
           setExecutingActions((current) =>
@@ -297,15 +321,18 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
 
-  const submitAnswers = async (actionId: string) => {
-    const action = executingActions.find((a) => a.id === actionId);
+  const submitAnswers = async (actionId: string, providedAnswers?: string[]) => {
+    // Reading from ref ensures programmatic calls use latest state
+    const action = executingActionsRef.current.find((a) => a.id === actionId);
     if (!action || !action.questions) return;
 
-    // Collect answers from DOM
-    const answers: string[] = [];
-    for (let i = 0; i < action.questions.length; i++) {
-      const el = document.getElementById(`input-${actionId}-${i}`) as HTMLInputElement;
-      answers.push(el?.value || "");
+    // Collect answers from DOM if not provided programmatically
+    const answers: string[] = providedAnswers || [];
+    if (!providedAnswers) {
+      for (let i = 0; i < action.questions.length; i++) {
+        const el = document.getElementById(`input-${actionId}-${i}`) as HTMLInputElement;
+        answers.push(el?.value || "");
+      }
     }
 
     // Reset status to running and clear completedAt
@@ -355,6 +382,11 @@ export const WorkerActionExecutionCenter = forwardRef<
       );
 
       startPolling(actionId, jobId, Date.now(), action.jiraKey);
+      
+      // Notify parent that input is resolved
+      if (onInputResolvedRef.current) {
+        onInputResolvedRef.current(actionId);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setExecutingActions((current) =>
@@ -665,7 +697,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                                         setExecutingActions(current => 
                                           current.map(a => a.id === action.id ? { ...a, status: "destroyed" } : a)
                                         );
-                                        if (onActionDestroyed) onActionDestroyed(action.kraCode);
+                                        if (onActionDestroyed) onActionDestroyed(action.kraCode, action.id);
                                       } catch (error) {
                                         console.error(error);
                                         alert("Error occurred while destroying infrastructure.");

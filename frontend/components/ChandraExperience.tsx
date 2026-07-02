@@ -735,35 +735,23 @@ function CircularProgress({ percent, color, animate: shouldAnimate = false }: { 
 
 function KRAMetricsReview({
   activeKras,
-  liveEvaluations,
-  locallyCompletedKras
+  liveEvaluations
 }: {
   activeKras: { code: string; name: string }[];
   liveEvaluations?: LiveKraEvaluation[];
-  locallyCompletedKras?: Set<string>;
 }) {
   // Derive scores deterministically from backend status
   const derivedKRAs = activeKras.map(kra => {
-    const backendData = liveEvaluations?.find(e => e.code === kra.code || e.name.includes(kra.name.split(" ")[0]));
+    const backendData = liveEvaluations?.find(e => {
+      const codeE = e.code.toUpperCase().replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
+      const codeK = kra.code.toUpperCase().replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
+      return codeE === codeK;
+    });
     let status = backendData?.status?.toUpperCase() || "UNKNOWN";
     let score = backendData?.completedPercentage ?? 0;
 
-    // Normalize KRA code to canonical form so "KRA.05", "KRA-05", "KRA-5", "kra.5"
-    // all match each other. Steps: uppercase → replace separator (dot or dash) → strip leading zeros
-    const normalizeKraCode = (c: string) =>
-      c.toUpperCase()                      // "kra.05" → "KRA.05"
-       .replace(/^KRA[.\-_]?0*/, "KRA-"); // strip prefix + separator + leading zeros → "KRA-5"
-    const isLocallyComplete = locallyCompletedKras != null && (
-      locallyCompletedKras.has(kra.code) ||
-      Array.from(locallyCompletedKras).some(
-        k => k && normalizeKraCode(k) === normalizeKraCode(kra.code)
-      )
-    );
-
-    if (isLocallyComplete) {
-      status = "HEALTHY";
-      score = 100;
-    }
+    const isLocallyActioned = backendData?.note === "Score mathematically adjusted based on live remediation progress.";
+    const isFullyComplete = score === 100 && isLocallyActioned;
 
     let color = "#ffffff70";
     if (status.includes("GREEN") || status.includes("HEALTHY") || status.includes("STABLE")) {
@@ -780,7 +768,8 @@ function KRAMetricsReview({
       score,
       color,
       statusDisplay: status,
-      isLocallyComplete
+      isLocallyActioned,
+      isFullyComplete
     };
   });
 
@@ -801,7 +790,7 @@ function KRAMetricsReview({
                 <motion.div
                   key={kra.code}
                   layout
-                  animate={kra.isLocallyComplete ? {
+                  animate={kra.isLocallyActioned ? {
                     boxShadow: ["0 0 0px #4ade8000", "0 0 18px #4ade8066", "0 0 8px #4ade8033"]
                   } : { boxShadow: "0 0 0px #4ade8000" }}
                   transition={{ duration: 0.6, ease: "easeOut" }}
@@ -814,12 +803,12 @@ function KRAMetricsReview({
                     tone={kra.color === "#4ade80" ? "text-emerald-300" : kra.color === "#ffb800" ? "text-amber" : kra.color === "#ff3b3b" ? "text-signal" : "text-frost"}
                   >
                     <div className="flex gap-4 p-2 bg-black/20 rounded">
-                      <CircularProgress percent={kra.score} color={kra.color} animate={kra.isLocallyComplete} />
+                      <CircularProgress percent={kra.score} color={kra.color} animate={kra.isLocallyActioned} />
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
                           <div className="text-[0.6rem] uppercase tracking-widest text-muted">Status: <span style={{ color: kra.color }}>{kra.statusDisplay}</span></div>
                           <AnimatePresence>
-                            {kra.isLocallyComplete && (
+                            {kra.isFullyComplete && (
                               <motion.div
                                 initial={{ opacity: 0, scale: 0.7, x: -6 }}
                                 animate={{ opacity: 1, scale: 1, x: 0 }}
@@ -833,16 +822,18 @@ function KRAMetricsReview({
                             )}
                           </AnimatePresence>
                         </div>
-                        {kra.isLocallyComplete ? (
-                          <div className="text-xs text-emerald-300/80 mt-1 font-medium">
-                            ✓ Action executed successfully via Worker Action Execution Center.
-                          </div>
-                        ) : kra.backendData?.achievement ? (
-                          <BulletSummary text={kra.backendData.achievement} />
+                        {kra.backendData?.achievement ? (
+                          kra.isFullyComplete ? (
+                            <div className="text-xs text-emerald-300/80 mt-1 font-medium">
+                              ✓ {kra.backendData.achievement}
+                            </div>
+                          ) : (
+                            <BulletSummary text={kra.backendData.achievement} />
+                          )
                         ) : (
                           <div className="text-xs text-muted mt-2">No direct achievement logged for this capability. Evaluated automatically.</div>
                         )}
-                        {!kra.isLocallyComplete && kra.backendData?.note && (
+                        {kra.backendData?.note && (
                           <div className="text-xs text-frost/70 mt-2 italic">{kra.backendData.note}</div>
                         )}
                       </div>
@@ -1339,8 +1330,19 @@ function AuditLogs({ rows }: { rows?: AuditRow[] }) {
   );
 }
 
-function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; unread: number }) {
+function OperationsCopilot({ 
+  latestEvent, 
+  unread,
+  pendingHitlRequests = [],
+  onSubmitHitl
+}: { 
+  latestEvent?: OpsEvent; 
+  unread: number;
+  pendingHitlRequests?: {actionId: string, questions: string[]}[];
+  onSubmitHitl?: (actionId: string, answers: string[]) => void;
+}) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (pendingHitlRequests.length > 0) setOpen(true); }, [pendingHitlRequests.length]);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `session-${Math.random().toString(36).slice(2, 10)}`);
@@ -1364,6 +1366,23 @@ function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; un
   async function submit(value = prompt) {
     const command = value.trim();
     if (!command || loading) return;
+
+    if (pendingHitlRequests.length > 0 && onSubmitHitl) {
+      const activeRequest = pendingHitlRequests[0];
+      setMessages((current) => [
+        ...current,
+        {
+          role: "supervisor",
+          text: command,
+          meta: `hitl response: ${activeRequest.actionId.split("-")[0]}-${activeRequest.actionId.split("-")[1]}`
+        }
+      ]);
+      setPrompt("");
+      const answers = activeRequest.questions.map(() => command);
+      onSubmitHitl(activeRequest.actionId, answers);
+      return;
+    }
+
     const eventContext = latestEvent
       ? `${latestEvent.incident} / ${latestEvent.service} / ${latestEvent.account} / ${latestEvent.status}`
       : "No active live incident context";
@@ -1412,6 +1431,13 @@ function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; un
                 <X size={15} />
               </button>
             </div>
+            {pendingHitlRequests.length > 0 && (
+              <div className="border-b border-blue-400/20 bg-blue-400/10 px-3 py-2">
+                <div className="flex items-center gap-1.5 text-[0.55rem] uppercase tracking-[0.18em] text-blue-300 font-semibold pulse-core">
+                  <AlertTriangle size={11} /> {pendingHitlRequests.length} ACTION{pendingHitlRequests.length > 1 ? "S" : ""} AWAITING INPUT
+                </div>
+              </div>
+            )}
             <div className="border-b border-white/8 bg-signal/[0.06] px-3 py-2">
               <div className="mb-1 flex items-center gap-1.5 text-[0.55rem] uppercase tracking-[0.18em] text-signal">
                 <AlertTriangle size={11} /> {alerts.length} approval-aware alerts
@@ -1450,6 +1476,18 @@ function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; un
                   Querying live operational assistant...
                 </div>
               ) : null}
+              {pendingHitlRequests.map((req, idx) => (
+                <div key={`hitl-${req.actionId}-${idx}`} className="border border-blue-400/30 bg-blue-400/10 p-2 text-[0.7rem] text-frost/82">
+                  <div className="mb-1 text-[0.55rem] uppercase tracking-[0.18em] text-blue-300">
+                    Agent Needs Input ({req.actionId.split("-")[0]}-{req.actionId.split("-")[1]})
+                  </div>
+                  <div className="space-y-1 mt-2 font-medium">
+                    {req.questions.map((q, i) => (
+                      <p key={i}>{q}</p>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
             <div className="border-t border-white/10 p-3">
               <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1465,7 +1503,7 @@ function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; un
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   disabled={loading}
-                  placeholder="Ask about approvals, risk, or remediation state"
+                  placeholder={pendingHitlRequests.length > 0 ? "Provide your answer to the agent here..." : "Ask about approvals, risk, or remediation state"}
                   className="min-w-0 flex-1 bg-transparent text-[0.7rem] text-frost outline-none placeholder:text-muted"
                 />
                 <button aria-label="Send" disabled={loading} className="text-signal hover:text-frost disabled:opacity-45"><Send size={13} /></button>
@@ -1481,10 +1519,10 @@ function OperationsCopilot({ latestEvent, unread }: { latestEvent?: OpsEvent; un
         >
           <Sparkles size={13} className="text-signal" />
           Ops Copilot
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 pulse-core" />
-          {unread > 0 ? (
-            <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border border-signal bg-signal/90 px-1 text-[0.55rem] font-semibold text-frost">
-              {unread}
+          <span className={`h-1.5 w-1.5 rounded-full pulse-core ${pendingHitlRequests.length > 0 ? "bg-blue-400" : "bg-emerald-300"}`} />
+          {unread > 0 || pendingHitlRequests.length > 0 ? (
+            <span className={`absolute -right-1.5 -top-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border px-1 text-[0.55rem] font-semibold text-frost ${pendingHitlRequests.length > 0 ? "bg-blue-500/90 border-blue-400" : "bg-signal/90 border-signal"}`}>
+              {pendingHitlRequests.length > 0 ? pendingHitlRequests.length : unread}
             </span>
           ) : null}
         </button>
@@ -2495,6 +2533,7 @@ export function ChandraExperience() {
   // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
   // without duplicating state or the job-polling logic
   const workerRef = useRef<WorkerActionExecutionCenterHandle>(null);
+  const [pendingHitlRequests, setPendingHitlRequests] = useState<{actionId: string, questions: string[]}[]>([]);
 
   const handleExecuteAction = useCallback((action: any) => {
     workerRef.current?.execute(action);
@@ -2683,30 +2722,91 @@ export function ChandraExperience() {
     () => (observations?.actions ? deriveApprovals(observations.actions) : []),
     [observations]
   );
-  const [locallyCompletedKras, setLocallyCompletedKras] = useState<Set<string>>(new Set());
+  const [locallyCompletedActions, setLocallyCompletedActions] = useState<Map<string, string>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("chandra_completed_actions");
+        if (stored) return new Map(JSON.parse(stored));
+      } catch (e) {
+        console.warn("Failed to load completed actions from local storage", e);
+      }
+    }
+    return new Map();
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("chandra_completed_actions", JSON.stringify(Array.from(locallyCompletedActions.entries())));
+      } catch (e) {
+        console.warn("Failed to save completed actions to local storage", e);
+      }
+    }
+  }, [locallyCompletedActions]);
+
+  const maxActionsPerKraRef = useRef<Map<string, number>>(new Map());
 
   const liveKraEvaluations = useMemo(
     () => {
       const base = observations?.kra_status ? deriveKraEvaluations(observations.kra_status, customKras) : [];
       return base.map(evalData => {
-        // Normalize evalData.code to canonical "KRA-05" form before checking the Set,
-        // because the Set stores normalized codes but backend may send "KRA.05" etc.
         const normalizedCode = evalData.code
           .toUpperCase()
           .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
-        if (locallyCompletedKras.has(normalizedCode)) {
+        
+        const currentActionsForKra = observations?.actions?.filter(a => {
+          const aCode = (a.kraCode || a.kra_code || "").toUpperCase().replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
+          return aCode === normalizedCode;
+        }).length || 0;
+        
+        let totalActionsForKra = currentActionsForKra;
+        if (maxActionsPerKraRef.current) {
+          const knownMax = maxActionsPerKraRef.current.get(normalizedCode) || 0;
+          if (currentActionsForKra > knownMax) {
+            maxActionsPerKraRef.current.set(normalizedCode, currentActionsForKra);
+            totalActionsForKra = currentActionsForKra;
+          } else {
+            totalActionsForKra = knownMax;
+          }
+        }
+        
+        const completedCount = Array.from(locallyCompletedActions.values()).filter(k => k === normalizedCode).length;
+
+        if (totalActionsForKra > 0 || completedCount > 0) {
+          const effectiveTotal = Math.max(totalActionsForKra, completedCount);
+          
+          const baseline = evalData.completedPercentage === 100 
+            ? Math.max(20, 100 - (effectiveTotal * 20)) 
+            : evalData.completedPercentage;
+            
+          const gap = 100 - baseline;
+          const chunk = gap / effectiveTotal;
+          const newScore = Math.min(100, Math.round(baseline + (chunk * completedCount)));
+          
+          let newStatus = evalData.status;
+          let newAchievement = evalData.achievement;
+          
+          if (completedCount >= effectiveTotal || newScore === 100) {
+            newStatus = "HEALTHY";
+            newAchievement = "All identified operational issues for this capability were remediated successfully.";
+          } else {
+            newStatus = newScore >= 80 ? "HEALTHY" : newScore >= 50 ? "AMBER" : "RED";
+            newAchievement = `Remediated ${completedCount} of ${totalActionsForKra} identified operational issues.`;
+          }
+
           return {
             ...evalData,
-            completedPercentage: 100,
-            status: "HEALTHY",
-            achievement: "Locally executed via Worker Action Execution Center",
-            note: "Live override: Action completed successfully in current session."
+            completedPercentage: newScore,
+            status: newStatus,
+            achievement: newAchievement,
+            note: "Score mathematically adjusted based on live remediation progress.",
+            tone: newStatus === "HEALTHY" ? "text-emerald-300" : newStatus === "AMBER" ? "text-amber" : "text-signal"
           };
         }
         return evalData;
       });
     },
-    [observations, customKras, locallyCompletedKras]
+    [observations, customKras, locallyCompletedActions]
   );
   const costBreakdown = useMemo(() => deriveCostBreakdown(costMetrics ?? null), [costMetrics]);
   const liveCostCards = useMemo<LiveCostCard[]>(() => {
@@ -2775,6 +2875,7 @@ export function ChandraExperience() {
 
 
       <div className="px-5 md:px-10 mb-4 mx-auto max-w-[1480px]">
+
         <OperationalIntelligencePanel
           permissionsCount={permissions.length}
           liveEvents={liveEvents}
@@ -2799,32 +2900,55 @@ export function ChandraExperience() {
 
       <section className="section-shell">
         <div className="section-inner">
-          <WorkerActionExecutionCenter 
-            ref={workerRef} 
-            onActionCompleted={(rawKraCode) => {
-              if (rawKraCode) {
-                // Normalize any separator/padding variant → canonical "KRA-05" form
-                // e.g. "KRA.05", "kra-5", "KRA_5" → "KRA-05"
+          <WorkerActionExecutionCenter
+            ref={workerRef}
+            onAwaitingInput={(action) => {
+              if (action.questions && action.questions.length > 0) {
+                setPendingHitlRequests(prev => {
+                  if (prev.find(r => r.actionId === action.id)) return prev;
+                  return [...prev, { actionId: action.id, questions: action.questions! }];
+                });
+              }
+            }}
+            onInputResolved={(actionId) => {
+              setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));
+            }}
+            onActionCompleted={(rawKraCode, actionId) => {
+              if (rawKraCode && actionId) {
                 const normalized = rawKraCode
                   .toUpperCase()
                   .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
-                setLocallyCompletedKras(prev => {
-                  const next = new Set(prev);
-                  next.add(normalized);
+                setLocallyCompletedActions(prev => {
+                  const next = new Map(prev);
+                  next.set(actionId, normalized);
                   return next;
                 });
               }
             }}
-            onActionDestroyed={(rawKraCode) => {
+            onActionDestroyed={(rawKraCode, actionId) => {
               if (rawKraCode) {
                 const normalized = rawKraCode
                   .toUpperCase()
                   .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
-                setLocallyCompletedKras(prev => {
-                  const next = new Set(prev);
-                  next.delete(normalized);
+                  
+                setLocallyCompletedActions(prev => {
+                  const next = new Map(prev);
+                  if (actionId) next.delete(actionId);
+                  
+                  // When destroying infrastructure, wipe all historical completions for this KRA
+                  // so the score accurately drops back down to the baseline.
+                  for (const [key, val] of Array.from(next.entries())) {
+                    if (val === normalized) {
+                      next.delete(key);
+                    }
+                  }
                   return next;
                 });
+                
+                // Also reset the high-watermark for this KRA
+                if (maxActionsPerKraRef.current) {
+                  maxActionsPerKraRef.current.delete(normalized);
+                }
               }
             }}
           />
@@ -2839,7 +2963,7 @@ export function ChandraExperience() {
         </section>
       ) : null}
 
-      <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} locallyCompletedKras={locallyCompletedKras} />
+      <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
 
       <section className="section-shell">
         <div className="section-inner">
@@ -2859,7 +2983,16 @@ export function ChandraExperience() {
         </div>
       </section>
 
-      <OperationsCopilot latestEvent={events[0]} unread={unread} />
+      <OperationsCopilot 
+        latestEvent={events[0]} 
+        unread={unread}
+        pendingHitlRequests={pendingHitlRequests}
+        onSubmitHitl={(actionId, answers) => {
+          if (workerRef.current) {
+            workerRef.current.submitActionAnswers(actionId, answers);
+          }
+        }}
+      />
     </main>
   );
 }
