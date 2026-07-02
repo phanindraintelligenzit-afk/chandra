@@ -100,6 +100,16 @@ export const WorkerActionExecutionCenter = forwardRef<
   const logsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cachedLogsRef = useRef<BackendLog[]>([]);
 
+  // ── Stable refs so setInterval callbacks always read current values ──────────
+  // setInterval closes over values from the render it was created in; using refs
+  // ensures the interval always sees the latest state/props without being recreated.
+  const executingActionsRef = useRef<ExecutingAction[]>(executingActions);
+  const onActionCompletedRef = useRef(onActionCompleted);
+  const onActionApprovedRef = useRef(onActionApproved);
+  useEffect(() => { executingActionsRef.current = executingActions; }, [executingActions]);
+  useEffect(() => { onActionCompletedRef.current = onActionCompleted; }, [onActionCompleted]);
+  useEffect(() => { onActionApprovedRef.current = onActionApproved; }, [onActionApproved]);
+
   const formatDuration = (ms: number) => {
     const totalSeconds = Math.floor(ms / 1000);
     const hours = Math.floor(totalSeconds / 3600);
@@ -231,7 +241,10 @@ export const WorkerActionExecutionCenter = forwardRef<
             (jobStatus.status === "failed" ? jobStatus.message : "") ||
             (result?.exception ?? "");
 
-          let completedAction: ExecutingAction | undefined;
+          // ✅ Read from ref — always the latest executingActions, not stale closure value
+          const currentAction = executingActionsRef.current.find(a => a.id === actionId);
+          const kraCodeToFire = currentAction?.kraCode || "";
+
           setExecutingActions((current) =>
             current.map((a) => {
               if (a.id === actionId) {
@@ -248,9 +261,6 @@ export const WorkerActionExecutionCenter = forwardRef<
                     questions: result?.questions || [],
                     sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
                   };
-                  if (finalStatus === "completed") {
-                    completedAction = updated;
-                  }
                   return updated;
               }
               return a;
@@ -258,9 +268,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           );
           scrollLogsToBottom(actionId);
 
-          if (finalStatus === "completed" && completedAction) {
-            if (onActionApproved) onActionApproved(completedAction);
-            if (onActionCompleted && completedAction.kraCode) onActionCompleted(completedAction.kraCode);
+          if (finalStatus === "completed") {
+            // ✅ Read callbacks from refs — always latest props, not stale closure
+            if (onActionApprovedRef.current && currentAction) onActionApprovedRef.current({ ...currentAction, status: "completed", progress: 100 });
+            if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire);
           }
         } else {
           setExecutingActions((current) =>

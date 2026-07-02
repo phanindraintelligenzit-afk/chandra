@@ -129,7 +129,7 @@ export function kraCodeToEntry(
 ): { name: string; description: string; isCustom: boolean } {
   const empty = { name: code, description: "", isCustom: false };
   if (!code) return empty;
-  const match = code.match(/KRA-0*(\d+)/i);
+  const match = code.match(/KRA[.\-_]?0*(\d+)/i);
   if (!match) return { ...empty, isCustom: false };
   const seq = parseInt(match[1], 10);
   if (seq >= 1 && seq <= predefinedKraCatalog.length) {

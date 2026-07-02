@@ -698,7 +698,7 @@ function OperationalIntelligencePanel({
   );
 }
 
-function CircularProgress({ percent, color }: { percent: number; color: string }) {
+function CircularProgress({ percent, color, animate: shouldAnimate = false }: { percent: number; color: string; animate?: boolean }) {
   const radius = 24;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percent / 100) * circumference;
@@ -707,10 +707,28 @@ function CircularProgress({ percent, color }: { percent: number; color: string }
     <div className="relative flex items-center justify-center w-16 h-16">
       <svg className="w-full h-full transform -rotate-90" viewBox="0 0 60 60">
         <circle cx="30" cy="30" r={radius} fill="transparent" stroke="#ffffff10" strokeWidth="4" />
-        <circle cx="30" cy="30" r={radius} fill="transparent" stroke={color} strokeWidth="4"
-                strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} strokeLinecap="round" />
+        <motion.circle
+          cx="30" cy="30" r={radius}
+          fill="transparent"
+          stroke={color}
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          initial={{ strokeDashoffset: circumference }}
+          animate={{ strokeDashoffset }}
+          transition={{ duration: shouldAnimate ? 0.8 : 0, ease: "easeOut" }}
+        />
       </svg>
-      <div className="absolute text-xs font-bold" style={{ color }}>{percent}%</div>
+      <motion.div
+        className="absolute text-xs font-bold"
+        style={{ color }}
+        key={percent}
+        initial={{ scale: shouldAnimate ? 1.4 : 1, opacity: shouldAnimate ? 0 : 1 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+      >
+        {percent}%
+      </motion.div>
     </div>
   );
 }
@@ -729,8 +747,20 @@ function KRAMetricsReview({
     const backendData = liveEvaluations?.find(e => e.code === kra.code || e.name.includes(kra.name.split(" ")[0]));
     let status = backendData?.status?.toUpperCase() || "UNKNOWN";
     let score = backendData?.completedPercentage ?? 0;
-    
-    if (locallyCompletedKras?.has(kra.code)) {
+
+    // Normalize KRA code to canonical form so "KRA.05", "KRA-05", "KRA-5", "kra.5"
+    // all match each other. Steps: uppercase → replace separator (dot or dash) → strip leading zeros
+    const normalizeKraCode = (c: string) =>
+      c.toUpperCase()                      // "kra.05" → "KRA.05"
+       .replace(/^KRA[.\-_]?0*/, "KRA-"); // strip prefix + separator + leading zeros → "KRA-5"
+    const isLocallyComplete = locallyCompletedKras != null && (
+      locallyCompletedKras.has(kra.code) ||
+      Array.from(locallyCompletedKras).some(
+        k => k && normalizeKraCode(k) === normalizeKraCode(kra.code)
+      )
+    );
+
+    if (isLocallyComplete) {
       status = "HEALTHY";
       score = 100;
     }
@@ -749,7 +779,8 @@ function KRAMetricsReview({
       backendData,
       score,
       color,
-      statusDisplay: status
+      statusDisplay: status,
+      isLocallyComplete
     };
   });
 
@@ -767,27 +798,57 @@ function KRAMetricsReview({
           <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
             <div className="space-y-3">
               {derivedKRAs.map((kra) => (
-                <TreeGroup 
+                <motion.div
                   key={kra.code}
-                  title={`${kra.code} — ${kra.name} — ${kra.score}%`} 
-                  count={1}
-                  tone={kra.color === "#4ade80" ? "text-emerald-300" : kra.color === "#ffb800" ? "text-amber" : kra.color === "#ff3b3b" ? "text-signal" : "text-frost"}
+                  layout
+                  animate={kra.isLocallyComplete ? {
+                    boxShadow: ["0 0 0px #4ade8000", "0 0 18px #4ade8066", "0 0 8px #4ade8033"]
+                  } : { boxShadow: "0 0 0px #4ade8000" }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
+                  style={{ borderRadius: 8 }}
                 >
-                  <div className="flex gap-4 p-2 bg-black/20 rounded">
-                    <CircularProgress percent={kra.score} color={kra.color} />
-                    <div className="flex-1">
-                      <div className="text-[0.6rem] uppercase tracking-widest text-muted mb-1">Status: <span style={{ color: kra.color }}>{kra.statusDisplay}</span></div>
-                      {kra.backendData?.achievement ? (
-                        <BulletSummary text={kra.backendData.achievement} />
-                      ) : (
-                        <div className="text-xs text-muted mt-2">No direct achievement logged for this capability. Evaluated automatically.</div>
-                      )}
-                      {kra.backendData?.note && (
-                        <div className="text-xs text-frost/70 mt-2 italic">{kra.backendData.note}</div>
-                      )}
+                  <TreeGroup 
+                    key={kra.code}
+                    title={`${kra.code} — ${kra.name} — ${kra.score}%`} 
+                    count={1}
+                    tone={kra.color === "#4ade80" ? "text-emerald-300" : kra.color === "#ffb800" ? "text-amber" : kra.color === "#ff3b3b" ? "text-signal" : "text-frost"}
+                  >
+                    <div className="flex gap-4 p-2 bg-black/20 rounded">
+                      <CircularProgress percent={kra.score} color={kra.color} animate={kra.isLocallyComplete} />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="text-[0.6rem] uppercase tracking-widest text-muted">Status: <span style={{ color: kra.color }}>{kra.statusDisplay}</span></div>
+                          <AnimatePresence>
+                            {kra.isLocallyComplete && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.7, x: -6 }}
+                                animate={{ opacity: 1, scale: 1, x: 0 }}
+                                exit={{ opacity: 0, scale: 0.7 }}
+                                transition={{ duration: 0.3 }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.55rem] font-semibold uppercase tracking-widest bg-emerald-400/15 border border-emerald-400/40 text-emerald-300"
+                              >
+                                <CheckCircle2 size={9} />
+                                Completed
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                        {kra.isLocallyComplete ? (
+                          <div className="text-xs text-emerald-300/80 mt-1 font-medium">
+                            ✓ Action executed successfully via Worker Action Execution Center.
+                          </div>
+                        ) : kra.backendData?.achievement ? (
+                          <BulletSummary text={kra.backendData.achievement} />
+                        ) : (
+                          <div className="text-xs text-muted mt-2">No direct achievement logged for this capability. Evaluated automatically.</div>
+                        )}
+                        {!kra.isLocallyComplete && kra.backendData?.note && (
+                          <div className="text-xs text-frost/70 mt-2 italic">{kra.backendData.note}</div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </TreeGroup>
+                  </TreeGroup>
+                </motion.div>
               ))}
             </div>
 
@@ -2628,7 +2689,12 @@ export function ChandraExperience() {
     () => {
       const base = observations?.kra_status ? deriveKraEvaluations(observations.kra_status, customKras) : [];
       return base.map(evalData => {
-        if (locallyCompletedKras.has(evalData.code)) {
+        // Normalize evalData.code to canonical "KRA-05" form before checking the Set,
+        // because the Set stores normalized codes but backend may send "KRA.05" etc.
+        const normalizedCode = evalData.code
+          .toUpperCase()
+          .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
+        if (locallyCompletedKras.has(normalizedCode)) {
           return {
             ...evalData,
             completedPercentage: 100,
@@ -2735,20 +2801,28 @@ export function ChandraExperience() {
         <div className="section-inner">
           <WorkerActionExecutionCenter 
             ref={workerRef} 
-            onActionCompleted={(kraCode) => {
-              if (kraCode) {
+            onActionCompleted={(rawKraCode) => {
+              if (rawKraCode) {
+                // Normalize any separator/padding variant → canonical "KRA-05" form
+                // e.g. "KRA.05", "kra-5", "KRA_5" → "KRA-05"
+                const normalized = rawKraCode
+                  .toUpperCase()
+                  .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
                 setLocallyCompletedKras(prev => {
                   const next = new Set(prev);
-                  next.add(kraCode);
+                  next.add(normalized);
                   return next;
                 });
               }
             }}
-            onActionDestroyed={(kraCode) => {
-              if (kraCode) {
+            onActionDestroyed={(rawKraCode) => {
+              if (rawKraCode) {
+                const normalized = rawKraCode
+                  .toUpperCase()
+                  .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
                 setLocallyCompletedKras(prev => {
                   const next = new Set(prev);
-                  next.delete(kraCode);
+                  next.delete(normalized);
                   return next;
                 });
               }
