@@ -342,6 +342,130 @@
         "The automation successfully executed a Terraform workflow to create a default S3 bucket in us-east-1 to fulfill KRA-05, including proper versioning and public access blocking"
       ],
       "lesson": "Always use region-specific defaults and validate bucket uniqueness — S3 bucket names must be globally unique across all AWS accounts."
+    },
+    {
+      "timestamp": "2026-07-01T15:55:14",
+      "action_name": "Deploy Production PostgreSQL RDS Instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: creating Secrets Manager Secret (kra-08-prod-pg-master-password): operation error Secrets Manager: CreateSecret, https response error StatusCode: 400, RequestID: 295956b7-ab24-4717-8894-0484d2d3b705, api error AccessDeniedException: User: arn:aws:iam::827295473120:user/observation_agent is not authorized to perform: secretsmanager:CreateSecret on resource: kra-08-prod-pg-master-password because no identity-based policy allows the secretsmanager:CreateSecret action"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a production PostgreSQL RDS instance using Terraform in the default VPC for KRA-08, but the `terraform init` command failed due to invalid configuration, as explicit",
+        "The automation attempted to deploy a production PostgreSQL RDS instance using Terraform, successfully initializing the AWS and random providers and creating a lock file",
+        "The automation attempted to deploy a production PostgreSQL RDS instance using Terraform, successfully initializing the provider plugins (aws v5",
+        "The AWS automation attempted to deploy a PostgreSQL RDS instance named “kra-08-prod-pg” using Terraform, successfully completing `terraform init`, `validate`, and `plan` steps",
+        "The automation attempted to deploy a production PostgreSQL RDS instance using Terraform, successfully initializing, validating, and planning the deployment—with the RDS instance planned as `kra-08-pro"
+      ],
+      "lesson": "Always ensure the IAM user/role has the `secretsmanager:CreateSecret` permission before deploying secrets via Terraform."
+    },
+    {
+      "timestamp": "2026-07-01T16:49:12",
+      "action_name": "Deploy production RDS PostgreSQL instance via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported attribute"
+      ],
+      "fixes_applied": [
+        "The automation ran `terraform init` successfully, installing the required AWS and random provider versions and initializing the backend, but `terraform validate` failed due to an invalid data source: ",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully initializing, validating, and planning the infrastructure, including dynamically referencing the d",
+        "The automation attempted to deploy a production RDS PostgreSQL instance via Terraform, successfully initializing the provider plugins and backend",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully initializing the provider plugins and backend",
+        "The automation attempted to deploy a production RDS PostgreSQL instance via Terraform, successfully initializing the AWS and random providers but failing during `terraform validate`"
+      ],
+      "lesson": "Always reference the correct data source attribute — use `data.aws_security_groups.existing.group_names` instead of `names`, since the AWS security groups data source exports `group_names`, not `names`."
+    },
+    {
+      "timestamp": "2026-07-01T16:54:17",
+      "action_name": "Deploy production RDS PostgreSQL instance via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported argument"
+      ],
+      "fixes_applied": [
+        "The automation ran `terraform init` successfully, installing the required AWS and random provider versions and initializing the backend, but `terraform validate` failed due to an unsupported argument:",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform and successfully completed `terraform init`, `validate`, and `plan` steps, identifying that a new `aws_db_instan",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully initiating, validating, and planning the deployment across all prior stages",
+        "The automation attempted to deploy a production RDS PostgreSQL instance via Terraform, successfully initializing the AWS and random providers but failing during `terraform validate`",
+        "The automation ran `terraform init` successfully, initializing the AWS and random providers with existing versions, but failed during `terraform validate` due to an unsupported argument: `preferred` o"
+      ],
+      "lesson": "Always check the AWS Terraform provider documentation for valid arguments — `preferred` is not a valid argument for `aws_rds_engine_version`; use `most_latest = true` instead."
+    },
+    {
+      "timestamp": "2026-07-01T16:59:08",
+      "action_name": "Deploy production RDS PostgreSQL instance via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported argument"
+      ],
+      "fixes_applied": [
+        "The automation ran `terraform init` successfully, installing the required AWS and Random provider versions and initializing the backend, but failed during `terraform validate` due to an invalid data s",
+        "The automation attempted to deploy a production PostgreSQL RDS instance using Terraform, successfully initializing, validating, and planning the deployment, with Terraform identifying the need to crea",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, but the `terraform init` command failed with the error: \"Terraform encountered problems during initialisation, ",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully completing `terraform init`, `validate`, and `plan` steps",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully running `terraform init` but failing on `terraform validate`"
+      ],
+      "lesson": "Always use `engine` and `version` as separate arguments in `aws_rds_engine_version` data source — `engine_version` is not a valid argument."
+    },
+    {
+      "timestamp": "2026-07-01T17:04:10",
+      "action_name": "Create S3 bucket for KRA-05",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The AWS automation successfully executed a Terraform workflow to create an S3 bucket for KRA-05 in us-east-1, including initialization, validation, planning, and application of resources"
+      ],
+      "lesson": "Always use consistent, region-aware configurations and validate permissions before create operations — the S3 bucket creation succeeded because proper IAM policies and region settings were pre-configured."
+    },
+    {
+      "timestamp": "2026-07-01T17:16:13",
+      "action_name": "Deploy production RDS PostgreSQL instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: no RDS engine versions found: &{DBParameterGroupFamily:<nil> DefaultOnly:<nil> Engine:0xc0028a18b0 EngineVersion:0xc0028a1980 Filters:[] IncludeAll:<nil> ListSupportedCharacterSets:0xc0010c74f0 ListSupportedTimezones:0xc0010c74f1 Marker:<nil> MaxRecords:<nil> noSmithyDocumentSerde:{}}"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully running `terraform init` but failing at `terraform validate` due to an invalid data source",
+        "The automation ran `terraform init` successfully, reusing existing AWS and Random provider versions, but failed during `terraform validate` due to an unsupported argument: `master_password_secret_arn`",
+        "The automation executed `terraform init` and `terraform validate` successfully, then ran `terraform plan`, which failed due to an error: “no RDS engine versions found” when querying the `aws_rds_engin",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully running `terraform init` and `terraform validate`, then failing during `terraform plan`",
+        "The automation ran `terraform init` and `terraform validate` successfully, but failed during `terraform plan` due to the error: `no RDS engine versions found: &{Engine:0xc0028a18b0 EngineVersion:0xc00"
+      ],
+      "lesson": "Always specify a valid, supported PostgreSQL engine version in Terraform — an empty or invalid engine version causes RDS to return \"no engine versions found.\""
+    },
+    {
+      "timestamp": "2026-07-01T17:25:15",
+      "action_name": "Deploy new VPC using Terraform",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The AWS automation successfully deployed a new VPC using Terraform, executing `terraform init`, `validate`, `plan`, and `apply -auto-approve` without errors"
+      ],
+      "lesson": "Always define VPC CIDR blocks and subnet configurations explicitly in Terraform to avoid regional dependency and ensure consistent deployment across environments."
+    },
+    {
+      "timestamp": "2026-07-02T11:18:13",
+      "action_name": "Deploy Production RDS PostgreSQL Instance via Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Unsupported argument"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a production RDS PostgreSQL instance via Terraform by running `terraform init`, but it failed with the error: \"Terraform encountered problems during initialisation, ",
+        "The automation ran `terraform init` successfully, installing the required AWS and Random provider versions and generating a lock file, but failed during `terraform validate` due to an `Unsupported arg",
+        "The automation ran `terraform init`, which succeeded, and then attempted `terraform validate`, which failed due to an `Unsupported attribute` error in `main",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform but failed during the `terraform init` phase",
+        "The automation attempted to deploy a production RDS PostgreSQL instance using Terraform, successfully running `terraform init` but failing on `terraform validate` due to an unsupported argument: `mast"
+      ],
+      "lesson": "Always use `username` instead of `master_username` for AWS RDS PostgreSQL instances in Terraform, as the latter is deprecated and unsupported."
     }
   ]
 }

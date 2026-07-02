@@ -653,6 +653,7 @@ class ExecutionAgents:
         return {"reference_files": reference}
 
     def _analyze_node(self, state: AgentState) -> dict:
+        check_cancelled()
         action = state["action"]
         reference_files = state.get("reference_files") or []
         existing_files = state.get("existing_files") or []
@@ -751,6 +752,7 @@ sources or sensible defaults, do NOT ask the user."""
         }
 
     def _generate_node(self, state: AgentState) -> dict:
+        check_cancelled()
         action = state["action"]
         analysis = state["analysis"]
         clarification = state.get("clarification")
@@ -1119,6 +1121,7 @@ Generate the complete set of files now."""
         return {"folder_contents": folder_contents}
 
     def _plan_node(self, state: AgentState) -> dict:
+        check_cancelled()
         action = state["action"]
         execute_folder = state["sandbox_path"]
         folder_contents = state.get("folder_contents") or ""
@@ -1237,6 +1240,7 @@ Only include commands needed for the actual files present."""
         return True, ""
 
     def _execute_node(self, state: AgentState) -> dict:
+        check_cancelled()
         execute_folder = state["sandbox_path"]
         plan = state["execution_plan"]
         _raw_timeout = state.get("command_timeout")
@@ -1425,6 +1429,7 @@ Only include commands needed for the actual files present."""
         return {"execution_results": results, "success": overall_success}
 
     def _report_node(self, state: AgentState) -> dict:
+        check_cancelled()
         action = state["action"]
         results = state.get("execution_results") or []
         success = state.get("success", False)

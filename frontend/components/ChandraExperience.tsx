@@ -717,16 +717,24 @@ function CircularProgress({ percent, color }: { percent: number; color: string }
 
 function KRAMetricsReview({
   activeKras,
-  liveEvaluations
+  liveEvaluations,
+  locallyCompletedKras
 }: {
   activeKras: { code: string; name: string }[];
   liveEvaluations?: LiveKraEvaluation[];
+  locallyCompletedKras?: Set<string>;
 }) {
   // Derive scores deterministically from backend status
   const derivedKRAs = activeKras.map(kra => {
     const backendData = liveEvaluations?.find(e => e.code === kra.code || e.name.includes(kra.name.split(" ")[0]));
-    const status = backendData?.status?.toUpperCase() || "UNKNOWN";
+    let status = backendData?.status?.toUpperCase() || "UNKNOWN";
+    let score = backendData?.completedPercentage ?? 0;
     
+    if (locallyCompletedKras?.has(kra.code)) {
+      status = "HEALTHY";
+      score = 100;
+    }
+
     let color = "#ffffff70";
     if (status.includes("GREEN") || status.includes("HEALTHY") || status.includes("STABLE")) {
       color = "#4ade80"; // emerald-300
@@ -735,8 +743,6 @@ function KRAMetricsReview({
     } else if (status.includes("RED") || status.includes("CRIT") || status.includes("FAIL")) {
       color = "#ff3b3b"; // signal
     }
-
-    const score = backendData?.completedPercentage ?? 0;
 
     return {
       ...kra,
@@ -2616,9 +2622,25 @@ export function ChandraExperience() {
     () => (observations?.actions ? deriveApprovals(observations.actions) : []),
     [observations]
   );
+  const [locallyCompletedKras, setLocallyCompletedKras] = useState<Set<string>>(new Set());
+
   const liveKraEvaluations = useMemo(
-    () => (observations?.kra_status ? deriveKraEvaluations(observations.kra_status, customKras) : []),
-    [observations, customKras]
+    () => {
+      const base = observations?.kra_status ? deriveKraEvaluations(observations.kra_status, customKras) : [];
+      return base.map(evalData => {
+        if (locallyCompletedKras.has(evalData.code)) {
+          return {
+            ...evalData,
+            completedPercentage: 100,
+            status: "HEALTHY",
+            achievement: "Locally executed via Worker Action Execution Center",
+            note: "Live override: Action completed successfully in current session."
+          };
+        }
+        return evalData;
+      });
+    },
+    [observations, customKras, locallyCompletedKras]
   );
   const costBreakdown = useMemo(() => deriveCostBreakdown(costMetrics ?? null), [costMetrics]);
   const liveCostCards = useMemo<LiveCostCard[]>(() => {
@@ -2711,7 +2733,27 @@ export function ChandraExperience() {
 
       <section className="section-shell">
         <div className="section-inner">
-          <WorkerActionExecutionCenter ref={workerRef} />
+          <WorkerActionExecutionCenter 
+            ref={workerRef} 
+            onActionCompleted={(kraCode) => {
+              if (kraCode) {
+                setLocallyCompletedKras(prev => {
+                  const next = new Set(prev);
+                  next.add(kraCode);
+                  return next;
+                });
+              }
+            }}
+            onActionDestroyed={(kraCode) => {
+              if (kraCode) {
+                setLocallyCompletedKras(prev => {
+                  const next = new Set(prev);
+                  next.delete(kraCode);
+                  return next;
+                });
+              }
+            }}
+          />
         </div>
       </section>
 
@@ -2723,7 +2765,7 @@ export function ChandraExperience() {
         </section>
       ) : null}
 
-      <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
+      <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} locallyCompletedKras={locallyCompletedKras} />
 
       <section className="section-shell">
         <div className="section-inner">

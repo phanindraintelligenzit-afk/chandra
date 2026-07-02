@@ -83,8 +83,13 @@ export type WorkerActionExecutionCenterHandle = {
 
 export const WorkerActionExecutionCenter = forwardRef<
   WorkerActionExecutionCenterHandle,
-  { actions?: any[]; onActionApproved?: (action: any) => void }
->(function WorkerActionExecutionCenter({ onActionApproved }, ref) {
+  { 
+    actions?: any[]; 
+    onActionApproved?: (action: any) => void;
+    onActionCompleted?: (kraCode: string | undefined) => void;
+    onActionDestroyed?: (kraCode: string | undefined) => void;
+  }
+>(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
@@ -226,10 +231,11 @@ export const WorkerActionExecutionCenter = forwardRef<
             (jobStatus.status === "failed" ? jobStatus.message : "") ||
             (result?.exception ?? "");
 
+          let completedAction: ExecutingAction | undefined;
           setExecutingActions((current) =>
-            current.map((a) =>
-              a.id === actionId
-                ? {
+            current.map((a) => {
+              if (a.id === actionId) {
+                  const updated: ExecutingAction = {
                     ...a,
                     status: finalStatus,
                     threadId: result?.thread_id || "",
@@ -241,18 +247,20 @@ export const WorkerActionExecutionCenter = forwardRef<
                     summary: result?.summary || "",
                     questions: result?.questions || [],
                     sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
+                  };
+                  if (finalStatus === "completed") {
+                    completedAction = updated;
                   }
-                : a
-            )
+                  return updated;
+              }
+              return a;
+            })
           );
           scrollLogsToBottom(actionId);
 
-          if (finalStatus === "completed" && onActionApproved) {
-            setExecutingActions((current) => {
-              const found = current.find((a) => a.id === actionId);
-              if (found) onActionApproved(found);
-              return current;
-            });
+          if (finalStatus === "completed" && completedAction) {
+            if (onActionApproved) onActionApproved(completedAction);
+            if (onActionCompleted && completedAction.kraCode) onActionCompleted(completedAction.kraCode);
           }
         } else {
           setExecutingActions((current) =>
@@ -646,6 +654,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                                         setExecutingActions(current => 
                                           current.map(a => a.id === action.id ? { ...a, status: "destroyed" } : a)
                                         );
+                                        if (onActionDestroyed) onActionDestroyed(action.kraCode);
                                       } catch (error) {
                                         console.error(error);
                                         alert("Error occurred while destroying infrastructure.");

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Query
@@ -661,15 +662,6 @@ def stop_orchestration(job_id: str):
     # Kill active terraform/shell subprocesses
     if thread_id:
         cancel_thread_execution(thread_id)
-        # Inject SystemExit into the blocking thread — this interrupts
-        # even a blocking LLM / LangGraph .invoke() call
-        try:
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(thread_id),
-                ctypes.py_object(SystemExit)
-            )
-        except Exception:
-            pass
 
     # Auto-delete sandbox folder in a background thread so we don't block the response
     def _delete_sandbox(path: str):
