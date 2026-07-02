@@ -67,10 +67,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ExecutionAgents")
 
-MAX_ITERATIONS = 5
-DEFAULT_COMMAND_TIMEOUT = 300  # seconds
+MAX_ITERATIONS = 6
+DEFAULT_COMMAND_TIMEOUT = 500  # seconds
 # Trigger mid-run HITL when the same error class repeats this many times with no fix
-STUCK_THRESHOLD = 3
+STUCK_THRESHOLD = 2
 
 
 # ── Persistent cross-run memory ───────────────────────────────────────────────

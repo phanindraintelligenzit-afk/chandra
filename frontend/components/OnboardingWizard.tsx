@@ -158,6 +158,7 @@ export default function OnboardingWizard() {
     toggleKRA,
     addCustomKRA,
     removeCustomKRA,
+    toggleCustomKRA,
     completeOnboarding,
     setObservations,
     setCostMetrics
@@ -259,12 +260,13 @@ export default function OnboardingWizard() {
     setObservationsErrorMessage("");
     setObservations(null, null);
 
-    const kraPayloadEntries = buildKraPayload(predefinedKras, customKras);
+    const activeCustomKras = customKras.filter(k => k.selected !== false);
+    const kraPayloadEntries = buildKraPayload(predefinedKras, activeCustomKras);
     const payload = {
       region: "us-east-1",
       kras: kraPayloadEntries,
       selected_kras: selectedKRAs,
-      custom_kras: customKras.map((k) => ({ name: k.name, description: k.description })),
+      custom_kras: activeCustomKras.map((k) => ({ name: k.name, description: k.description })),
       maturity_level: maturity,
       deployment: {
         role,
@@ -559,21 +561,25 @@ export default function OnboardingWizard() {
                     {customKras.map((kra: CustomKra) => (
                       <div
                         key={kra.name}
-                        className="flex items-start gap-4 rounded-2xl border border-emerald-300/25 bg-emerald-300/[0.04] p-4 transition hover:border-emerald-300/40"
+                        className={`flex items-start gap-4 rounded-2xl border p-4 transition ${
+                          kra.selected !== false 
+                            ? "border-emerald-300/25 bg-emerald-300/[0.04] hover:border-emerald-300/40"
+                            : "border-white/5 bg-white/[0.02] opacity-50 hover:opacity-80"
+                        }`}
                       >
                         <input
                           type="checkbox"
-                          checked
-                          readOnly
-                          aria-label={`Custom KRA ${kra.name} is always selected`}
-                          className="mt-1 h-4 w-4 shrink-0 accent-emerald-300"
+                          checked={kra.selected !== false}
+                          onChange={() => toggleCustomKRA(kra.name)}
+                          aria-label={`Toggle Custom KRA ${kra.name}`}
+                          className="mt-1 h-4 w-4 shrink-0 accent-emerald-300 cursor-pointer"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="font-semibold uppercase tracking-[0.04em] text-frost break-words">
+                          <div className={`font-semibold uppercase tracking-[0.04em] break-words ${kra.selected !== false ? "text-frost" : "text-muted"}`}>
                             {kra.name}
                           </div>
                           {kra.description ? (
-                            <div className="mt-1.5 text-sm text-frost/75 break-words">
+                            <div className={`mt-1.5 text-sm break-words ${kra.selected !== false ? "text-frost/75" : "text-muted/70"}`}>
                               {kra.description}
                             </div>
                           ) : (

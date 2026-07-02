@@ -1338,12 +1338,13 @@ function OperationsCopilot({
 }: { 
   latestEvent?: OpsEvent; 
   unread: number;
-  pendingHitlRequests?: {actionId: string, questions: string[]}[];
+  pendingHitlRequests?: {actionId: string, actionName: string, kraCode: string, questions: string[]}[];
   onSubmitHitl?: (actionId: string, answers: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (pendingHitlRequests.length > 0) setOpen(true); }, [pendingHitlRequests.length]);
   const [prompt, setPrompt] = useState("");
+  const [hitlAnswers, setHitlAnswers] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `session-${Math.random().toString(36).slice(2, 10)}`);
   const [messages, setMessages] = useState<CopilotChatMessage[]>([
@@ -1477,14 +1478,47 @@ function OperationsCopilot({
                 </div>
               ) : null}
               {pendingHitlRequests.map((req, idx) => (
-                <div key={`hitl-${req.actionId}-${idx}`} className="border border-blue-400/30 bg-blue-400/10 p-2 text-[0.7rem] text-frost/82">
-                  <div className="mb-1 text-[0.55rem] uppercase tracking-[0.18em] text-blue-300">
-                    Agent Needs Input ({req.actionId.split("-")[0]}-{req.actionId.split("-")[1]})
+                <div key={`hitl-${req.actionId}-${idx}`} className="border border-blue-400/30 bg-blue-400/10 p-3 text-[0.7rem] text-frost/82 rounded-lg">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-300 font-semibold">
+                      Agent Needs Input
+                    </div>
+                    <div className="text-[0.55rem] uppercase tracking-[0.16em] text-muted">
+                      {req.kraCode}
+                    </div>
                   </div>
-                  <div className="space-y-1 mt-2 font-medium">
+                  <div className="text-[0.65rem] font-semibold text-frost mb-2">{req.actionName}</div>
+                  
+                  <div className="space-y-3 mt-3">
                     {req.questions.map((q, i) => (
-                      <p key={i}>{q}</p>
+                      <div key={i}>
+                        <div className="text-[0.65rem] text-frost mb-1.5">{q}</div>
+                        <input
+                          type="text"
+                          placeholder="Type your answer here..."
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-blue-400/50 transition"
+                          value={hitlAnswers[`${req.actionId}-${i}`] || ""}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setHitlAnswers(prev => ({
+                              ...prev,
+                              [`${req.actionId}-${i}`]: val
+                            }));
+                          }}
+                        />
+                      </div>
                     ))}
+                    <button
+                      onClick={() => {
+                        if (onSubmitHitl) {
+                          const answers = req.questions.map((_, i) => hitlAnswers[`${req.actionId}-${i}`] || "");
+                          onSubmitHitl(req.actionId, answers);
+                        }
+                      }}
+                      className="mt-2 w-full rounded border border-blue-400/40 bg-blue-400/20 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-blue-200 hover:bg-blue-400/30 transition"
+                    >
+                      Submit Responses
+                    </button>
                   </div>
                 </div>
               ))}
@@ -2533,7 +2567,6 @@ export function ChandraExperience() {
   // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
   // without duplicating state or the job-polling logic
   const workerRef = useRef<WorkerActionExecutionCenterHandle>(null);
-  const [pendingHitlRequests, setPendingHitlRequests] = useState<{actionId: string, questions: string[]}[]>([]);
 
   const handleExecuteAction = useCallback((action: any) => {
     workerRef.current?.execute(action);
@@ -2551,6 +2584,14 @@ export function ChandraExperience() {
   const [costMetricsState, setCostMetricsState] = useState<CostMetricsOutput | null>(null);
   const [cwMetrics, setCwMetrics] = useState<CloudWatchMetricsOutput | null>(null);
   const [detectorIssues, setDetectorIssues] = useState<DetectorIssuesOutput | null>(null);
+
+  type HitlRequest = {
+    actionId: string;
+    actionName: string;
+    kraCode: string;
+    questions: string[];
+  };
+  const [pendingHitlRequests, setPendingHitlRequests] = useState<HitlRequest[]>([]);
 
   // Fetch CloudWatch metrics on mount — independent AbortController so it is not
   // cancelled by unrelated cost-metrics or detector signal teardown.
@@ -2618,12 +2659,14 @@ export function ChandraExperience() {
     return () => controller.abort();
   }, [costDays]);
 
+  const activeCustomKras = useMemo(() => customKras.filter(k => k.selected !== false), [customKras]);
+
   const observationsPayload = useMemo(
     () => ({
       region: "us-east-1",
-      kras: buildKraPayload(predefinedKras, customKras),
+      kras: buildKraPayload(predefinedKras, activeCustomKras),
       selected_kras: selectedKRAs,
-      custom_kras: customKras,
+      custom_kras: activeCustomKras,
       maturity_level: maturity,
       deployment: {
         role,
@@ -2632,7 +2675,7 @@ export function ChandraExperience() {
         employee_id: employeeId
       }
     }),
-    [agentName, employeeId, role, maturity, permissions, predefinedKras, customKras, selectedKRAs]
+    [agentName, employeeId, role, maturity, permissions, predefinedKras, activeCustomKras, selectedKRAs]
   );
 
   const observationsPayloadRef = useRef(observationsPayload);
@@ -2641,11 +2684,11 @@ export function ChandraExperience() {
   }, [observationsPayload]);
 
   const activeKras = useMemo(() => {
-    return buildKraPayload(predefinedKras, customKras).map(k => ({
+    return buildKraPayload(predefinedKras, activeCustomKras).map(k => ({
       code: k.code,
-      name: kraCodeToName(k.code, customKras)
+      name: kraCodeToName(k.code, activeCustomKras)
     }));
-  }, [predefinedKras, customKras]);
+  }, [predefinedKras, activeCustomKras]);
 
   useEffect(() => {
     if (observationsInitRef.current) return;
@@ -2902,17 +2945,10 @@ export function ChandraExperience() {
         <div className="section-inner">
           <WorkerActionExecutionCenter
             ref={workerRef}
-            onAwaitingInput={(action) => {
-              if (action.questions && action.questions.length > 0) {
-                setPendingHitlRequests(prev => {
-                  if (prev.find(r => r.actionId === action.id)) return prev;
-                  return [...prev, { actionId: action.id, questions: action.questions! }];
-                });
-              }
+            onPendingHitlChange={(pendingRequests) => {
+              setPendingHitlRequests(pendingRequests);
             }}
-            onInputResolved={(actionId) => {
-              setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));
-            }}
+
             onActionCompleted={(rawKraCode, actionId) => {
               if (rawKraCode && actionId) {
                 const normalized = rawKraCode
@@ -2987,9 +3023,12 @@ export function ChandraExperience() {
         latestEvent={events[0]} 
         unread={unread}
         pendingHitlRequests={pendingHitlRequests}
-        onSubmitHitl={(actionId, answers) => {
+        onSubmitHitl={async (actionId, answers) => {
           if (workerRef.current) {
-            workerRef.current.submitActionAnswers(actionId, answers);
+            await workerRef.current.submitActionAnswers(actionId, answers);
+            // The execution center will call onInputResolved once it updates,
+            // but we can also optimistically remove it here for instant feedback.
+            setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));
           }
         }}
       />

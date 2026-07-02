@@ -6,6 +6,7 @@ export type KraDefinition = {
 export type CustomKra = {
   name: string;
   description: string;
+  selected?: boolean;
 };
 
 export type KraOperationalMetric = {

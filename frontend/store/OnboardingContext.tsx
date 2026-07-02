@@ -41,6 +41,7 @@ export type OnboardingState = {
   toggleKRA: (kra: string) => void;
   addCustomKRA: (name: string, description?: string) => void;
   removeCustomKRA: (name: string) => void;
+  toggleCustomKRA: (name: string) => void;
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
   completeOnboarding: () => void;
@@ -75,6 +76,7 @@ const defaultState: OnboardingState = {
   toggleKRA: () => {},
   addCustomKRA: () => {},
   removeCustomKRA: () => {},
+  toggleCustomKRA: () => {},
   setObservations: () => {},
   setCostMetrics: () => {},
   completeOnboarding: () => {},
@@ -228,7 +230,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       if (exists) return current;
       const entry: CustomKra = {
         name: normalizedName,
-        description: normalizedDescription || normalizedName
+        description: normalizedDescription || normalizedName,
+        selected: true
       };
       return [...current, entry];
     });
@@ -236,6 +239,10 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
 
   const removeCustomKRA = useCallback((name: string) => {
     setCustomKras((current) => current.filter((item) => item.name !== name));
+  }, []);
+
+  const toggleCustomKRA = useCallback((name: string) => {
+    setCustomKras((current) => current.map((item) => item.name === name ? { ...item, selected: item.selected === false ? true : false } : item));
   }, []);
 
   const completeOnboarding = useCallback(() => {
@@ -307,6 +314,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       toggleKRA,
       addCustomKRA,
       removeCustomKRA,
+      toggleCustomKRA,
       setObservations,
       setCostMetrics,
       completeOnboarding,
@@ -334,6 +342,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       toggleKRA,
       addCustomKRA,
       removeCustomKRA,
+      toggleCustomKRA,
       setObservations,
       setCostMetrics,
       completeOnboarding,

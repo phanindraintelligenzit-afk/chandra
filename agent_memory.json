@@ -107,6 +107,23 @@
         "The Terraform deployment completed successfully with all phases executing without errors: `terraform init`, `terraform validate`, `terraform plan`, and `terraform apply -auto-approve`"
       ],
       "lesson": "Always use aws_ami data source instead of hardcoded AMI IDs — they are region-specific and will fail in other regions."
+    },
+    {
+      "timestamp": "2026-07-02T16:36:57",
+      "action_name": "Enable Multi-Region CloudTrail",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: creating CloudTrail Trail (security-audit-trail): operation error CloudTrail: CreateTrail, https response error StatusCode: 400, RequestID: 5041d980-4313-430a-a9dc-265c6e9174b5, InsufficientSnsTopicPolicyException: The customer-managed key (CMK) associated with this SNS topic either does not exist or does not allow access to CloudTrail. Edit the key policy to allow access to CloudTrail."
+      ],
+      "fixes_applied": [
+        "The automation began with `terraform init` successfully initializing the AWS and Random providers (hashicorp/aws v5",
+        "The Terraform infrastructure provisioning failed during `terraform apply` due to an IAM permission error when creating the CloudWatch Logs log group",
+        "The automation failed at the initial step when attempting to change to the execution directory, with error \"The system cannot find the path specified",
+        "The automation failed to enable Multi-Region CloudTrail: `terraform init` succeeded, but `terraform validate` failed with an invalid data source error on `aws_cloudwatch_logs_principal` in `main",
+        "The automation successfully initialized Terraform, validated the configuration, and generated a plan to create a multi-region CloudTrail trail named `security-audit-trail` with associated KMS key (`3c"
+      ],
+      "lesson": "Always verify that the SNS topic's KMS key policy grants CloudTrail the `kms:Decrypt` and `kms:GenerateDataKey` permissions before associating it with a multi-region trail."
     }
   ]
 }

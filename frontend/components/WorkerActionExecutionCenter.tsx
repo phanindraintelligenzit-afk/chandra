@@ -89,10 +89,9 @@ export const WorkerActionExecutionCenter = forwardRef<
     onActionApproved?: (action: any) => void;
     onActionCompleted?: (kraCode: string | undefined, actionId: string) => void;
     onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
-    onAwaitingInput?: (action: ExecutingAction) => void;
-    onInputResolved?: (actionId: string) => void;
+    onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[]}[]) => void;
   }
->(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onAwaitingInput, onInputResolved }, ref) {
+>(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
@@ -109,13 +108,23 @@ export const WorkerActionExecutionCenter = forwardRef<
   const executingActionsRef = useRef<ExecutingAction[]>(executingActions);
   const onActionCompletedRef = useRef(onActionCompleted);
   const onActionApprovedRef = useRef(onActionApproved);
-  const onAwaitingInputRef = useRef(onAwaitingInput);
-  const onInputResolvedRef = useRef(onInputResolved);
+  const onPendingHitlChangeRef = useRef(onPendingHitlChange);
   useEffect(() => { executingActionsRef.current = executingActions; }, [executingActions]);
   useEffect(() => { onActionCompletedRef.current = onActionCompleted; }, [onActionCompleted]);
   useEffect(() => { onActionApprovedRef.current  = onActionApproved;  }, [onActionApproved]);
-  useEffect(() => { onAwaitingInputRef.current = onAwaitingInput; }, [onAwaitingInput]);
-  useEffect(() => { onInputResolvedRef.current = onInputResolved; }, [onInputResolved]);
+  useEffect(() => { onPendingHitlChangeRef.current = onPendingHitlChange; }, [onPendingHitlChange]);
+
+  useEffect(() => {
+    if (onPendingHitlChangeRef.current) {
+      const hitlActions = executingActions.filter(a => a.status === "awaiting_input" && a.questions && a.questions.length > 0);
+      onPendingHitlChangeRef.current(hitlActions.map(a => ({
+        actionId: a.id,
+        actionName: a.actionName || "UNKNOWN ACTION",
+        kraCode: a.kraCode || "KRA-XX",
+        questions: a.questions!
+      })));
+    }
+  }, [executingActions]);
 
   const formatDuration = (ms: number) => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -284,12 +293,8 @@ export const WorkerActionExecutionCenter = forwardRef<
             })
           );
           
-          if (finalStatus === "awaiting_input" && updatedActionForCallback && currentAction?.status !== "awaiting_input") {
-            if (onAwaitingInputRef.current) {
-              onAwaitingInputRef.current(updatedActionForCallback);
-            }
-          }
-
+          // Note: HITL state is now synced declaratively via useEffect above
+          
           scrollLogsToBottom(actionId);
 
           if (finalStatus === "completed") {
@@ -382,11 +387,6 @@ export const WorkerActionExecutionCenter = forwardRef<
       );
 
       startPolling(actionId, jobId, Date.now(), action.jiraKey);
-      
-      // Notify parent that input is resolved
-      if (onInputResolvedRef.current) {
-        onInputResolvedRef.current(actionId);
-      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setExecutingActions((current) =>
