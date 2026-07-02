@@ -200,9 +200,8 @@ export default function OnboardingWizard() {
     if (step === 1) return role === "AWS Cloud Engineer";
     if (step === 2) return maturity === "L2";
     if (step === 3) return selectedKRAs.length > 0;
-    if (step === 4) return permissions.length > 0;
     return true;
-  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length, permissions.length]);
+  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length]);
 
   function next() {
     if (step === 0) {
@@ -213,14 +212,14 @@ export default function OnboardingWizard() {
       setAgentName(normalizedName);
       setEmployeeId(employeeIdPreview);
     }
-    if (step === 4) {
+    if (step === 3) {
       if (deploymentStartedRef.current) return;
       deploymentStartedRef.current = true;
-      setStep(5);
+      setStep(4);
       runDeploymentSequence();
       return;
     }
-    setStep((s) => Math.min(s + 1, 5));
+    setStep((s) => Math.min(s + 1, 4));
   }
 
   function prev() {
@@ -641,48 +640,12 @@ export default function OnboardingWizard() {
 
               <div className="mt-6 flex items-center gap-3">
                 <button onClick={prev} className="rounded-2xl border border-white/10 px-4 py-3 text-sm uppercase tracking-[0.14em] text-muted">BACK</button>
-                <button onClick={next} disabled={!canNext} className="ml-auto rounded-2xl bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50">CONTINUE</button>
-              </div>
-            </motion.div>
-          )}
-
-          {step === 4 && (
-            <motion.div key="permissions" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-              <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">GIVE ME PERMISSIONS.</h3>
-              <p className="text-muted mt-2">
-                Configure the operational systems {agentName || normalizedName || "this agent"} can access under governance controls.
-              </p>
-              <div className="mt-6 grid gap-3 md:grid-cols-2">
-                {permissionCatalog.map((permission) => {
-                  const active = permissions.includes(permission.id);
-                  return (
-                    <button
-                      key={permission.id}
-                      type="button"
-                      onClick={() => togglePermission(permission.id)}
-                      className={`flex items-start gap-4 rounded-3xl border p-4 text-left transition hover:-translate-y-0.5 ${
-                        active ? "border-emerald-300/50 bg-emerald-300/10" : "border-white/10 bg-black/30 hover:border-emerald-300/20"
-                      }`}
-                    >
-                      <span className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-full border ${active ? "border-emerald-300/50 bg-emerald-300/15 text-emerald-200" : "border-white/10 bg-black/40 text-muted"}`}>
-                        {active ? <ShieldCheck size={16} /> : <KeyRound size={16} />}
-                      </span>
-                      <span>
-                        <span className="block font-semibold uppercase tracking-[0.04em] text-frost">{permission.label}</span>
-                        <span className="mt-1 block text-sm leading-5 text-frost/65">{permission.desc}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="mt-6 flex items-center gap-3">
-                <button onClick={prev} className="rounded-2xl border border-white/10 px-4 py-3 text-sm uppercase tracking-[0.14em] text-muted">BACK</button>
                 <button onClick={next} disabled={!canNext} className="ml-auto rounded-2xl bg-signal px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-black disabled:opacity-50">DEPLOY DIGITAL EMPLOYEE</button>
               </div>
             </motion.div>
           )}
 
-          {step === 5 && (
+          {step === 4 && (
             <motion.div key="deploy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="mx-auto max-w-xl text-center">
                 <div className="mx-auto flex h-52 w-52 items-center justify-center rounded-full border border-signal/30 bg-black/30 p-3 shadow-[0_0_60px_rgba(255,59,59,0.18)]">
@@ -692,12 +655,12 @@ export default function OnboardingWizard() {
                   >
                     <div className="flex h-36 w-36 flex-col items-center justify-center rounded-full border border-signal/30 bg-black/85">
                       <div className="text-4xl font-semibold text-frost">{progress}%</div>
-                      <div className="mt-1 text-[0.6rem] uppercase tracking-[0.2em] text-signal">DEPLOYING</div>
+                      <div className="mt-1 text-[0.6rem] uppercase tracking-[0.2em] text-signal">STARTING</div>
                     </div>
                   </div>
                 </div>
                 <h3 className="mt-8 text-2xl font-semibold uppercase tracking-[0.02em]">
-                  DEPLOYING {(agentName || localName).toUpperCase()}.
+                  STARTING {(agentName || localName).toUpperCase()} DIGITAL WORKER.
                 </h3>
                 <p className="text-muted mt-2">Provisioning intelligence and establishing governed operational access.</p>
                 <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-signal/30 bg-black/40 px-3 py-1 text-[0.6rem] uppercase tracking-[0.18em] text-signal">
