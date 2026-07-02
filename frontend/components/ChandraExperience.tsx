@@ -1336,13 +1336,16 @@ function OperationsCopilot({
   latestEvent, 
   unread,
   pendingHitlRequests = [],
-  onSubmitHitl
+  onSubmitHitl,
+  agentName
 }: { 
   latestEvent?: OpsEvent; 
   unread: number;
   pendingHitlRequests?: {actionId: string, actionName: string, kraCode: string, questions: string[]}[];
   onSubmitHitl?: (actionId: string, answers: string[]) => void;
+  agentName?: string;
 }) {
+  const displayAgentName = agentName || "Chandra";
   const [open, setOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   useEffect(() => { if (pendingHitlRequests.length > 0) setOpen(true); }, [pendingHitlRequests.length]);
@@ -1365,7 +1368,7 @@ function OperationsCopilot({
   const [sessionId] = useState(() => `session-${Math.random().toString(36).slice(2, 10)}`);
   const [messages, setMessages] = useState<CopilotChatMessage[]>([
     { role: "system", text: "Context synchronized. Latest high-risk incident status available.", meta: "memory: incidents / approvals / audit" },
-    { role: "chandra", text: "Live operational context is ready. Ask about incidents, approvals, cost posture, compliance, or remediation risk.", meta: "live copilot ready" }
+    { role: displayAgentName.toLowerCase(), text: "Live operational context is ready. Ask about incidents, approvals, cost posture, compliance, or remediation risk.", meta: "live copilot ready" }
   ]);
 
   const suggestions = ["/review-pending-approvals", "/summarize-high-risk-incidents", "/draft-approval-email", "/explain-governance"];
@@ -1411,7 +1414,7 @@ function OperationsCopilot({
       setMessages((current) => [
         ...current,
         {
-          role: "chandra",
+          role: displayAgentName.toLowerCase(),
           text: "I could not reach the live copilot endpoint. Operational context is preserved; retry when the backend is reachable.",
           meta: message
         }
@@ -1430,7 +1433,7 @@ function OperationsCopilot({
               <div className="flex items-center gap-2">
                 <Bot size={16} className="text-signal" />
                 <div>
-                  <div className="text-[0.72rem] uppercase tracking-[0.2em] text-frost">Chandra Ops Copilot</div>
+                  <div className="text-[0.72rem] uppercase tracking-[0.2em] text-frost">{displayAgentName} Ops Copilot</div>
                   <div className="text-[0.58rem] uppercase tracking-[0.16em] text-emerald-300">approval-aware workflow</div>
                 </div>
               </div>
@@ -1471,7 +1474,7 @@ function OperationsCopilot({
                 <div className="mb-1 flex items-center gap-1.5 text-[0.55rem] uppercase tracking-[0.18em] text-emerald-300">
                   <MailCheck size={11} /> Supervisor guidance ready
                 </div>
-                <p className="text-frost/82">Chandra will not execute dangerous operations until explicit approval is recorded.</p>
+                <p className="text-frost/82">{displayAgentName} will not execute dangerous operations until explicit approval is recorded.</p>
               </div>
               {loading ? (
                 <div className="border border-signal/25 bg-signal/8 p-2 text-[0.7rem] text-frost/82">
@@ -1554,7 +1557,7 @@ function OperationsCopilot({
           className="relative ml-auto flex items-center gap-2 border border-signal/35 bg-black/80 px-3 py-2 text-[0.62rem] uppercase tracking-[0.18em] text-frost shadow-signal backdrop-blur pointer-events-auto"
         >
           <Sparkles size={13} className="text-signal" />
-          Ops Copilot
+          {displayAgentName} Ops Copilot
           <span className={`h-1.5 w-1.5 rounded-full pulse-core ${pendingHitlRequests.length > 0 ? "bg-blue-400" : "bg-emerald-300"}`} />
           {unread > 0 || pendingHitlRequests.length > 0 ? (
             <span className={`absolute -right-1.5 -top-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border px-1 text-[0.55rem] font-semibold text-frost ${pendingHitlRequests.length > 0 ? "bg-blue-500/90 border-blue-400" : "bg-signal/90 border-signal"}`}>
@@ -3031,6 +3034,7 @@ export function ChandraExperience() {
             setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));
           }
         }}
+        agentName={agentName}
       />
     </main>
   );
