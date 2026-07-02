@@ -36,6 +36,8 @@ import {
   FileText,
   Filter,
   MailCheck,
+  Maximize,
+  Minimize,
   RadioTower,
   Search,
   Send,
@@ -1342,7 +1344,21 @@ function OperationsCopilot({
   onSubmitHitl?: (actionId: string, answers: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   useEffect(() => { if (pendingHitlRequests.length > 0) setOpen(true); }, [pendingHitlRequests.length]);
+  
+  // Lock background scroll when expanded
+  useEffect(() => {
+    if (open && isExpanded) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "unset";
+    }
+    return () => {
+      document.body.style.overflow = "unset";
+    };
+  }, [open, isExpanded]);
+
   const [prompt, setPrompt] = useState("");
   const [hitlAnswers, setHitlAnswers] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(false);
@@ -1351,17 +1367,7 @@ function OperationsCopilot({
     { role: "system", text: "Context synchronized. Latest high-risk incident status available.", meta: "memory: incidents / approvals / audit" },
     { role: "chandra", text: "Live operational context is ready. Ask about incidents, approvals, cost posture, compliance, or remediation risk.", meta: "live copilot ready" }
   ]);
-  const alerts = useMemo(
-    () =>
-      latestEvent
-        ? [
-            `${latestEvent.severity} ${latestEvent.status.toLowerCase()} on ${latestEvent.account}`,
-            `${latestEvent.service} confidence ${latestEvent.confidence}%`,
-            latestEvent.approvalState ? `Approval state: ${latestEvent.approvalState}` : "Live context available"
-          ]
-        : ["No active live incidents returned"],
-    [latestEvent]
-  );
+
   const suggestions = ["/review-pending-approvals", "/summarize-high-risk-incidents", "/draft-approval-email", "/explain-governance"];
 
   async function submit(value = prompt) {
@@ -1416,10 +1422,10 @@ function OperationsCopilot({
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-[70] w-[calc(100vw-2rem)] max-w-[420px]">
+    <div className={cx("fixed z-[70] transition-all duration-300", isExpanded && open ? "inset-4 w-auto max-w-none flex flex-col pointer-events-auto" : "bottom-4 right-4 w-[calc(100vw-2rem)] max-w-[420px] pointer-events-auto", !open ? "pointer-events-none" : "")}>
       <AnimatePresence>
         {open ? (
-          <motion.div initial={{ opacity: 0, y: 14, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 14, scale: 0.96 }} className="glass overflow-hidden">
+          <motion.div initial={{ opacity: 0, y: 14, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 14, scale: 0.96 }} className={cx("glass overflow-hidden flex flex-col", isExpanded ? "flex-1 min-h-0" : "")}>
             <div className="flex items-center justify-between border-b border-white/10 p-3">
               <div className="flex items-center gap-2">
                 <Bot size={16} className="text-signal" />
@@ -1428,9 +1434,14 @@ function OperationsCopilot({
                   <div className="text-[0.58rem] uppercase tracking-[0.16em] text-emerald-300">approval-aware workflow</div>
                 </div>
               </div>
-              <button aria-label="Close copilot" onClick={() => setOpen(false)} className="text-muted hover:text-frost">
-                <X size={15} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button aria-label="Toggle Expand" onClick={() => setIsExpanded(!isExpanded)} className="text-muted hover:text-frost">
+                  {isExpanded ? <Minimize size={14} /> : <Maximize size={14} />}
+                </button>
+                <button aria-label="Close copilot" onClick={() => setOpen(false)} className="text-muted hover:text-frost">
+                  <X size={15} />
+                </button>
+              </div>
             </div>
             {pendingHitlRequests.length > 0 && (
               <div className="border-b border-blue-400/20 bg-blue-400/10 px-3 py-2">
@@ -1439,17 +1450,8 @@ function OperationsCopilot({
                 </div>
               </div>
             )}
-            <div className="border-b border-white/8 bg-signal/[0.06] px-3 py-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[0.55rem] uppercase tracking-[0.18em] text-signal">
-                <AlertTriangle size={11} /> {alerts.length} approval-aware alerts
-              </div>
-              <ul className="space-y-0.5 text-[0.65rem] text-frost/85">
-                {alerts.map((alert) => (
-                  <li key={alert} className="flex items-start gap-1.5"><span className="mt-1 h-1 w-1 rounded-full bg-signal" />{alert}</li>
-                ))}
-              </ul>
-            </div>
-            <div className="max-h-[300px] space-y-2 overflow-y-auto p-3 scrollbar-mini">
+
+            <div className={cx("space-y-2 overflow-y-auto p-3 scrollbar-mini transition-all duration-300 min-h-0", isExpanded ? "flex-1" : "max-h-[350px]")}>
               {messages.map((message, index) => (
                 <div key={`message-${index}-${message.role}`} className={cx("border p-2 text-[0.7rem]", message.role === "supervisor" ? "ml-6 border-amber/30 bg-amber/8" : "mr-3 border-white/10 bg-black/35")}>
                   <div className="mb-1 text-[0.55rem] uppercase tracking-[0.18em] text-muted">{message.role}</div>
@@ -1549,7 +1551,7 @@ function OperationsCopilot({
       {!open ? (
         <button
           onClick={() => setOpen(true)}
-          className="relative ml-auto flex items-center gap-2 border border-signal/35 bg-black/80 px-3 py-2 text-[0.62rem] uppercase tracking-[0.18em] text-frost shadow-signal backdrop-blur"
+          className="relative ml-auto flex items-center gap-2 border border-signal/35 bg-black/80 px-3 py-2 text-[0.62rem] uppercase tracking-[0.18em] text-frost shadow-signal backdrop-blur pointer-events-auto"
         >
           <Sparkles size={13} className="text-signal" />
           Ops Copilot
@@ -2572,7 +2574,7 @@ export function ChandraExperience() {
     workerRef.current?.execute(action);
   }, []);
 
-  console.log("🔵 ChandraExperience RENDER - observations:", observations ? `health=${observations.health}` : "null");
+
 
   const [observationsSync, setObservationsSync] = useState<ObservationsSyncState>({
     status: observations ? "success" : "loading",
@@ -2608,7 +2610,7 @@ export function ChandraExperience() {
     let cancelled = false;
     fetchDetectorIssues()
       .then(res => {
-        console.log("🔍 DETECTOR ISSUES RAW RESPONSE:", res);
+
         if (!cancelled) setDetectorIssues(res ?? null);
       })
       .catch(err => {
@@ -2640,10 +2642,8 @@ export function ChandraExperience() {
       isFirstCostFetchRef.current = false;
     }
     
-    console.log(`FETCHING COST METRICS (${costDays} days)...`);
     fetchCostMetrics(costDays, { signal: controller.signal })
       .then((data) => {
-        console.log("COST METRICS SUCCESS", data);
         // Update both the shared context (used by other consumers) and the
         // local state (passed directly as rawMetrics to CostMonitoring).
         setCostMetricsRef.current(data);
