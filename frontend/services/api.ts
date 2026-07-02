@@ -781,3 +781,56 @@ export async function getJobStatus(
 export function subscribeToOperationsStream(_handlers: OperationsStreamHandlers): () => void {
   return () => {};
 }
+
+// ── Custom KRA persistence (customKras.json on backend) ────────────────────────
+export type StoredCustomKra = {
+  name: string;
+  description: string;
+  selected?: boolean;
+};
+
+export type CustomKrasFileResponse = {
+  status: string;
+  count: number;
+  kras: StoredCustomKra[];
+};
+
+export type CustomKrasSaveResponse = {
+  status: string;
+  count: number;
+  message: string;
+};
+
+/**
+ * Fetch all custom KRAs persisted in customKras.json on the backend.
+ * Returns an empty list if the file is missing or the request fails.
+ */
+export async function fetchCustomKras(
+  options: { signal?: AbortSignal } = {}
+): Promise<StoredCustomKra[]> {
+  try {
+    const response = await request<CustomKrasFileResponse>("/customKras", {
+      method: "GET",
+      signal: options.signal
+    });
+    return Array.isArray(response?.kras) ? response.kras : [];
+  } catch (error) {
+    console.error("Failed to fetch customKras.json:", error);
+    return [];
+  }
+}
+
+/**
+ * Replace the contents of customKras.json on the backend with the supplied list.
+ * The list is sent as-is; the server is responsible for dedup/validation.
+ */
+export async function saveCustomKras(
+  kras: StoredCustomKra[],
+  options: { signal?: AbortSignal } = {}
+): Promise<CustomKrasSaveResponse> {
+  return request<CustomKrasSaveResponse>("/customKras", {
+    method: "PUT",
+    body: JSON.stringify({ kras }),
+    signal: options.signal
+  });
+}

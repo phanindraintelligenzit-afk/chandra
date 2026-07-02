@@ -11,7 +11,14 @@ import {
   type CustomKra,
   type KraAgentPayload
 } from "./kraCatalog";
-import type { AgentObservation, CostMetricsOutput } from "@/services/api";
+import {
+  fetchCustomKras,
+  saveCustomKras,
+  type StoredCustomKra,
+  type AgentObservation,
+  type CostMetricsOutput
+} from "@/services/api";
+
 
 export type OnboardingState = {
   agentName: string;
@@ -42,6 +49,8 @@ export type OnboardingState = {
   addCustomKRA: (name: string, description?: string) => void;
   removeCustomKRA: (name: string) => void;
   toggleCustomKRA: (name: string) => void;
+  setAllCustomKRAsSelected: (selected: boolean) => void;
+
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
   completeOnboarding: () => void;
@@ -77,6 +86,8 @@ const defaultState: OnboardingState = {
   addCustomKRA: () => {},
   removeCustomKRA: () => {},
   toggleCustomKRA: () => {},
+  setAllCustomKRAsSelected: () => {},
+
   setObservations: () => {},
   setCostMetrics: () => {},
   completeOnboarding: () => {},
@@ -146,6 +157,11 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   }, [customKras]);
 
   const hydratedRef = useRef(false);
+  // Guard so we only sync to customKras.json once hydration is done — otherwise
+  // a fast user click on "Add" would race the file fetch and overwrite it.
+  const customKrasHydratedRef = useRef(false);
+  // Debounce handle for the PUT /customKras call.
+  const customKrasSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (hydratedRef.current) return;
@@ -185,6 +201,66 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     }
     setHydrated(true);
   }, []);
+
+  // Fetch the persisted custom KRAs from the backend JSON file (customKras.json)
+  // on first mount, then merge with anything in localStorage so the user sees
+  // their full library the next time they open the onboarding page.
+  useEffect(() => {
+    if (customKrasHydratedRef.current) return;
+    customKrasHydratedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = await fetchCustomKras();
+        if (cancelled || !Array.isArray(stored) || stored.length === 0) return;
+        const normalized = normalizeCustomKraList(stored);
+        if (normalized.length === 0) return;
+        setCustomKras((current) => {
+          const merged: CustomKra[] = [...current];
+          const seen = new Set(merged.map((k) => k.name.toLowerCase()));
+          for (const entry of normalized) {
+            const key = entry.name.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(entry);
+          }
+          return merged;
+        });
+      } catch (error) {
+        console.warn("Failed to hydrate customKras from backend:", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Debounced persistence — every time the customKras list changes we save it
+  // back to customKras.json on the backend so the library survives a hard refresh.
+  useEffect(() => {
+    if (!hydrated || !customKrasHydratedRef.current) return;
+    if (customKrasSaveTimerRef.current !== null) {
+      window.clearTimeout(customKrasSaveTimerRef.current);
+    }
+    const snapshot: StoredCustomKra[] = customKras.map((k) => ({
+      name: k.name,
+      description: k.description,
+      selected: k.selected !== false
+    }));
+    customKrasSaveTimerRef.current = window.setTimeout(() => {
+      customKrasSaveTimerRef.current = null;
+      saveCustomKras(snapshot).catch((error) => {
+        console.warn("Failed to save customKras to backend:", error);
+      });
+    }, 350);
+    return () => {
+      if (customKrasSaveTimerRef.current !== null) {
+        window.clearTimeout(customKrasSaveTimerRef.current);
+        customKrasSaveTimerRef.current = null;
+      }
+    };
+  }, [customKras, hydrated]);
+
 
   useEffect(() => {
     if (!hydrated) return;
@@ -244,6 +320,11 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const toggleCustomKRA = useCallback((name: string) => {
     setCustomKras((current) => current.map((item) => item.name === name ? { ...item, selected: item.selected === false ? true : false } : item));
   }, []);
+
+  const setAllCustomKRAsSelected = useCallback((selected: boolean) => {
+    setCustomKras((current) => current.map((item) => ({ ...item, selected })));
+  }, []);
+
 
   const completeOnboarding = useCallback(() => {
     setOnboardingCompleted(true);
@@ -315,6 +396,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       addCustomKRA,
       removeCustomKRA,
       toggleCustomKRA,
+      setAllCustomKRAsSelected,
       setObservations,
       setCostMetrics,
       completeOnboarding,
@@ -343,12 +425,14 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       addCustomKRA,
       removeCustomKRA,
       toggleCustomKRA,
+      setAllCustomKRAsSelected,
       setObservations,
       setCostMetrics,
       completeOnboarding,
       reset
     ]
   );
+
 
   return <OnboardingCtx.Provider value={contextValue}>{children}</OnboardingCtx.Provider>;
 }

@@ -5,6 +5,7 @@ FastAPI application for the AWS Observability Agent.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import uuid
@@ -170,6 +171,127 @@ class PipelineRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Custom KRA persistence (customKras.json) ──────────────────────────────────
+CUSTOM_KRA_FILE = Path(__file__).parent / "customKras.json"
+_custom_kra_lock = threading.Lock()
+
+
+def _load_custom_kras_from_disk() -> list:
+    """Load custom KRAs from the JSON file on disk. Returns an empty list if the file is missing or invalid."""
+    try:
+        if not CUSTOM_KRA_FILE.exists():
+            return []
+        with CUSTOM_KRA_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        # Normalize: ensure each entry is { name, description, selected? }
+        normalized: list = []
+        seen: set = set()
+        for entry in data:
+            if isinstance(entry, str):
+                name = entry.strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                normalized.append({"name": name, "description": name, "selected": True})
+            elif isinstance(entry, dict):
+                name = str(entry.get("name") or entry.get("code") or "").strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                description = str(entry.get("description") or entry.get("desc") or name).strip()
+                normalized.append(
+                    {
+                        "name": name,
+                        "description": description or name,
+                        "selected": entry.get("selected", True),
+                    }
+                )
+        return normalized
+    except Exception as exc:
+        logger.exception("Failed to read customKras.json: %s", exc)
+        return []
+
+
+def _save_custom_kras_to_disk(entries: list) -> int:
+    """Persist custom KRAs to customKras.json. Returns the number of entries written."""
+    with _custom_kra_lock:
+        # Deduplicate by name (case-insensitive) and re-normalize.
+        seen: set = set()
+        cleaned: list = []
+        for entry in entries:
+            if isinstance(entry, str):
+                name = entry.strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned.append({"name": name, "description": name, "selected": True})
+                continue
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or entry.get("code") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            description = str(entry.get("description") or entry.get("desc") or name).strip()
+            cleaned.append(
+                {
+                    "name": name,
+                    "description": description or name,
+                    "selected": entry.get("selected", True),
+                }
+            )
+        # Atomic write so a partial file is never observed on disk.
+        tmp_path = CUSTOM_KRA_FILE.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(cleaned, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, CUSTOM_KRA_FILE)
+        return len(cleaned)
+
+
+@app.get("/customKras")
+def get_custom_kras():
+    """Read all custom KRAs persisted in customKras.json."""
+    entries = _load_custom_kras_from_disk()
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(entries), "kras": entries},
+    )
+
+
+class CustomKrasPayload(BaseModel):
+    kras: List[Dict[str, Any]] = Field(
+        description="Full list of custom KRAs to persist. Replaces the contents of customKras.json."
+    )
+
+
+@app.put("/customKras")
+def put_custom_kras(payload: CustomKrasPayload):
+    """Replace the contents of customKras.json with the supplied list."""
+    try:
+        written = _save_custom_kras_to_disk(payload.kras)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "count": written, "message": f"Saved {written} custom KRAs"},
+        )
+    except Exception as exc:
+        logger.exception("Failed to write customKras.json: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 @app.get("/logs")
 def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):

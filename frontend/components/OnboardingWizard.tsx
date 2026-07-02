@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { KeyRound, ShieldCheck, Sparkles } from "lucide-react";
+import { KeyRound, Search, ShieldCheck, Sparkles, X } from "lucide-react";
+
 import { useOnboarding } from "@/store/OnboardingContext";
 import { fetchAgentObservations, fetchCostMetrics } from "@/services/api";
 import { buildKraPayload } from "@/services/mapping";
@@ -159,7 +160,9 @@ export default function OnboardingWizard() {
     addCustomKRA,
     removeCustomKRA,
     toggleCustomKRA,
+    setAllCustomKRAsSelected,
     completeOnboarding,
+
     setObservations,
     setCostMetrics
   } = useOnboarding();
@@ -169,7 +172,9 @@ export default function OnboardingWizard() {
   const [deployProgress, setDeployProgress] = useState<number>(0);
   const [customKraName, setCustomKraName] = useState("");
   const [customKraDescription, setCustomKraDescription] = useState("");
+  const [customKraSearch, setCustomKraSearch] = useState("");
   const [notice, setNotice] = useState("");
+
   const [observationsStatus, setObservationsStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [observationsErrorMessage, setObservationsErrorMessage] = useState<string>("");
   const submissionRef = useRef<AbortController | null>(null);
@@ -552,55 +557,141 @@ export default function OnboardingWizard() {
               </div>
 
               {/* Custom KRAs list — shown ABOVE the inputs */}
-              {customKras.length > 0 && (
-                <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">
-                  <div className="mb-3 text-[0.58rem] uppercase tracking-[0.18em] text-muted">
-                    Your custom KRAs ({customKras.length})
-                  </div>
-                  <div className="space-y-3">
-                    {customKras.map((kra: CustomKra) => (
-                      <div
-                        key={kra.name}
-                        className={`flex items-start gap-4 rounded-2xl border p-4 transition ${
-                          kra.selected !== false 
-                            ? "border-emerald-300/25 bg-emerald-300/[0.04] hover:border-emerald-300/40"
-                            : "border-white/5 bg-white/[0.02] opacity-50 hover:opacity-80"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={kra.selected !== false}
-                          onChange={() => toggleCustomKRA(kra.name)}
-                          aria-label={`Toggle Custom KRA ${kra.name}`}
-                          className="mt-1 h-4 w-4 shrink-0 accent-emerald-300 cursor-pointer"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className={`font-semibold uppercase tracking-[0.04em] break-words ${kra.selected !== false ? "text-frost" : "text-muted"}`}>
-                            {kra.name}
-                          </div>
-                          {kra.description ? (
-                            <div className={`mt-1.5 text-sm break-words ${kra.selected !== false ? "text-frost/75" : "text-muted/70"}`}>
-                              {kra.description}
-                            </div>
-                          ) : (
-                            <div className="mt-1.5 text-[0.7rem] italic text-muted">
-                              No description provided
-                            </div>
-                          )}
-                        </div>
+              {customKras.length > 0 && (() => {
+                const search = customKraSearch.trim().toLowerCase();
+                const filtered = search
+                  ? customKras.filter((k) =>
+                      k.name.toLowerCase().includes(search) ||
+                      (k.description || "").toLowerCase().includes(search)
+                    )
+                  : customKras;
+                const selectedCount = customKras.filter((k) => k.selected !== false).length;
+                const allSelected = selectedCount === customKras.length;
+                const noneSelected = selectedCount === 0;
+                const visibleSelectedCount = filtered.filter((k) => k.selected !== false).length;
+                return (
+                  <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 transition hover:border-emerald-300/30">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = !allSelected && !noneSelected;
+                            }}
+                            onChange={(event) => setAllCustomKRAsSelected(event.target.checked)}
+                            aria-label="Toggle all custom KRAs"
+                            className="h-3.5 w-3.5 accent-emerald-300 cursor-pointer"
+                          />
+                          <span className="text-[0.58rem] uppercase tracking-[0.18em] text-frost/80">
+                            {`${selectedCount}/${customKras.length} Selected`}
+                          </span>
+
+                        </label>
                         <button
                           type="button"
-                          onClick={() => removeCustomKRA(kra.name)}
-                          className="shrink-0 rounded-lg border border-signal/30 bg-signal/10 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-signal transition hover:bg-signal/20"
-                          aria-label={`Remove ${kra.name}`}
+                          onClick={() => setAllCustomKRAsSelected(true)}
+                          disabled={allSelected}
+                          className="normal-case rounded-full border border-emerald-300/30 bg-emerald-300/10 px-3 py-1.5 text-[0.65rem] font-semibold tracking-[0.04em] text-emerald-200 transition hover:border-emerald-300/60 hover:bg-emerald-300/15 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          REMOVE
+                          ✓&nbsp;Tick All
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setAllCustomKRAsSelected(false)}
+                          disabled={noneSelected}
+                          className="normal-case rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[0.65rem] font-semibold tracking-[0.04em] text-frost/80 transition hover:border-white/30 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          ✕&nbsp;Untick All
+                        </button>
+
+
                       </div>
-                    ))}
+                      <div className="relative w-full sm:w-72">
+                        <Search
+                          size={14}
+                          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
+                        />
+                        <input
+                          value={customKraSearch}
+                          onChange={(event) => setCustomKraSearch(event.target.value)}
+                          placeholder="Search custom KRAs..."
+                          className="w-full rounded-full border border-white/10 bg-black/30 py-2 pl-9 pr-9 text-xs text-frost outline-none transition placeholder:text-muted focus:border-emerald-300/40 focus:ring-2 focus:ring-emerald-300/15"
+                        />
+                        {customKraSearch ? (
+                          <button
+                            type="button"
+                            onClick={() => setCustomKraSearch("")}
+                            aria-label="Clear search"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-muted transition hover:bg-white/10 hover:text-frost"
+                          >
+                            <X size={12} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    {search && filtered.length > 0 ? (
+                      <div className="mb-2 text-[0.58rem] uppercase tracking-[0.18em] text-muted">
+                        {visibleSelectedCount} of {filtered.length} visible selected
+                      </div>
+                    ) : null}
+
+                    <div
+                      className="custom-kra-scroll space-y-3 overflow-y-auto pr-1"
+                      style={{ maxHeight: "320px" }}
+                    >
+                      {filtered.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-6 text-center text-xs text-muted">
+                          No custom KRAs match “{customKraSearch}”.
+                        </div>
+                      ) : (
+                        filtered.map((kra: CustomKra) => (
+                          <div
+                            key={kra.name}
+                            className={`flex items-start gap-4 rounded-2xl border p-4 transition ${
+                              kra.selected !== false
+                                ? "border-emerald-300/25 bg-emerald-300/[0.04] hover:border-emerald-300/40"
+                                : "border-white/5 bg-white/[0.02] opacity-50 hover:opacity-80"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={kra.selected !== false}
+                              onChange={() => toggleCustomKRA(kra.name)}
+                              aria-label={`Toggle Custom KRA ${kra.name}`}
+                              className="mt-1 h-4 w-4 shrink-0 accent-emerald-300 cursor-pointer"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className={`font-semibold uppercase tracking-[0.04em] break-words ${kra.selected !== false ? "text-frost" : "text-muted"}`}>
+                                {kra.name}
+                              </div>
+                              {kra.description ? (
+                                <div className={`mt-1.5 text-sm break-words ${kra.selected !== false ? "text-frost/75" : "text-muted/70"}`}>
+                                  {kra.description}
+                                </div>
+                              ) : (
+                                <div className="mt-1.5 text-[0.7rem] italic text-muted">
+                                  No description provided
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCustomKRA(kra.name)}
+                              className="shrink-0 rounded-lg border border-signal/30 bg-signal/10 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-signal transition hover:bg-signal/20"
+                              aria-label={`Remove ${kra.name}`}
+                            >
+                              REMOVE
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
+
 
               {/* ADD CUSTOM KRA — placed AT THE BOTTOM of step 3 */}
               <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">

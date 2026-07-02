@@ -40,6 +40,8 @@ textarea,
   text-transform: none;
 }
 
+
+
 input::placeholder,
 textarea::placeholder {
   text-transform: uppercase;
@@ -209,6 +211,31 @@ body::after {
 .operational-scroll::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.04);
 }
+
+.custom-kra-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 179, 71, 0.42) rgba(255, 255, 255, 0.04);
+}
+
+.custom-kra-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-kra-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 9999px;
+}
+
+.custom-kra-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255, 179, 71, 0.55), rgba(255, 59, 59, 0.45));
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.custom-kra-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 179, 71, 0.75), rgba(255, 59, 59, 0.65));
+}
+
 
 .glass {
   border: 1px solid rgba(255, 255, 255, 0.12);
