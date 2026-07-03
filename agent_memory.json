@@ -39,6 +39,22 @@
         "The automation failed during the `terraform validate` step due to an invalid data source reference"
       ],
       "lesson": "Always verify data source existence in the AWS provider documentation — `aws_config_configuration_recorder` does not exist as a data source, so use the `aws_config_configuration_recorder_status` resource or reference the recorder by name instead."
+    },
+    {
+      "timestamp": "2026-07-03T15:39:07",
+      "action_name": "Configure CloudWatch alarms with anomaly detection for Bedrock and EC2",
+      "iterations_used": 4,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Terraform encountered problems during initialisation, including problems"
+      ],
+      "fixes_applied": [
+        "The automation attempted to initialize a Terraform configuration to set up CloudWatch anomaly detection alarms for Bedrock and EC2, but it failed during `terraform init` due to invalid configuration f",
+        "The automation attempted to initialize a Terraform configuration to set up CloudWatch anomaly detection alarms for Bedrock and EC2, but it failed during `terraform init` due to invalid Terraform confi",
+        "The automation attempted to initialize Terraform to configure CloudWatch alarms with anomaly detection for Bedrock and EC2, but it failed during `terraform init` due to invalid Terraform configuration",
+        "The automation attempted to initialize a Terraform configuration to set up CloudWatch anomaly detection alarms for Bedrock and EC2, but it failed during `terraform init` due to invalid configuration s"
+      ],
+      "lesson": "Always validate Terraform configuration syntax and provider dependencies before initialization — incomplete or malformed configs cause init failures."
     }
   ]
 }

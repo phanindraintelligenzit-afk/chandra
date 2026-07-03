@@ -98,6 +98,8 @@ export const WorkerActionExecutionCenter = forwardRef<
   const [confirmStopId, setConfirmStopId] = useState<string | null>(null);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [logSearchQueries, setLogSearchQueries] = useState<Record<string, string>>({});
+  const [maxIterations, setMaxIterations] = useState(5);
+  const [timeoutMins, setTimeoutMins] = useState(5);
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -364,8 +366,8 @@ export const WorkerActionExecutionCenter = forwardRef<
           service: action.service || "AWS"
         },
         jiraUrl: action.jiraUrl,
-        command_timeout: 300,
-        max_iterations: 5,
+        command_timeout: timeoutMins * 60,
+        max_iterations: maxIterations,
         thread_id: action.threadId,
         sandbox_path: action.sandboxPath,
         answers: answers
@@ -458,8 +460,8 @@ export const WorkerActionExecutionCenter = forwardRef<
           priorityLevel: executing.priorityLevel
         },
         jiraUrl: executing.jiraUrl,
-        command_timeout: 300,
-        max_iterations: 5
+        command_timeout: timeoutMins * 60,
+        max_iterations: maxIterations
       });
 
       const jobId = jobResponse.job_id;
@@ -538,13 +540,37 @@ export const WorkerActionExecutionCenter = forwardRef<
             <div className="text-[0.65rem] uppercase tracking-[0.22em] text-muted">WORKER ACTION EXECUTION CENTER</div>
             <div className="mt-1 text-sm text-frost/70">Auto-approved actions executing with live logs</div>
           </div>
-          <input 
-            type="text" 
-            placeholder="Search by Action Name or Job ID..." 
-            className="bg-black/40 border border-white/10 rounded-md px-3 py-1.5 text-xs text-frost focus:outline-none focus:border-frost/50 transition-colors w-64"
-            value={globalSearchQuery}
-            onChange={(e) => setGlobalSearchQuery(e.target.value)}
-          />
+          <div className="flex items-center gap-3">
+            <input 
+              type="text" 
+              placeholder="Search by Action Name or Job ID..." 
+              className="bg-black/40 border border-white/10 rounded-md px-3 py-1.5 text-xs text-frost focus:outline-none focus:border-frost/50 transition-colors w-64"
+              value={globalSearchQuery}
+              onChange={(e) => setGlobalSearchQuery(e.target.value)}
+            />
+            <div className="flex items-center gap-2 border border-white/10 bg-black/40 rounded-md px-2 py-1.5">
+              <span className="text-[0.6rem] uppercase tracking-[0.1em] text-muted">Iterations</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                className="bg-transparent border-none text-xs text-frost w-10 text-center focus:outline-none p-0 m-0"
+                value={maxIterations}
+                onChange={(e) => setMaxIterations(Number(e.target.value) || 5)}
+              />
+            </div>
+            <div className="flex items-center gap-2 border border-white/10 bg-black/40 rounded-md px-2 py-1.5">
+              <span className="text-[0.6rem] uppercase tracking-[0.1em] text-muted">Timeout (m)</span>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                className="bg-transparent border-none text-xs text-frost w-10 text-center focus:outline-none p-0 m-0"
+                value={timeoutMins}
+                onChange={(e) => setTimeoutMins(Number(e.target.value) || 5)}
+              />
+            </div>
+          </div>
         </div>
         <div className="rounded-full bg-signal/20 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-signal">
           {pendingCount} EXECUTING
