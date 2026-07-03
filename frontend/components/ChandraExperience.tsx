@@ -2655,31 +2655,50 @@ export function ChandraExperience() {
     fetchAWSRegions().then(regions => setAvailableRegions(regions));
   }, []);
 
-  // Fetch CloudWatch metrics when region, hours, or period change
+  // Fetch CloudWatch metrics when region, hours, or period change, and auto-refresh every 10 mins
   useEffect(() => {
     const cwController = new AbortController();
-    setCwMetrics(null); // Clear data to show loading spinner
-    fetchCloudWatchMetrics(cwRegion, cwHours, cwPeriod, { signal: cwController.signal })
-      .then(res => { if (res) setCwMetrics(res); })
-      .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
-    return () => cwController.abort();
+    setCwMetrics(null); // Clear data to show loading spinner on initial fetch
+    
+    const fetchData = () => {
+      fetchCloudWatchMetrics(cwRegion, cwHours, cwPeriod, { signal: cwController.signal })
+        .then(res => { if (res) setCwMetrics(res); })
+        .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 10 * 60 * 1000); // 10 minutes
+
+    return () => {
+      clearInterval(interval);
+      cwController.abort();
+    };
   }, [cwRegion, cwHours, cwPeriod]);
 
-  // Fetch detector issues on mount — independent AbortController.
+  // Fetch detector issues on mount and auto-refresh every 1 hour
   useEffect(() => {
     let cancelled = false;
-    fetchDetectorIssues()
-      .then(res => {
+    
+    const fetchData = () => {
+      fetchDetectorIssues()
+        .then(res => {
+          if (!cancelled) setDetectorIssues(res ?? null);
+        })
+        .catch(err => {
+          if (!cancelled) {
+            console.error("Detector issues error:", err);
+            setDetectorIssues({});
+          }
+        });
+    };
 
-        if (!cancelled) setDetectorIssues(res ?? null);
-      })
-      .catch(err => {
-        if (!cancelled) {
-          console.error("Detector issues error:", err);
-          setDetectorIssues({});
-        }
-      });
-    return () => { cancelled = true; };
+    fetchData();
+    const interval = setInterval(fetchData, 60 * 60 * 1000);
+
+    return () => { 
+      cancelled = true; 
+      clearInterval(interval);
+    };
   }, []);
 
   const [costDays, setCostDays] = useState(7);
@@ -2702,21 +2721,30 @@ export function ChandraExperience() {
       isFirstCostFetchRef.current = false;
     }
     
-    fetchCostMetrics(costDays, { signal: controller.signal })
-      .then((data) => {
-        // Update both the shared context (used by other consumers) and the
-        // local state (passed directly as rawMetrics to CostMonitoring).
-        setCostMetricsRef.current(data);
-        setCostMetricsState(data);
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        const message = error instanceof Error ? error.message : "Cost metrics request failed";
-        console.error("COST METRICS ERROR", message);
-        setCostMetricsRef.current(null, message);
-        setCostMetricsState(null);
-      });
-    return () => controller.abort();
+    const fetchData = () => {
+      fetchCostMetrics(costDays, { signal: controller.signal })
+        .then((data) => {
+          // Update both the shared context (used by other consumers) and the
+          // local state (passed directly as rawMetrics to CostMonitoring).
+          setCostMetricsRef.current(data);
+          setCostMetricsState(data);
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) return;
+          const message = error instanceof Error ? error.message : "Cost metrics request failed";
+          console.error("COST METRICS ERROR", message);
+          setCostMetricsRef.current(null, message);
+          setCostMetricsState(null);
+        });
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 60 * 60 * 1000);
+
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [costDays]);
 
   const activeCustomKras = useMemo(() => customKras.filter(k => k.selected !== false), [customKras]);
