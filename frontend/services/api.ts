@@ -511,14 +511,17 @@ export async function fetchCostMetrics(
   return activeCostMetricsRequests[daysLookback]!;
 }
 
-let activeCwMetricsRequests: Record<number, Promise<CloudWatchMetricsOutput> | undefined> = {};
+let activeCwMetricsRequests: Record<string, Promise<CloudWatchMetricsOutput> | undefined> = {};
 
 export async function fetchCloudWatchMetrics(
+  region: string = "us-east-1",
   hoursLookback: number = 6,
+  period: number = 1200,
   options: { signal?: AbortSignal } = {}
 ): Promise<CloudWatchMetricsOutput> {
-  if (activeCwMetricsRequests[hoursLookback]) {
-    return activeCwMetricsRequests[hoursLookback]!;
+  const cacheKey = `${region}-${hoursLookback}-${period}`;
+  if (activeCwMetricsRequests[cacheKey]) {
+    return activeCwMetricsRequests[cacheKey]!;
   }
 
   const promise = (async () => {
@@ -526,7 +529,7 @@ export async function fetchCloudWatchMetrics(
       // Submit job — new backend returns job_id (202), old returns result directly (200)
       const jobResp = await request<Record<string, unknown>>("/getCloudWatchMetrics", {
         method: "POST",
-        body: JSON.stringify({ last_hours: hoursLookback, period: 1200 })
+        body: JSON.stringify({ region, last_hours: hoursLookback, period })
       }, 30_000);
 
       // Backward-compat: old backend returned result directly
@@ -545,13 +548,31 @@ export async function fetchCloudWatchMetrics(
         900_000
       );
       return output;
-    } finally {
-      delete activeCwMetricsRequests[hoursLookback];
+    } catch (e: any) {
+      delete activeCwMetricsRequests[cacheKey];
+      throw e;
     }
   })();
 
-  activeCwMetricsRequests[hoursLookback] = promise;
-  return promise;
+  activeCwMetricsRequests[cacheKey] = promise;
+  try {
+    const result = await promise;
+    delete activeCwMetricsRequests[cacheKey];
+    return result;
+  } catch (error) {
+    delete activeCwMetricsRequests[cacheKey];
+    throw error;
+  }
+}
+
+export async function fetchAWSRegions(options: { signal?: AbortSignal } = {}): Promise<string[]> {
+  try {
+    const res = await request<{ regions: string[] }>("/aws/regions", options);
+    return res.regions || ["us-east-1"];
+  } catch (error) {
+    console.error("Failed to fetch regions, falling back to us-east-1", error);
+    return ["us-east-1"];
+  }
 }
 
 let activeDetectorIssuesRequest: Promise<DetectorIssuesOutput> | null = null;

@@ -21,6 +21,7 @@ import io
 import sys
 import subprocess
 import zipfile
+import boto3
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -339,6 +340,17 @@ class CloudWatchMetricsRequest(BaseModel):
     last_hours: int = Field(default=12, description="Hours to look back")
     period: int = Field(default=1200, description="Period in seconds")
     timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
+
+@app.get("/aws/regions")
+def get_aws_regions() -> JSONResponse:
+    """Fetch all available AWS regions dynamically."""
+    try:
+        session = boto3.Session()
+        regions = session.get_available_regions('cloudwatch')
+        return JSONResponse(status_code=200, content={"regions": sorted(regions)})
+    except Exception as exc:
+        logger.exception("Failed to fetch regions: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
 
 @app.post("/getCloudWatchMetrics")
 def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:

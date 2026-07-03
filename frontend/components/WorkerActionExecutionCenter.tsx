@@ -446,7 +446,6 @@ export const WorkerActionExecutionCenter = forwardRef<
     };
 
     setExecutingActions((current) => [executing, ...current]);
-    setExpandedId(actionId);
 
     try {
       const jobResponse = await orchestrateAction({

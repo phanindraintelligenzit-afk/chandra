@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import {
   buildKraPayload,
@@ -1934,7 +1934,25 @@ function formatCwValue(val: number, metricName: string): string {
   return val.toFixed(4);
 }
 
-function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | null }) {
+function CloudWatchMonitoring({ 
+  metrics,
+  cwRegion,
+  onRegionChange,
+  availableRegions,
+  cwHours,
+  onHoursChange,
+  cwPeriod,
+  onPeriodChange
+}: { 
+  metrics: CloudWatchMetricsOutput | null;
+  cwRegion: string;
+  onRegionChange: (r: string) => void;
+  availableRegions: string[];
+  cwHours: number;
+  onHoursChange: (h: number) => void;
+  cwPeriod: number;
+  onPeriodChange: (p: number) => void;
+}) {
   const namespaces = useMemo(() => metrics ? Object.keys(metrics.namespaces) : [], [metrics]);
   const [activeNs, setActiveNs] = useState<string | null>(null);
   const [activeMetric, setActiveMetric] = useState<string | null>(null);
@@ -2035,17 +2053,46 @@ function CloudWatchMonitoring({ metrics }: { metrics: CloudWatchMetricsOutput | 
         <div className="flex items-center gap-2 text-[0.65rem]">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 pulse-core" />
           <span className="text-muted uppercase tracking-widest">Region</span>
-          <span className="font-mono text-frost">{meta.region}</span>
+          <select 
+            value={cwRegion} 
+            onChange={(e) => onRegionChange(e.target.value)}
+            className="bg-black/40 border border-white/10 rounded px-1.5 py-0.5 font-mono text-frost focus:outline-none focus:border-frost/50 transition-colors"
+          >
+            {availableRegions.map(r => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
         </div>
         <div className="flex items-center gap-2 text-[0.65rem]">
           <span className="text-muted uppercase tracking-widest">Window</span>
-          <span className="font-mono text-frost">
-            {meta.start_time.slice(11, 16)} → {meta.end_time.slice(11, 16)}
+          <select 
+            value={cwHours} 
+            onChange={(e) => onHoursChange(Number(e.target.value))}
+            className="bg-black/40 border border-white/10 rounded px-1.5 py-0.5 font-mono text-frost focus:outline-none focus:border-frost/50 transition-colors"
+          >
+            <option value={1}>1 Hour</option>
+            <option value={3}>3 Hours</option>
+            <option value={6}>6 Hours</option>
+            <option value={12}>12 Hours</option>
+            <option value={24}>24 Hours</option>
+          </select>
+          <span className="font-mono text-frost/40 ml-1">
+            ({meta.start_time.slice(11, 16)} → {meta.end_time.slice(11, 16)})
           </span>
         </div>
         <div className="flex items-center gap-2 text-[0.65rem]">
           <span className="text-muted uppercase tracking-widest">Period</span>
-          <span className="font-mono text-frost">{meta.period_seconds}s</span>
+          <select 
+            value={cwPeriod} 
+            onChange={(e) => onPeriodChange(Number(e.target.value))}
+            className="bg-black/40 border border-white/10 rounded px-1.5 py-0.5 font-mono text-frost focus:outline-none focus:border-frost/50 transition-colors"
+          >
+            <option value={60}>60s</option>
+            <option value={300}>5m</option>
+            <option value={900}>15m</option>
+            <option value={1200}>20m</option>
+            <option value={3600}>1h</option>
+          </select>
         </div>
         <div className="ml-auto flex items-center gap-3 text-[0.65rem]">
           <span className="rounded bg-emerald-400/15 px-2 py-0.5 text-emerald-300 border border-emerald-400/20">
@@ -2598,15 +2645,25 @@ export function ChandraExperience() {
   };
   const [pendingHitlRequests, setPendingHitlRequests] = useState<HitlRequest[]>([]);
 
-  // Fetch CloudWatch metrics on mount — independent AbortController so it is not
-  // cancelled by unrelated cost-metrics or detector signal teardown.
+  const [cwRegion, setCwRegion] = useState("us-east-1");
+  const [cwHours, setCwHours] = useState(12);
+  const [cwPeriod, setCwPeriod] = useState(1200);
+  const [availableRegions, setAvailableRegions] = useState<string[]>(["us-east-1"]);
+
+  // Fetch available regions on mount
+  useEffect(() => {
+    fetchAWSRegions().then(regions => setAvailableRegions(regions));
+  }, []);
+
+  // Fetch CloudWatch metrics when region, hours, or period change
   useEffect(() => {
     const cwController = new AbortController();
-    fetchCloudWatchMetrics(12, { signal: cwController.signal })
+    setCwMetrics(null); // Clear data to show loading spinner
+    fetchCloudWatchMetrics(cwRegion, cwHours, cwPeriod, { signal: cwController.signal })
       .then(res => { if (res) setCwMetrics(res); })
       .catch(err => { if (err.name !== "AbortError" && err.message !== "Request timed out before the backend responded") console.error("CloudWatch metrics error:", err); });
     return () => cwController.abort();
-  }, []);
+  }, [cwRegion, cwHours, cwPeriod]);
 
   // Fetch detector issues on mount — independent AbortController.
   useEffect(() => {
@@ -2915,7 +2972,16 @@ export function ChandraExperience() {
 
       <section className="section-shell">
         <div className="section-inner">
-          <CloudWatchMonitoring metrics={cwMetrics} />
+          <CloudWatchMonitoring 
+            metrics={cwMetrics} 
+            cwRegion={cwRegion}
+            onRegionChange={setCwRegion}
+            availableRegions={availableRegions}
+            cwHours={cwHours}
+            onHoursChange={setCwHours}
+            cwPeriod={cwPeriod}
+            onPeriodChange={setCwPeriod}
+          />
         </div>
       </section>
 
