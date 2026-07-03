@@ -55,6 +55,22 @@
         "The automation attempted to initialize a Terraform configuration to set up CloudWatch anomaly detection alarms for Bedrock and EC2, but it failed during `terraform init` due to invalid configuration s"
       ],
       "lesson": "Always validate Terraform configuration syntax and provider dependencies before initialization — incomplete or malformed configs cause init failures."
+    },
+    {
+      "timestamp": "2026-07-03T16:37:54",
+      "action_name": "Deploy RDS PostgreSQL Instance",
+      "iterations_used": 6,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a PostgreSQL RDS instance using Terraform in us-east-1, successfully initializing providers (`hashicorp/aws v6",
+        "The automation ran `terraform init`, which succeeded, reusing previously installed AWS and random provider versions",
+        "The automation attempted to deploy a PostgreSQL RDS instance named “rel-001-postgresql” in us-east-1 using Terraform, with engine version 15",
+        "The automation ran `terraform init` successfully, reusing previously installed AWS and Random provider versions, but failed during `terraform validate` due to an unsupported argument: an `engine_versi",
+        "The automation attempted to deploy a PostgreSQL RDS instance in us-east-1 using Terraform, successfully completing `terraform init`, `validate`, and `plan` stages — confirming the configuration and pl",
+        "The AWS automation successfully deployed a single-AZ PostgreSQL RDS instance in us-east-1 using Terraform, with storage encryption enabled and tagged as production within the default VPC"
+      ],
+      "lesson": "Always validate RDS instance parameters (like version, storage, and subnet group) against the target AWS region’s availability before deployment — this ensured success by preventing unsupported configurations."
     }
   ]
 }

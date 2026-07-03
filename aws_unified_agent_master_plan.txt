@@ -1,0 +1,346 @@
+AWS UNIFIED AGENT — MASTER PLAN (CONSOLIDATED, v3)
+=====================================================
+One plan covering everything discussed: MCP grounding for generality,
+policy-as-code gating for correctness/compliance, and proactive IAM
+permission-gating for authorization — merged into a single pipeline
+and a single sequenced roadmap. This supersedes v1, v2, and the
+standalone IAM permission plan; use this file as the source of truth.
+
+
+0. THE THREE GAPS THIS PLAN CLOSES
+---------------------------------------
+  Gap 1 — CORRECTNESS: agent guesses resource schemas from training
+          data, fails on resource types outside EC2/S3/RDS.
+          -> Fixed by: MCP grounding (Section 3).
+  Gap 2 — COMPLIANCE/SAFETY: a plan can be syntactically valid but
+          semantically wrong or non-compliant (public S3 bucket,
+          missing tags, over-broad security group) and still reports
+          SUCCESS today.
+          -> Fixed by: policy-as-code gating (Section 4).
+  Gap 3 — AUTHORIZATION: the agent attempts execution immediately and
+          only discovers missing IAM permissions mid-run, as an
+          unhandled PermissionDenial.
+          -> Fixed by: proactive permission-gating (Section 5).
+
+  These three gates run in sequence, each before any real AWS mutation,
+  each using the SAME retry/HITL machinery already built into the
+  codebase (feedback_summary, interrupt()/Command(resume=...),
+  AgentMemory) — no parallel infrastructure, just new nodes plugged
+  into the existing graph.
+
+
+1. FULL END-TO-END PIPELINE (target state)
+-----------------------------------------------
+  read_existing -> read_reference -> analyze [MCP-grounded] -> [hitl?]
+    -> generate [MCP-grounded] -> write_files -> validate_local
+    (terraform validate + tflint, cheap sub-loop, Section 6)
+    -> scan_folder -> plan (terraform plan -out=tfplan)
+    -> policy_gate (OPA/Checkov against plan JSON, Section 4)
+    -> map_permissions (Section 5)
+    -> check_authorization (IAM Policy Simulator, Section 5)
+    -> [permission_hitl?] (Section 5)
+    -> execute (real AWS mutation — UNCHANGED existing node)
+    -> report -> record_iteration -> route
+
+  route:
+    - success                  -> save_memory -> END
+    - failed, retries left     -> read_existing (next iteration)
+    - failed, exhausted/stuck  -> mid_run_hitl -> read_existing
+    - needs_clarification      -> END (interrupt, resume with answers)
+    - policy_gate violation    -> feedback to generate (new failure class)
+    - permission gap           -> permission_hitl -> re-check -> execute
+
+
+2. NEW / MODIFIED AgentState FIELDS (all additions, nothing removed)
+--------------------------------------------------------------------------
+  # MCP grounding (Section 3)
+  mcp_context: str                    # docs/schema snippets pulled via MCP, injected into prompts
+
+  # Policy-as-code gate (Section 4)
+  plan_json: Optional[Dict]           # terraform show -json tfplan output
+  policy_violations: List[Dict]       # [{policy, resource, message, severity}]
+  policy_mode: str                    # "advisory" | "soft-mandatory" | "hard-mandatory"
+
+  # Permission gate (Section 5)
+  required_permissions: List[Dict]    # [{action, resource_arn_pattern, reason}]
+  permission_check_result: Dict       # {allowed: [...], denied: [...], unknown: [...]}
+  missing_permissions: List[str]
+  permission_grant_confirmed: bool
+  suggested_policy_json: str
+
+  # Existing fields (unchanged, for reference — already in AgentState)
+  feedback_summary, memory_context, consecutive_same_error,
+  last_error_class, records, execution_results, success, etc.
+
+
+3. MCP GROUNDING — fixes Gap 1 (CORRECTNESS / GENERALITY)
+----------------------------------------------------------------
+  What: connect MCP servers as LangGraph tools, available to
+  _analyze_node and _generate_node.
+
+  Servers to wire in:
+    a) AWS MCP servers (awslabs/mcp, open source, AWS Labs maintained):
+       - AWS Documentation MCP Server — current docs for ANY AWS
+         service, not just the hand-coded EC2/S3/RDS set.
+       - AWS Knowledge MCP (fully managed, no setup) — pre-built Agent
+         SOPs for multi-step AWS tasks.
+       - AWS Pricing MCP Server — real cost estimates before apply
+         (bonus: cost governance).
+       - Optional: CDK MCP Server (cdk_nag_check) if CDK is ever
+         supported alongside Terraform.
+    b) Terraform MCP Server (HashiCorp, official — AWS Marketplace /
+       Bedrock AgentCore / self-hosted Docker):
+       - Tools: resolveProviderDocID, search_providers,
+         get_provider_details, get_latest_provider_version.
+       - Grounds resource generation in the ACTUAL current provider
+         schema instead of memorized patterns — this is the core fix
+         for "fails outside EC2/S3/RDS."
+       - Security: keep ENABLE_TF_OPERATIONS=false. This server is for
+         DOCS/SCHEMA lookup only — it must never hold apply/destroy
+         capability. The existing execute_shell_command node remains
+         the ONLY component that performs real AWS mutations.
+
+  Integration points (no graph restructuring needed):
+    - _analyze_node: tool-calling access to AWS Docs/Knowledge MCP +
+      Terraform MCP before finalizing ActionAnalysis — grounds
+      dynamic_resolutions, requires_remote_access_credentials,
+      post_deploy_outputs in real documentation.
+    - _generate_node: same tools available during generation — for an
+      unfamiliar resource type (Step Functions, EKS, API Gateway) the
+      model pulls the real current schema instead of extrapolating
+      from the EC2/S3/RDS examples baked into the prompt.
+
+  Security (IAM for the MCP servers themselves):
+    - One IAM role per MCP server — never share roles across service
+      domains. Documentation/lookup MCP servers get READ-ONLY IAM
+      roles. Never grant them execute/apply permissions.
+
+  Effort: Medium | Impact: High
+
+
+4. POLICY-AS-CODE GATING — fixes Gap 2 (COMPLIANCE / SAFETY)
+-------------------------------------------------------------------
+  What: new node `policy_gate`, inserted right after `plan`, before
+  permission mapping and execute.
+
+  Mechanism (deterministic — NOT another LLM call, which could
+  hallucinate a pass/fail verdict):
+    terraform plan -out=tfplan
+    terraform show -json tfplan > tfplan.json      # -> state.plan_json
+    opa eval -d policies/ -i tfplan.json "data.terraform.deny"
+      (via Conftest or raw opa eval)   OR   checkov -f tfplan.json
+
+  If violations non-empty: populate state.policy_violations, treat as
+  a plan failure, route back to `generate` with the specific violated
+  policy as feedback — reuses the existing feedback_summary /
+  _record_iteration_node retry mechanism, just a new failure signal
+  alongside execution errors.
+
+  Rollout discipline (standard PaC practice — do not skip):
+    advisory (log only, don't block) -> soft-mandatory (block, allow
+    override) -> hard-mandatory (block, no override), only escalating
+    once false-positive rate is proven low. Track this via
+    state.policy_mode.
+
+  Reuses plan_json for BOTH policy checking AND permission mapping
+  (Section 5) — one terraform plan run, two consumers, no duplicated
+  work.
+
+  Effort: Medium | Impact: High
+
+
+5. PROACTIVE IAM PERMISSION-GATING — fixes Gap 3 (AUTHORIZATION)
+------------------------------------------------------------------------
+  Three new nodes: map_permissions -> check_authorization ->
+  [conditional] permission_hitl, inserted after policy_gate and before
+  execute.
+
+  5a. map_permissions (deterministic-first, LLM-fallback)
+      - Primary: parse plan_json's resource_changes[] (type + actions)
+        and map each (resource_type, action) pair to required IAM
+        actions via a static CRUD-mapping database — e.g. policy_sentry
+        (open source, offline, maintained ARN-type -> IAM-action
+        database). Deterministic, no AWS calls needed.
+      - Fallback: for resource types not in the static database, ask
+        the LLM to name required IAM actions, but mark these entries
+        "unverified — recommend human review" in state — never treat
+        LLM-derived permission lists as authoritative for a
+        security-relevant decision.
+      - Output: state.required_permissions, e.g.
+        {"action": "s3:CreateBucket", "resource": "arn:aws:s3:::*",
+         "reason": "aws_s3_bucket.this — create"}
+
+  5b. check_authorization (real AWS dry-run, not another guess)
+      - Primary: AWS IAM Policy Simulator API
+        (iam:SimulatePrincipalPolicy via boto3
+        simulate_principal_policy) — PolicySourceArn = caller's own
+        role/user ARN (from sts:get-caller-identity), ActionNames =
+        list from 5a, ResourceArns = best-effort ARNs (use "*" for
+        not-yet-created resources). Returns allowed/explicitDeny/
+        implicitDeny per action.
+      - Secondary (where supported): native DryRun=True parameter on
+        EC2 and other supporting APIs — validates permissions without
+        executing, also catches some SCP/permission-boundary denials
+        the simulator alone can miss.
+      - Known limitation to document, not hide: SimulatePrincipalPolicy
+        doesn't fully evaluate AWS Organizations SCPs or resource-based
+        policies (S3 bucket policies, KMS key policies) in all cases —
+        treat a clean result as "likely allowed," keep the existing
+        execute-time retry loop as a safety net for this rare residual
+        case, which should now be uncommon rather than the default
+        failure mode.
+      - Bootstrap prerequisite: the agent's own IAM role needs
+        sts:GetCallerIdentity, iam:SimulatePrincipalPolicy,
+        iam:GetRole/GetUser granted up front. Self-check this at agent
+        startup and fail loudly/clearly if missing — not mid-run.
+      - Output: state.permission_check_result,
+        state.missing_permissions.
+
+  5c. permission_hitl (only reached if missing_permissions non-empty)
+      - Reuses the EXISTING interrupt()/Command(resume=...) HITL
+        mechanism already built for _hitl_node and _mid_run_hitl_node
+        — this is a third trigger type on the same infrastructure, no
+        new pause/resume plumbing.
+      - Generate a least-privilege policy JSON scoped to exactly
+        missing_permissions + their resource ARNs (via policy_sentry
+        output, or IAM Access Analyzer's policy generation feature) —
+        never ask for broad admin access.
+      - Pause and message the user: which permissions are missing, the
+        minimal policy JSON to attach, and options to (a) confirm
+        granted, (b) supply alternate credentials/role, (c) decline.
+      - On resume:
+          (a) confirmed -> loop back to check_authorization to
+              RE-VERIFY (don't trust the user's word blindly; allow
+              one short backoff retry for IAM propagation delay).
+          (b) alternate role provided -> update execution context,
+              re-run check_authorization against the new principal.
+          (c) declined -> final_status = "failed" with a clear summary
+              of exactly what's missing (not a raw stack trace).
+      - Persist to AgentMemory: record which permissions were missing
+        for this action_name, so future runs of the same/similar
+        action can flag the same gap immediately in 5a — pure
+        optimization, does not skip re-verification in 5b.
+
+  Effort: Medium | Impact: High — this is the change that directly
+  eliminates the "unhandled PermissionDenial mid-execution" failure
+  mode described as the original problem.
+
+
+6. SUPPORTING FIXES (carried over from v1, still valid, lower effort)
+---------------------------------------------------------------------------
+  6a. validate_local sub-loop (Priority 3, v1/v2)
+      generate -> write_files -> terraform validate (+ tflint) as a
+      fast, non-AWS check BEFORE scan_folder/plan. Failures here do
+      NOT consume MAX_ITERATIONS budget — reserve that for real
+      AWS-state problems. Effort: Low-Medium | Impact: High.
+
+  6b. State-aware retries (Priority 4, v1/v2)
+      Run `terraform state list` before regenerating on retry, feed
+      into the generation prompt: "these resources already exist —
+      don't recreate, reference or import instead." Fixes false
+      "stuck loop" detection caused by self-inflicted AlreadyExists
+      errors from regeneration + stale state. Effort: Low | Impact:
+      Medium-High.
+
+  6c. Native Terraform validation rules (Priority 5, v1/v2)
+      Add as RULE 8 in the generation prompt: require variable
+      validation blocks, precondition/postcondition, check blocks
+      (Terraform 1.5+) in generated code — catches ~30% of issues
+      before terraform validate even runs. Effort: Low | Impact:
+      Low-Medium, nearly free.
+
+  6d. Error classification + feedback cap (Priority 6, v1/v2)
+      Verify _extract_error_class regex against real
+      agent_memory.json error samples; add a new error class for
+      "policy_gate violation" and "permission gap" (Sections 4/5) so
+      they're distinguishable from execution errors. Cap
+      feedback_summary growth within a run (keep full detail for last
+      1-2 iterations, compress older ones to one line). Effort: Low |
+      Impact: Low-Medium.
+
+
+7. FULL GRAPH WIRING (all new nodes together)
+--------------------------------------------------
+  builder.add_node("validate_local", self._validate_local_node)      # 6a
+  builder.add_node("policy_gate", self._policy_gate_node)             # 4
+  builder.add_node("map_permissions", self._map_permissions_node)     # 5a
+  builder.add_node("check_authorization", self._check_authorization_node)  # 5b
+  builder.add_node("permission_hitl", self._permission_hitl_node)     # 5c
+
+  builder.add_edge("write_files", "validate_local")
+  builder.add_conditional_edges("validate_local", self._route_after_validate,
+      {"ok": "scan_folder", "fail": "generate"})   # cheap retry, no iteration cost
+
+  builder.add_edge("scan_folder", "plan")
+  builder.add_edge("plan", "policy_gate")
+  builder.add_conditional_edges("policy_gate", self._route_after_policy,
+      {"pass": "map_permissions", "violation": "generate"})  # or "record_iteration" if you want it iteration-counted
+
+  builder.add_edge("map_permissions", "check_authorization")
+  builder.add_conditional_edges("check_authorization", self._route_after_authorization,
+      {"execute": "execute", "permission_hitl": "permission_hitl"})
+  builder.add_edge("permission_hitl", "check_authorization")   # always re-verify
+
+  # "execute" onward is UNCHANGED — existing _execute_node, _report_node,
+  # _record_iteration_node, routing logic all stay as-is.
+
+
+8. SEQUENCED ROADMAP (build order)
+---------------------------------------
+  Step 1 — 6c (native validation rules): near-zero effort, do first.
+  Step 2 — 6a (validate_local sub-loop): quick structural win, no
+           external dependencies, frees retry budget for everything after.
+  Step 3 — 3 (MCP grounding): core generality fix — do before policy/
+           permission gates so the plans being gated are already higher
+           quality, reducing noise in the new gates' failure signals.
+  Step 4 — 6b (state-aware retries): pairs with Step 3's tool infra.
+  Step 5 — 4 (policy-as-code gate): add once basic apply success rate
+           stabilizes; start in advisory mode.
+  Step 6 — 5 (permission gating): add once policy gate is stable —
+           by this point plans are correct (Step 3) and compliant
+           (Step 5), so permission failures become the last isolated
+           failure class to instrument, which is the whole point of the
+           three-gate design (Section 0).
+  Step 7 — 6d (hygiene): ongoing, tune as iteration/error patterns
+           shift from all of the above.
+
+
+9. BOOTSTRAP / PREREQUISITES CHECKLIST (before any of this works)
+------------------------------------------------------------------------
+  - Agent's own IAM role/user needs (for Section 5):
+    sts:GetCallerIdentity, iam:SimulatePrincipalPolicy,
+    iam:GetRole/GetUser (+ optionally list-attached-policies for
+    context display).
+  - MCP servers (Section 3) each get their OWN dedicated, read-only
+    IAM role — never share with the execute path, never grant
+    apply/destroy capability to any MCP server.
+  - policies/ directory with OPA/Rego (or Checkov custom checks) for
+    Section 4, version-controlled like application code, with unit
+    tests for each policy before hard-mandatory rollout.
+  - policy_sentry (or equivalent static IAM-mapping tool) available in
+    the execution environment for Section 5a.
+  - Self-check all of the above at agent startup; fail loudly and
+    clearly if a prerequisite is missing, rather than failing silently
+    mid-run.
+
+
+10. HOW TO MEASURE SUCCESS (all three gates)
+--------------------------------------------------
+  Baseline (before starting): tally agent_memory.json
+  errors_encountered by category (generation / plan / policy /
+  permission / apply / timeout) and by resource type.
+
+  After Step 3 (MCP grounding): expect the biggest drop in plan/apply
+  failures for resource types OUTSIDE EC2/S3/RDS.
+
+  After Step 5 (policy gate): track policy_gate violations caught
+  pre-apply vs. post-apply compliance failures for the same issue
+  class — pre-apply catches should rise, post-apply failures should
+  fall.
+
+  After Step 6 (permission gate): track unhandled PermissionDenial
+  errors at the execute stage — this should approach zero (residual
+  cases limited to SCP/resource-policy gaps noted in Section 5b's
+  known limitation), replaced by clean permission_hitl pauses with a
+  clear ask instead of a crash. This is the direct fix for the
+  original problem statement.

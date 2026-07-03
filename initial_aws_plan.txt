@@ -1,0 +1,155 @@
+AWS UNIFIED AGENT — IMPROVEMENT ACTION PLAN
+=============================================
+Goal: Make the agent reliably handle ARBITRARY AWS actions (not just
+EC2/S3/RDS), reduce wasted retry cycles, and stop silent/false failures.
+
+Target file: aws_unified_agent.py
+Current architecture: LangGraph state machine, single shared AgentState,
+per-node single-shot LLM calls (no chat history), curated feedback string
+passed between iterations, JSON file cross-run memory (AgentMemory).
+
+
+ROOT CAUSE SUMMARY
+-------------------
+The agent currently fails on less-common resource types because:
+1. It is BLIND — analyze/generate never query AWS. They guess resource
+   IDs, quotas, and account state purely from training-data patterns.
+   Works for EC2/S3/RDS (over-represented in training data + hand-held
+   in the prompt), breaks for Lambda/ECS/EKS/API Gateway/Step Functions/
+   cross-resource IAM, etc.
+2. Every retry cycle is EXPENSIVE — a single syntax typo costs a full
+   iteration (init+validate+plan+apply attempt), burning MAX_ITERATIONS
+   budget that should be reserved for real AWS-state problems.
+3. State drift across retries — partial applies + regenerated code can
+   cause "AlreadyExists" errors that look like a stuck loop but are
+   actually self-inflicted, because the generator never sees actual
+   Terraform state, only stderr text.
+4. Success is measured by "commands returned exit code 0" — a
+   syntactically valid but semantically wrong plan (wrong resource,
+   wrong config) is reported as SUCCESS. No plan-content review exists.
+5. Error classification is regex-based and unverified against real
+   logs — may cause false-early or false-late stuck-loop detection,
+   which controls when mid-run HITL escalation fires.
+6. feedback_summary grows uncapped across iterations within a single
+   run — bloats prompts, dilutes model attention on the current error.
+
+
+PRIORITIZED ACTION PLAN
+------------------------
+
+PRIORITY 1 — Ground the agent in real AWS state (highest impact)
+  Problem: analyze/generate reason from text only; no live AWS lookups.
+  Change:
+    - Add a pre-analysis tool-calling step (or tools available inside
+      _analyze_node) that can call:
+        * aws sts get-caller-identity           -> real account ID
+        * aws ec2 describe-vpcs / describe-subnets -> real VPC/subnet IDs
+        * aws service-quotas list-service-quotas   -> catch quota limits
+          before apply (common silent failure: GPU instances, Lambda
+          concurrency, EIP limits, etc.)
+        * For resource types outside the hand-held set (EC2/S3/RDS):
+          fetch the relevant Terraform registry docs page for that
+          resource so generation is grounded in real schema, not
+          memorized approximation.
+    - Feed tool results into the ActionAnalysis prompt as ground truth,
+      replacing "the model guesses a data source will resolve correctly."
+  Effort: Medium | Impact: High — fixes the actual root cause of
+  "works for common resources, fails for uncommon ones."
+
+PRIORITY 2 — Split cheap validation retries from expensive apply retries
+  Problem: A syntax/schema error burns a full iteration cycle including
+  a real terraform apply attempt.
+  Change:
+    - Insert a sub-loop: generate -> write_files -> terraform validate
+      (+ optionally tflint) BEFORE scan_folder/plan/execute against AWS.
+    - If validate fails: feed error back to generate WITHOUT
+      incrementing the main iteration/retry counter used for
+      MAX_ITERATIONS.
+    - Only once validate is clean does the pipeline proceed to the real
+      plan -> apply path (current execute node).
+  Effort: Low-Medium | Impact: High — effectively doubles usable retry
+  budget for the errors that are cheapest and most common to fix.
+
+PRIORITY 3 — Feed real Terraform state into retries (fix false "stuck")
+  Problem: After a partial apply failure, regenerated code + stale
+  tfstate can produce "AlreadyExists" errors that masquerade as a
+  repeated error class (triggering STUCK_THRESHOLD) but are actually
+  caused by the retry itself, not a generation quality issue.
+  Change:
+    - Before each retry's generate step, run `terraform state list`
+      (if state file exists in sandbox) and inject the result into the
+      generation prompt: "these resources already exist in state — do
+      not recreate; reference or plan to import them instead."
+  Effort: Low | Impact: Medium-High — removes a self-inflicted failure
+  mode that currently looks like a generation problem.
+
+PRIORITY 4 — Add a plan-content review step before auto-apply
+  Problem: terraform apply -auto-approve runs immediately after plan.
+  A plan can be syntactically valid but semantically wrong (wrong
+  resource, unintended destroy, wrong count/for_each) — invisible to
+  the current success metric (exit code 0 only).
+  Change:
+    - Run `terraform plan -out=tfplan`, capture plan output (or
+      `terraform show -json tfplan` for structured diff).
+    - Add a lightweight LLM review step: "does this plan match what
+      the action requested? Any unexpected destroy/replace? Any
+      count/for_each anomaly?" Block apply and route back to generate
+      if the review flags a problem.
+  Effort: Medium | Impact: Medium — catches "ran fine but did the
+  wrong thing" failures that currently get reported as success.
+
+PRIORITY 5 — Verify / tighten error classification
+  Problem: _extract_error_class is a small regex set, unverified
+  against real production error text. Misclassification causes either
+  premature mid-run HITL escalation (false positive stuck) or a real
+  stuck loop that never escalates (false negative).
+  Change:
+    - Pull error text samples from agent_memory.json (errors_encountered
+      across recent runs) and check they classify as expected.
+    - Extend regex/logic to cover more Terraform error header formats
+      beyond "Error: <title>" and "api error <code>".
+  Effort: Low | Impact: Medium — improves reliability of the existing
+  stuck-loop / HITL escalation mechanism, no architecture change needed.
+
+PRIORITY 6 — Cap feedback_summary growth within a run
+  Problem: feedback_summary concatenates full history every iteration,
+  uncapped. On actions needing several retries, prompts bloat and can
+  dilute the model's focus on the current error.
+  Change:
+    - Keep full detail (raw_error, executor_summary) for the most
+      recent 1-2 iterations only.
+    - Compress older iterations to a single line each: "iter N: <error
+      class> — attempted fix: <one-line summary>."
+  Effort: Low | Impact: Low-Medium — cost control and prompt clarity
+  at higher retry counts; matters more as PRIORITY 1-2 changes increase
+  average iteration counts.
+
+
+SUGGESTED SEQUENCING
+----------------------
+1. Priority 5 first (cheap, no architecture change) — establish a
+   reliable error-classification baseline so you can accurately measure
+   whether later changes actually help.
+2. Priority 2 (validate sub-loop) — quick win, frees retry budget
+   immediately, low risk to existing graph structure.
+3. Priority 1 (AWS grounding tools) — the core fix; biggest engineering
+   lift but directly targets "fails on tasks outside EC2/S3/RDS."
+4. Priority 3 (state-aware retries) — pairs naturally with Priority 1's
+   tool-calling infrastructure.
+5. Priority 4 (plan review) — add once the above stabilizes basic
+   apply success rate; this targets a different failure class
+   (semantic correctness, not execution success).
+6. Priority 6 — ongoing hygiene, apply once iteration counts start
+   trending higher due to the above changes surfacing more retries.
+
+
+HOW TO MEASURE IMPROVEMENT
+-----------------------------
+- Before starting: pull agent_memory.json, tally errors_encountered by
+  category (generation/plan/apply/timeout) and by resource type, to
+  get a baseline failure distribution.
+- After each priority item lands: re-run the same set of previously
+  failing actions and compare iterations_used and final_status against
+  baseline. Watch specifically for reduction in "AlreadyExists" /
+  state-drift style errors after Priority 3, and reduction in
+  plan/apply-stage failures for non-EC2/S3/RDS actions after Priority 1.
