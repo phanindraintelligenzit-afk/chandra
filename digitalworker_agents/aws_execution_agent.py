@@ -564,9 +564,20 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
 
 class ExecutionAgents:
 
-    def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None) -> None:
+    def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None, job_id: Optional[str] = None) -> None:
         self.max_iterations = max_iterations
-        logger.info("Initialising ExecutionAgents (max_iterations=%d)", max_iterations)
+        self.job_id = job_id or "default"
+        self.logger = logging.getLogger(f"ExecutionAgents.{self.job_id}")
+        self.logger.propagate = True
+        
+        os.makedirs("logs", exist_ok=True)
+        fh = logging.FileHandler(f"logs/{self.job_id}.log", mode='a', encoding='utf-8')
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+        # Add handler if not already present
+        if not any(isinstance(h, logging.FileHandler) and h.baseFilename == fh.baseFilename for h in self.logger.handlers):
+            self.logger.addHandler(fh)
+            
+        self.logger.info("Initialising ExecutionAgents (max_iterations=%d, job_id=%s)", max_iterations, self.job_id)
         try:
             model_name = os.getenv("MODEL_NAME")
             if not model_name:
@@ -578,27 +589,25 @@ class ExecutionAgents:
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _build_checkpointer()
             self.Graph = self._build_graph()
-            logger.info("ExecutionAgents initialised successfully with model %s", model_name)
+            self.logger.info("ExecutionAgents initialised successfully with model %s", model_name)
         except Exception as exc:
-            logger.exception("Failed to initialise ExecutionAgents: %s", exc)
+            self.logger.exception("Failed to initialise ExecutionAgents: %s", exc)
             raise
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _banner(text: str, char: str = "=", width: int = 78) -> None:
-        logger.info(char * width)
-        logger.info(text)
-        logger.info(char * width)
+    def _banner(self, text: str, char: str = "=", width: int = 78) -> None:
+        self.logger.info(char * width)
+        self.logger.info(text)
+        self.logger.info(char * width)
 
-    @staticmethod
-    def _cleanup_sandbox(sandbox_path: Optional[str]) -> None:
+    def _cleanup_sandbox(self, sandbox_path: Optional[str]) -> None:
         if sandbox_path and Path(sandbox_path).exists():
             try:
                 shutil.rmtree(sandbox_path)
-                logger.info("Cleaned up sandbox: %s", sandbox_path)
+                self.logger.info("Cleaned up sandbox: %s", sandbox_path)
             except Exception as exc:
-                logger.warning("Failed to clean up sandbox %s: %s", sandbox_path, exc)
+                self.logger.warning("Failed to clean up sandbox %s: %s", sandbox_path, exc)
 
     def _read_files_from_folder(self, folder_path: str, purpose: str = "files") -> List[Dict]:
         if not folder_path:
@@ -606,7 +615,7 @@ class ExecutionAgents:
 
         path = Path(folder_path)
         if not path.exists() or not path.is_dir():
-            logger.warning("%s folder '%s' does not exist", purpose, folder_path)
+            self.logger.warning("%s folder '%s' does not exist", purpose, folder_path)
             return []
 
         ignore_dirs = {".terraform", ".git", "__pycache__"}
@@ -633,9 +642,9 @@ class ExecutionAgents:
                 rel = file_path.relative_to(path)
                 files.append({"filename": str(rel).replace("\\", "/"), "content": content})
             except Exception as exc:
-                logger.warning("Could not read %s: %s", file_path, exc)
+                self.logger.warning("Could not read %s: %s", file_path, exc)
 
-        logger.info("Read %d %s file(s) from %s", len(files), purpose, folder_path)
+        self.logger.info("Read %d %s file(s) from %s", len(files), purpose, folder_path)
         return files
 
     # ── generator nodes ───────────────────────────────────────────────────────
@@ -730,13 +739,13 @@ sources or sensible defaults, do NOT ask the user."""
             analysis: ActionAnalysis = structured_llm.invoke([HumanMessage(content=prompt)])
             return {"analysis": analysis.model_dump()}
         except Exception as exc:
-            logger.exception("Analysis failed: %s", exc)
+            self.logger.exception("Analysis failed: %s", exc)
             raise
 
     def _hitl_node(self, state: AgentState) -> dict:
         questions: List[str] = state["analysis"].get("questions") or []
         if not questions:
-            logger.warning(
+            self.logger.warning(
                 "_hitl_node reached with empty questions list — "
                 "bypassing interrupt and proceeding to generate"
             )
@@ -1045,7 +1054,7 @@ Generate the complete set of files now."""
                 "generator_summary": result.summary,
             }
         except Exception as exc:
-            logger.exception("Generation failed: %s", exc)
+            self.logger.exception("Generation failed: %s", exc)
             raise
 
     def _write_files_node(self, state: AgentState) -> dict:
@@ -1084,9 +1093,9 @@ Generate the complete set of files now."""
                 if existing_file.suffix in CLEANABLE_EXTENSIONS:
                     try:
                         existing_file.unlink()
-                        logger.debug("Removed stale file: %s", existing_file)
+                        self.logger.debug("Removed stale file: %s", existing_file)
                     except Exception as exc:
-                        logger.warning("Could not remove stale file %s: %s", existing_file, exc)
+                        self.logger.warning("Could not remove stale file %s: %s", existing_file, exc)
 
         toolkit = FileManagementToolkit(root_dir=sandbox_dir)
         write_tool = {t.name: t for t in toolkit.get_tools()}["write_file"]
@@ -1094,11 +1103,11 @@ Generate the complete set of files now."""
         for file_info in state["generated_files"]:
             filename = file_info["filename"]
             if filename.endswith(".tfvars") and filename.lower() != "terraform.tfvars":
-                logger.warning(
+                self.logger.warning(
                     "Possible filename typo: '%s' — expected 'terraform.tfvars'", filename
                 )
             write_tool.invoke({"file_path": filename, "text": file_info["content"]})
-            logger.info("Wrote %s", filename)
+            self.logger.info("Wrote %s", filename)
 
         return {"sandbox_path": sandbox_dir, "input_sandbox_path": sandbox_dir}
 
@@ -1106,7 +1115,7 @@ Generate the complete set of files now."""
 
     def _scan_folder_node(self, state: AgentState) -> dict:
         execute_folder = state["sandbox_path"]
-        logger.info("Scanning folder: %s", execute_folder)
+        self.logger.info("Scanning folder: %s", execute_folder)
         folder_path = Path(execute_folder)
         if not folder_path.exists():
             raise FileNotFoundError(f"sandbox_path not found: {execute_folder}")
@@ -1117,7 +1126,7 @@ Generate the complete set of files now."""
             if p.is_file()
         )
         folder_contents = "\n".join(contents) if contents else "(empty folder)"
-        logger.info("Found %d file(s) in %s", len(contents), execute_folder)
+        self.logger.info("Found %d file(s) in %s", len(contents), execute_folder)
         return {"folder_contents": folder_contents}
 
     def _plan_node(self, state: AgentState) -> dict:
@@ -1126,18 +1135,18 @@ Generate the complete set of files now."""
         execute_folder = state["sandbox_path"]
         folder_contents = state.get("folder_contents") or ""
 
-        logger.info("=" * 80)
-        logger.info("PLANNING EXECUTION STRATEGY")
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
+        self.logger.info("PLANNING EXECUTION STRATEGY")
+        self.logger.info("=" * 80)
 
         # Fast path: generator already supplied steps — no LLM call needed
         if state.get("executable_steps"):
             steps = state["executable_steps"]
-            logger.info("✓ Using %d executable steps from generator", len(steps))
-            logger.info("-" * 80)
+            self.logger.info("✓ Using %d executable steps from generator", len(steps))
+            self.logger.info("-" * 80)
             for idx, step in enumerate(steps, 1):
-                logger.info("   [%d] %s", idx, step.get("description", step.get("command", "")))
-            logger.info("-" * 80)
+                self.logger.info("   [%d] %s", idx, step.get("description", step.get("command", "")))
+            self.logger.info("-" * 80)
             commands = [
                 {
                     "command": step.get("command") or step.get("cmd") or "",
@@ -1156,7 +1165,7 @@ Generate the complete set of files now."""
             }
 
         # Slow path: ask LLM to derive a plan from the folder contents
-        logger.info("Planning for action: %s", action.get("actionName"))
+        self.logger.info("Planning for action: %s", action.get("actionName"))
         os_name = platform.system()
         shell_note = (
             "Commands run via subprocess with shell=True on WINDOWS (cmd.exe)."
@@ -1220,13 +1229,13 @@ Only include commands needed for the actual files present."""
         try:
             structured_llm = self.Llm.with_structured_output(ExecutionPlan)
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
-            logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
-            logger.info("  Reasoning: %s", plan.reasoning)
+            self.logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
+            self.logger.info("  Reasoning: %s", plan.reasoning)
             for cmd in plan.commands:
-                logger.info("  [%d] %s | %s", cmd.order, cmd.description, cmd.command)
+                self.logger.info("  [%d] %s | %s", cmd.order, cmd.description, cmd.command)
             return {"execution_plan": plan.model_dump()}
         except Exception as exc:
-            logger.exception("Execution planning failed: %s", exc)
+            self.logger.exception("Execution planning failed: %s", exc)
             raise
 
     def _validate_command(self, command: str, execute_folder: str) -> Tuple[bool, str]:
@@ -1251,19 +1260,19 @@ Only include commands needed for the actual files present."""
         )
 
         if not plan or not plan.get("commands"):
-            logger.error("No execution plan / commands found — skipping execution")
+            self.logger.error("No execution plan / commands found — skipping execution")
             return {"execution_results": [], "success": False}
 
         base_path = Path(execute_folder).resolve()
         total_commands = len(plan["commands"])
         results: List[Dict] = []
 
-        logger.info("=" * 80)
-        logger.info(
+        self.logger.info("=" * 80)
+        self.logger.info(
             "EXECUTION STARTED: %d command(s) in %s  [timeout=%ds/cmd]",
             total_commands, execute_folder, timeout,
         )
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
 
         for idx, cmd_info in enumerate(
             sorted(plan["commands"], key=lambda c: c.get("order", 9999)), 1
@@ -1279,8 +1288,8 @@ Only include commands needed for the actual files present."""
             # Pre-execution validation
             is_valid, error_msg = self._validate_command(command, str(cwd))
             if not is_valid:
-                logger.warning("[%d/%d] ✗ VALIDATION FAILED: %s", idx, total_commands, description or command)
-                logger.warning("        Validation Error: %s", error_msg)
+                self.logger.warning("[%d/%d] ✗ VALIDATION FAILED: %s", idx, total_commands, description or command)
+                self.logger.warning("        Validation Error: %s", error_msg)
                 results.append({
                     "command": command,
                     "description": description,
@@ -1292,18 +1301,18 @@ Only include commands needed for the actual files present."""
                     "timed_out": False,
                     "timeout_seconds": timeout,
                 })
-                logger.error(
+                self.logger.error(
                     "EXECUTION HALTED (VALIDATION FAILED): %d remaining command(s) skipped",
                     total_commands - idx,
                 )
                 break
 
-            logger.info("-" * 80)
-            logger.info("[%d/%d] EXECUTING: %s", idx, total_commands, description or command)
-            logger.info("        Command    : %s", command)
-            logger.info("        Working Dir: %s", cwd)
-            logger.info("        Timeout    : %ds", timeout)
-            logger.info("-" * 80)
+            self.logger.info("-" * 80)
+            self.logger.info("[%d/%d] EXECUTING: %s", idx, total_commands, description or command)
+            self.logger.info("        Command    : %s", command)
+            self.logger.info("        Working Dir: %s", cwd)
+            self.logger.info("        Timeout    : %ds", timeout)
+            self.logger.info("-" * 80)
 
             timed_out = False
             result: Dict[str, Any]
@@ -1334,22 +1343,22 @@ Only include commands needed for the actual files present."""
                 }
 
                 if success:
-                    logger.info(
+                    self.logger.info(
                         "[%d/%d] ✓ SUCCESS: %s (rc=%d)",
                         idx, total_commands, description or command, proc_returncode,
                     )
                     if stdout_data:
-                        logger.info(
+                        self.logger.info(
                             "        Output: %s%s",
                             stdout_data[:300],
                             "..." if len(stdout_data) > 300 else "",
                         )
                 else:
-                    logger.warning(
+                    self.logger.warning(
                         "[%d/%d] ✗ FAILED: %s (rc=%d)",
                         idx, total_commands, description or command, proc_returncode,
                     )
-                    logger.warning("        Error: %s", stderr_data[:500])
+                    self.logger.warning("        Error: %s", stderr_data[:500])
 
             except TimeoutError as exc:
                 timed_out = True
@@ -1374,7 +1383,7 @@ Only include commands needed for the actual files present."""
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
-                logger.error(
+                self.logger.error(
                     "[%d/%d] ✗ TIMEOUT: %s exceeded %ds",
                     idx, total_commands, description or command, timeout,
                 )
@@ -1391,7 +1400,7 @@ Only include commands needed for the actual files present."""
                     "timed_out": False,
                     "timeout_seconds": timeout,
                 }
-                logger.exception(
+                self.logger.exception(
                     "[%d/%d] ✗ EXCEPTION in '%s': %s",
                     idx, total_commands, description or command, exc,
                 )
@@ -1400,7 +1409,7 @@ Only include commands needed for the actual files present."""
 
             if not result["success"]:
                 halt_reason = "TIMEOUT" if timed_out else "COMMAND FAILED"
-                logger.error(
+                self.logger.error(
                     "EXECUTION HALTED (%s): %d remaining command(s) skipped",
                     halt_reason, total_commands - idx,
                 )
@@ -1412,19 +1421,19 @@ Only include commands needed for the actual files present."""
             and len(results) == total_commands
         )
 
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
         if overall_success:
-            logger.info("✓ EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
+            self.logger.info("✓ EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
         else:
             timed_out_count = sum(1 for r in results if r.get("timed_out"))
             if timed_out_count:
-                logger.warning("✗ EXECUTION: %d command(s) timed out", timed_out_count)
+                self.logger.warning("✗ EXECUTION: %d command(s) timed out", timed_out_count)
             else:
-                logger.warning(
+                self.logger.warning(
                     "✗ EXECUTION: %d/%d command(s) succeeded",
                     sum(1 for r in results if r["success"]), len(results),
                 )
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
 
         return {"execution_results": results, "success": overall_success}
 
@@ -1437,16 +1446,16 @@ Only include commands needed for the actual files present."""
         analysis = state.get("analysis") or {}
         post_deploy_outputs = analysis.get("post_deploy_outputs") or []
 
-        logger.info("=" * 80)
-        logger.info("GENERATING EXECUTION REPORT")
-        logger.info("Action: %s | Status: %s", action.get("actionName"), "SUCCESS" if success else "FAILED")
-        logger.info(
+        self.logger.info("=" * 80)
+        self.logger.info("GENERATING EXECUTION REPORT")
+        self.logger.info("Action: %s | Status: %s", action.get("actionName"), "SUCCESS" if success else "FAILED")
+        self.logger.info(
             "Commands: %d total, %d succeeded, %d failed",
             len(results),
             sum(1 for r in results if r["success"]),
             sum(1 for r in results if not r["success"]),
         )
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
 
         parts = []
         for r in results:
@@ -1514,9 +1523,9 @@ Rules:
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
             summary = response.content
-            logger.info("✓ LLM summary generated")
+            self.logger.info("✓ LLM summary generated")
         except Exception as exc:
-            logger.warning("LLM summary failed, using fallback: %s", exc)
+            self.logger.warning("LLM summary failed, using fallback: %s", exc)
             timed_out_cmds = [r for r in results if r.get("timed_out")]
             if timed_out_cmds:
                 names = ", ".join(f"'{r['command']}'" for r in timed_out_cmds)
@@ -1608,7 +1617,7 @@ Rules:
         else:
             consecutive = 1 if current_error_class else 0
 
-        logger.info(
+        self.logger.info(
             "[Iteration %d] error_class=%r  prior_error_class=%r  consecutive_same=%d  stuck_threshold=%d",
             iteration, current_error_class, prior_error_class, consecutive, STUCK_THRESHOLD,
         )
@@ -1635,7 +1644,7 @@ Rules:
             f"Execution failed on iteration {iteration}. "
             "Review the error output and fix the generated files."
         )
-        logger.info(
+        self.logger.info(
             "[Iteration %d] Feedback for next iteration: %s",
             iteration,
             feedback[:400] + "..." if len(feedback) > 400 else feedback,
@@ -1660,7 +1669,7 @@ Rules:
 
         # ── Stuck loop → trigger mid-run HITL ────────────────────────────────
         if consecutive >= STUCK_THRESHOLD:
-            logger.warning(
+            self.logger.warning(
                 "[Iteration %d] STUCK DETECTED — same error '%s' repeated %d times. "
                 "Escalating to mid-run HITL.",
                 iteration, current_error_class, consecutive,
@@ -1720,8 +1729,8 @@ Rules:
             "(e.g. correct AMI ID, correct region, specific resource name, IAM role ARN, etc.).",
         ]
 
-        logger.warning("MID-RUN HITL: pausing pipeline, asking user for guidance")
-        logger.warning("Error context: %s", error_snippet[:200])
+        self.logger.warning("MID-RUN HITL: pausing pipeline, asking user for guidance")
+        self.logger.warning("Error context: %s", error_snippet[:200])
 
         user_guidance = interrupt(questions)
         guidance_list = user_guidance if isinstance(user_guidance, list) else [user_guidance]
@@ -1733,7 +1742,7 @@ Rules:
             + feedback
         )
 
-        logger.info("MID-RUN HITL: received user guidance, resuming pipeline")
+        self.logger.info("MID-RUN HITL: received user guidance, resuming pipeline")
         return {
             "feedback_summary": updated_feedback,
             "final_status": "in_progress",
@@ -1775,9 +1784,9 @@ Rules:
                 )
                 resp = self.Llm.invoke([HumanMessage(content=lesson_prompt)])
                 lesson = resp.content.strip()
-                logger.info("memory.lesson: %s", lesson)
+                self.logger.info("memory.lesson: %s", lesson)
         except Exception as exc:
-            logger.warning("memory.lesson_generation_failed: %s", exc)
+            self.logger.warning("memory.lesson_generation_failed: %s", exc)
 
         self.Memory.record_run(
             action_name=action.get("actionName", "unknown"),
@@ -1787,7 +1796,7 @@ Rules:
             records=records,
             lesson=lesson,
         )
-        logger.info("memory.run_recorded  status=%s  lesson=%r", final_status, lesson[:80] if lesson else "")
+        self.logger.info("memory.run_recorded  status=%s  lesson=%r", final_status, lesson[:80] if lesson else "")
         return {}
 
     # ── routing ───────────────────────────────────────────────────────────────
@@ -1903,15 +1912,24 @@ Rules:
         # Load cross-run memory context once per pipeline call
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
 
-        logger.info("")
+        self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
-        logger.info("Thread ID        : %s", tid)
-        logger.info("Action           : %s", action.get("actionName"))
-        logger.info("Reference Folder : %s", reference_folder or "None")
-        logger.info("Max Iterations   : %d", self.max_iterations)
-        logger.info("Command Timeout  : %ds per command", command_timeout)
-        logger.info("Memory entries   : %d total runs loaded", len(self.Memory.runs))
-        logger.info("")
+        self.logger.info("Thread ID        : %s", tid)
+        self.logger.info("Action           : %s", action.get("actionName"))
+        self.logger.info("Description      : %s", action.get("actionDescription", "None"))
+        self.logger.info("Service          : %s", action.get("service", "None"))
+        self.logger.info("KRA Code         : %s", action.get("kraCode", "None"))
+        self.logger.info("Priority         : %s", action.get("priorityLevel", "None"))
+        self.logger.info("Reference Folder : %s", reference_folder or "None")
+        self.logger.info("Max Iterations   : %d", self.max_iterations)
+        self.logger.info("Command Timeout  : %ds per command", command_timeout)
+        self.logger.info("Memory entries   : %d total runs loaded", len(self.Memory.runs))
+        steps = action.get("steps", [])
+        if steps:
+            self.logger.info("Steps            : %d provided", len(steps))
+            for i, step in enumerate(steps, 1):
+                self.logger.info("  [%d] %s", i, step)
+        self.logger.info("")
 
         try:
             if answers:
@@ -1990,13 +2008,13 @@ Rules:
                 try:
                     issue_key = jira_url.rstrip("/").split("/")[-1]
                     add_summary_comment(issue_key, final_summary_text)
-                    logger.info("Added final summary comment to Jira ticket %s", issue_key)
+                    self.logger.info("Added final summary comment to Jira ticket %s", issue_key)
                     
                     target_status = "Done" if final_status == "success" else "Backlog"
                     update_ticket_status(issue_key, target_status)
-                    logger.info("Transitioned Jira ticket %s to %s", issue_key, target_status)
+                    self.logger.info("Transitioned Jira ticket %s to %s", issue_key, target_status)
                 except Exception as e:
-                    logger.warning("Failed to update Jira with final summary and status: %s", e)
+                    self.logger.warning("Failed to update Jira with final summary and status: %s", e)
 
             if final_status == "success":
                 # Sandbox intentionally kept: contains terraform.tfstate and .pem key
@@ -2025,7 +2043,7 @@ Rules:
             )
 
         except BaseException as exc:
-            logger.exception("RunPipeline error or interrupt: %s", exc)
+            self.logger.exception("RunPipeline error or interrupt: %s", exc)
             # FIX-A13: attempt to clean up the sandbox if one was created before the crash/stop.
             try:
                 snapshot = self.Graph.get_state(config)

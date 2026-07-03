@@ -96,6 +96,8 @@ export const WorkerActionExecutionCenter = forwardRef<
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
   const [confirmStopId, setConfirmStopId] = useState<string | null>(null);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+  const [logSearchQueries, setLogSearchQueries] = useState<Record<string, string>>({});
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -177,7 +179,7 @@ export const WorkerActionExecutionCenter = forwardRef<
       } catch (error) {
         console.error("Failed to fetch logs:", error);
       }
-    }, 4000);
+    }, 1000);
   };
 
   const startPolling = (actionId: string, jobId: string, startedAt: number, jiraKey: string) => {
@@ -200,33 +202,14 @@ export const WorkerActionExecutionCenter = forwardRef<
         const jobIdLower = jobId ? jobId.toLowerCase() : "";
 
         let actionLogs = allLogs.filter((log) => {
-          const isInWindow = log.timestamp >= startTimeSecs - 5 && log.timestamp <= nowSecs + 30;
-          if (!isInWindow) return false;
-
-          // 1. Explicit thread-local jobId match (perfect isolation)
-          if (log.job_id && jobIdLower && log.job_id.toLowerCase() === jobIdLower) {
-            return true;
-          }
-
+          if (!jobIdLower) return false;
+          // Explicit thread-local jobId match or message match
+          if (log.job_id && log.job_id.toLowerCase() === jobIdLower) return true;
+          
           const text = `${log.message} ${log.logger}`.toLowerCase();
+          if (text.includes(jobIdLower)) return true;
 
-          // 1. jobId match — most reliable
-          if (jobIdLower && text.includes(jobIdLower)) return true;
-
-          // 2. jiraKey match (both formats)
-          if (hasValidJira && (text.includes(jiraLower) || text.includes(jiraSpaced))) return true;
-
-          // 3. Time-window fallback: include all logs in the time window 
-          // UNLESS they explicitly belong to a DIFFERENT orchestration job.
-          const mentionsDifferentJira =
-            text.includes("jira issue key") &&
-            (!hasValidJira || (!text.includes(jiraLower) && !text.includes(jiraSpaced)));
-            
-          const mentionsDifferentJob =
-            text.includes("job_id=") &&
-            jobIdLower && !text.includes(jobIdLower);
-
-          return !mentionsDifferentJira && !mentionsDifferentJob;
+          return false;
         });
 
         const jobDone =
@@ -239,6 +222,21 @@ export const WorkerActionExecutionCenter = forwardRef<
           stopPolling(actionId);
           // Clear any pending stop-confirm dialog for this action so it can't get stuck
           setConfirmStopId((cur) => (cur === actionId ? null : cur));
+
+          // Force a final log fetch to catch any burst of logs (like tracebacks) just before the job died
+          try {
+            const finalLogs = await fetchBackendLogs(2000, 0);
+            cachedLogsRef.current = finalLogs;
+            actionLogs = finalLogs.filter((log: any) => {
+              if (!jobIdLower) return false;
+              if (log.job_id && log.job_id.toLowerCase() === jobIdLower) return true;
+              const text = `${log.message} ${log.logger}`.toLowerCase();
+              if (text.includes(jobIdLower)) return true;
+              return false;
+            });
+          } catch (e) {
+            console.error("Failed to fetch final logs", e);
+          }
 
           const result = jobStatus.result as any;
           const statusCode: number = result?.statusCode ?? 0;
@@ -456,7 +454,9 @@ export const WorkerActionExecutionCenter = forwardRef<
           actionName: executing.actionName,
           actionDescription: executing.actionDescription,
           steps: executing.steps,
-          service: executing.service || "AWS"
+          service: executing.service || "AWS",
+          kraCode: executing.kraCode,
+          priorityLevel: executing.priorityLevel
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: 300,
@@ -534,9 +534,18 @@ export const WorkerActionExecutionCenter = forwardRef<
   return (
     <div className="glass overflow-hidden p-4 rounded-2xl border border-white/10">
       <div className="mb-4 flex items-center justify-between">
-        <div>
-          <div className="text-[0.65rem] uppercase tracking-[0.22em] text-muted">WORKER ACTION EXECUTION CENTER</div>
-          <div className="mt-1 text-sm text-frost/70">Auto-approved actions executing with live logs</div>
+        <div className="flex items-center gap-6">
+          <div>
+            <div className="text-[0.65rem] uppercase tracking-[0.22em] text-muted">WORKER ACTION EXECUTION CENTER</div>
+            <div className="mt-1 text-sm text-frost/70">Auto-approved actions executing with live logs</div>
+          </div>
+          <input 
+            type="text" 
+            placeholder="Search by Action Name or Job ID..." 
+            className="bg-black/40 border border-white/10 rounded-md px-3 py-1.5 text-xs text-frost focus:outline-none focus:border-frost/50 transition-colors w-64"
+            value={globalSearchQuery}
+            onChange={(e) => setGlobalSearchQuery(e.target.value)}
+          />
         </div>
         <div className="rounded-full bg-signal/20 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-signal">
           {pendingCount} EXECUTING
@@ -587,7 +596,16 @@ export const WorkerActionExecutionCenter = forwardRef<
           </div>
         ) : (
           <AnimatePresence initial={false}>
-            {executingActions.map((action) => {
+            {executingActions
+              .filter(action => {
+                const q = globalSearchQuery.toLowerCase();
+                if (!q) return true;
+                const name = (action.actionName || "").toLowerCase();
+                const job = (action.jobId || "").toLowerCase();
+                const kra = (action.kraCode || "").toLowerCase();
+                return name.includes(q) || job.includes(q) || kra.includes(q);
+              })
+              .map((action) => {
               const open = expandedId === action.id;
               return (
                 <motion.div
@@ -614,7 +632,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         <div className="mt-1 text-[0.65rem] text-muted">
                           {action.service} • {action.kraCode || "No KRA"}
                           {action.jobId && (
-                            <span className="ml-2 font-mono text-white/30">job:{action.jobId.slice(0, 8)}</span>
+                            <span className="ml-2 font-mono text-white/30">JOBID:{action.jobId}</span>
                           )}
                         </div>
                         <div className="mt-2 text-[0.68rem] text-frost/75">{action.actionDescription}</div>
@@ -642,6 +660,17 @@ export const WorkerActionExecutionCenter = forwardRef<
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.sandboxPath && action.status === "completed" && (
                               <>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                  window.open(`${apiUrl}/download_sandbox?path=${encodeURIComponent(action.sandboxPath!)}`, '_blank');
+                                }}
+                                className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
+                              >
+                                <Download size={12} />
+                                Download Execution Artifacts
+                              </button>
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -749,6 +778,20 @@ export const WorkerActionExecutionCenter = forwardRef<
                               >
                                 <RotateCcw size={12} />
                                 Retry Execution
+                              </button>
+                            )}
+                            
+                            {action.jobId && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(action.jobId)}`, '_blank');
+                                }}
+                                className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
+                              >
+                                <Download size={12} />
+                                Download Logs
                               </button>
                             )}
                           </div>
@@ -890,8 +933,24 @@ export const WorkerActionExecutionCenter = forwardRef<
 
                       <div>
                         <div className="flex items-center justify-between mb-2">
-                          <div className="text-[0.6rem] uppercase tracking-[0.18em] text-muted">LIVE EXECUTION LOGS</div>
-                          <div className="text-[0.55rem] text-muted">{action.logs.length} entries</div>
+                          <div className="flex items-center gap-4">
+                            <div className="text-[0.6rem] uppercase tracking-[0.18em] text-muted">LIVE EXECUTION LOGS</div>
+                            <input 
+                              type="text" 
+                              placeholder="Search logs..." 
+                              className="bg-black/50 border border-white/10 rounded px-2 py-0.5 text-[0.6rem] text-frost focus:outline-none focus:border-frost/50 transition-colors w-48"
+                              value={logSearchQueries[action.id] || ""}
+                              onChange={(e) => setLogSearchQueries(prev => ({ ...prev, [action.id]: e.target.value }))}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </div>
+                          <div className="text-[0.55rem] text-muted">
+                            {(() => {
+                               const q = logSearchQueries[action.id]?.toLowerCase();
+                               const count = q ? action.logs.filter(l => l.message.toLowerCase().includes(q) || l.level.toLowerCase().includes(q)).length : action.logs.length;
+                               return `${count} entries`;
+                            })()}
+                          </div>
                         </div>
                         <div
                           ref={(el) => {
@@ -901,7 +960,13 @@ export const WorkerActionExecutionCenter = forwardRef<
                           className="max-h-[600px] space-y-0.5 overflow-y-auto pr-1 scrollbar-mini font-mono"
                         >
                           {action.logs.length ? (
-                            action.logs.map((log, idx) => (
+                            action.logs
+                              .filter(log => {
+                                const q = logSearchQueries[action.id]?.toLowerCase();
+                                if (!q) return true;
+                                return log.message.toLowerCase().includes(q) || log.level.toLowerCase().includes(q);
+                              })
+                              .map((log, idx) => (
                               <div
                                 key={`${action.id}-${log.timestamp}-${idx}`}
                                 className={cx(
@@ -933,7 +998,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         Started: {new Date(action.startedAt).toLocaleTimeString()}{" "}
                         {action.completedAt && action.status === "stopped" && `• Stopped: ${new Date(action.completedAt).toLocaleTimeString()}`}
                         {action.completedAt && action.status !== "stopped" && `• Completed: ${new Date(action.completedAt).toLocaleTimeString()}`}
-                        {action.jobId && ` • Job: ${action.jobId.slice(0, 8)}…`}
+                        {action.jobId && ` • JobId: ${action.jobId}`}
                       </div>
                     </motion.div>
                   )}

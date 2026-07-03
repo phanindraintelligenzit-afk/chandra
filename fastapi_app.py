@@ -874,6 +874,16 @@ def get_orchestrate_status(job_id: str):
 
     return JobStatusResponse(job_id=job_id, **job)
 
+@app.get("/orchestrate/logs/{job_id}")
+def download_orchestrate_logs(job_id: str):
+    """Download the logs for a specific orchestration job."""
+    log_file_path = f"logs/{job_id}.log"
+    if not os.path.exists(log_file_path):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"error": "Log file not found"})
+    from fastapi.responses import FileResponse
+    return FileResponse(log_file_path, media_type='text/plain', filename=f"{job_id}.log")
+
 def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
     """Background worker to run orchestration without blocking the API."""
     import time
@@ -896,7 +906,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
 
         # Run the actual orchestration
-        orchestrator = ExecutionAgents(max_iterations=request.max_iterations)
+        orchestrator = ExecutionAgents(max_iterations=request.max_iterations, job_id=job_id)
 
         action_dict = request.action.model_dump()
         if request.jiraUrl:

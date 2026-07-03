@@ -1844,7 +1844,7 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
       } catch (e) {
         // silently ignore polling errors
       }
-      timer = window.setTimeout(poll, 1500);
+      timer = window.setTimeout(poll, 1000);
     }
     
     poll();

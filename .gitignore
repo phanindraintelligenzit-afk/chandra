@@ -13,6 +13,7 @@ out/
 dist/
 build/
 database/
+logs/
 .python-version
 logs.txt
 # Tooling caches

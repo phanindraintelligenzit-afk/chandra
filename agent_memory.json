@@ -10,6 +10,35 @@
         "Successfully created an S3 bucket in `us-east-1` using Terraform with secure configuration including versioning, encryption, and public access blocks enabled by default to satisfy KRA-05"
       ],
       "lesson": "Always include a `provider \"aws\"` block with explicitly defined region and credentials profile to ensure consistent, reproducible S3 bucket creation across environments."
+    },
+    {
+      "timestamp": "2026-07-03T11:52:16",
+      "action_name": "Create S3 Bucket via Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Despite reporting Overall Success: False, all Terraform commands actually completed successfully",
+        "The Terraform S3 bucket deployment completed successfully, with all commands returning exit code 0 and no errors"
+      ],
+      "lesson": "Successfully used the `aws_s3_bucket` resource with unique bucket names — S3 bucket names must be globally unique across all AWS accounts, so include environment-specific or random suffixes to avoid `BucketAlreadyExists` errors."
+    },
+    {
+      "timestamp": "2026-07-03T12:20:04",
+      "action_name": "Enable AWS Config in critical regions",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Invalid data source"
+      ],
+      "fixes_applied": [
+        "The Terraform initialization succeeded, but `terraform validate` failed due to an unsupported argument error",
+        "Terraform initialization and validation succeeded, but `terraform apply` failed when attempting to create an IAM Service Linked Role for AWS Config in ap-south-1",
+        "Terraform initialized successfully, but `terraform validate` failed due to an invalid data source reference",
+        "Terraform successfully initialized and validated the configuration, and the plan identified three new AWS Config recorders to be created in `ap-south-1`, `eu-central-1`, and `us-east-1`",
+        "The automation failed during the `terraform validate` step due to an invalid data source reference"
+      ],
+      "lesson": "Always verify data source existence in the AWS provider documentation — `aws_config_configuration_recorder` does not exist as a data source, so use the `aws_config_configuration_recorder_status` resource or reference the recorder by name instead."
     }
   ]
 }
