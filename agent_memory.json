@@ -126,6 +126,18 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use region-agnostic AMI lookup via `aws_ami` data source — hardcoded AMI IDs fail across regions, but dynamic lookup ensures compatibility."
+    },
+    {
+      "timestamp": "2026-07-06T13:31:17",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region to satisfy KRA-05, but failed during the pre-flight `terraform validate` phase due to a configuration error: ",
+        "The AWS automation successfully executed a Terraform deployment to provision a t2"
+      ],
+      "lesson": "Always use dynamic AMI lookup via `aws_ami` data source — hardcoded AMI IDs are region-specific and will fail in other regions."
     }
   ]
 }

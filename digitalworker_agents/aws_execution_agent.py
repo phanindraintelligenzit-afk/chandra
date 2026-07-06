@@ -558,6 +558,8 @@ class ExecutionAgents:
     def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None, job_id: Optional[str] = None) -> None:
         self.max_iterations = max_iterations
         self.job_id = job_id or "default"
+        self._quotas_cache = {}
+        self._docs_cache = {}
         self.logger = logging.getLogger(f"ExecutionAgents.{self.job_id}")
         self.logger.propagate = True
         
@@ -2182,14 +2184,21 @@ Rules:
             quotas_context += "\nSERVICE QUOTAS (from dynamic lookup):\n"
             try:
                 import boto3
-                client = boto3.client('service-quotas')
+                session = boto3.Session()
+                region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
+                client = session.client('service-quotas', region_name=region)
                 for svc in services:
+                    if svc in self._quotas_cache:
+                        quotas_context += self._quotas_cache[svc]
+                        continue
                     try:
                         res = client.list_service_quotas(ServiceCode=svc.lower(), MaxResults=20)
                         if res.get('Quotas'):
-                            quotas_context += f"--- {svc.upper()} Quotas ---\n"
+                            svc_ctx = f"--- {svc.upper()} Quotas ---\n"
                             for q in res['Quotas']:
-                                quotas_context += f"- {q.get('QuotaName')}: {q.get('Value')}\n"
+                                svc_ctx += f"- {q.get('QuotaName')}: {q.get('Value')}\n"
+                            self._quotas_cache[svc] = svc_ctx
+                            quotas_context += svc_ctx
                     except Exception as e:
                         self.logger.warning("Failed to fetch quotas for %s: %s", svc, e)
             except Exception as e:
@@ -2199,8 +2208,10 @@ Rules:
         if resources:
             docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
             import urllib.request
-            import re
             for res_type in resources:
+                if res_type in self._docs_cache:
+                    docs_context += self._docs_cache[res_type]
+                    continue
                 if not res_type.startswith("aws_"):
                     continue
                 short_name = res_type[4:]
@@ -2213,9 +2224,11 @@ Rules:
                     match = re.search(r'## Argument Reference(.*?)(?:##|\Z)', markdown, re.DOTALL | re.IGNORECASE)
                     if match:
                         snippet = match.group(1).strip()
-                        docs_context += f"\n--- {res_type} Argument Reference ---\n{snippet[:1500]}...\n"
+                        res_ctx = f"\n--- {res_type} Argument Reference ---\n{snippet[:1500]}...\n"
                     else:
-                        docs_context += f"\n--- {res_type} ---\nNo Argument Reference found in docs.\n"
+                        res_ctx = f"\n--- {res_type} ---\nNo Argument Reference found in docs.\n"
+                    self._docs_cache[res_type] = res_ctx
+                    docs_context += res_ctx
                 except Exception as e:
                     self.logger.warning("Failed to fetch TF docs for %s at %s: %s", res_type, url, e)
 
