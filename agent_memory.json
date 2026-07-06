@@ -71,6 +71,48 @@
         "The AWS automation successfully deployed a single-AZ PostgreSQL RDS instance in us-east-1 using Terraform, with storage encryption enabled and tagged as production within the default VPC"
       ],
       "lesson": "Always validate RDS instance parameters (like version, storage, and subnet group) against the target AWS region’s availability before deployment — this ensured success by preventing unsupported configurations."
+    },
+    {
+      "timestamp": "2026-07-06T10:46:47",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region but failed during the `terraform validate` pre-flight check",
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1, successfully running `terraform init`, `validate`, and `plan` commands",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use dynamic AWS AMI lookups with `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and avoid deployment failures."
+    },
+    {
+      "timestamp": "2026-07-06T11:22:04",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 6,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: local-exec provisioner error"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform by running `terraform validate` and `py_compile` as pre-flight checks, but failed because `terraform init` encountered configuration ",
+        "The automation attempted to deploy a t2",
+        "The AWS automation executed Terraform to deploy a t2",
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1, successfully initializing providers, validating configuration, and generating a plan that required replacing the existi",
+        "The automation attempted to deploy an EC2 instance using Terraform, successfully initializing, validating, and planning the infrastructure, including refreshing state for resources like `aws_instance"
+      ],
+      "lesson": "Always escape percent signs in Windows `icacls` commands within Terraform’s `local-exec` by using `%%` instead of `%` to avoid variable expansion errors in PowerShell."
+    },
+    {
+      "timestamp": "2026-07-06T11:40:43",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in the us-east-1 region to satisfy KRA-05, but pre-flight validation failed due to a Terraform initialization error",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use the `aws_ami` data source to dynamically fetch the latest Amazon Linux 2 AMI — hardcoded AMI IDs are region-specific and cause deployment failures elsewhere."
     }
   ]
 }

@@ -8,7 +8,7 @@ agents into one LangGraph state machine with a single shared AgentState.
 
 Flow per iteration:
     read_existing -> read_reference -> analyze -> [hitl?] -> generate
-        -> write_files -> scan_folder -> plan -> execute -> report -> route
+        -> write_files -> validate -> scan_folder -> plan -> plan_review -> execute -> report -> route
 
 route:
     - success                    -> save_memory -> END
@@ -68,12 +68,10 @@ logging.basicConfig(
 logger = logging.getLogger("ExecutionAgents")
 
 MAX_ITERATIONS = 6
-DEFAULT_COMMAND_TIMEOUT = 500  # seconds
-# Trigger mid-run HITL when the same error class repeats this many times with no fix
+DEFAULT_COMMAND_TIMEOUT = 500
 STUCK_THRESHOLD = 2
-
-
-# ── Persistent cross-run memory ───────────────────────────────────────────────
+VALIDATE_MAX_RETRIES = 3
+PLAN_REVIEW_MAX_RETRIES = 2
 
 class AgentMemory:
     """
@@ -99,8 +97,8 @@ class AgentMemory:
     }
     """
 
-    MAX_RUNS = 50          # keep last N runs to cap file size
-    MAX_ERRORS_PER_RUN = 5 # store only the most informative errors per run
+    MAX_RUNS = 50
+    MAX_ERRORS_PER_RUN = 5
 
     def __init__(self, memory_path: Optional[str] = None) -> None:
         self.path = Path(
@@ -122,7 +120,6 @@ class AgentMemory:
 
     def _save(self) -> None:
         try:
-            # trim to max runs
             self._data["runs"] = self._data["runs"][-self.MAX_RUNS:]
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
@@ -144,18 +141,15 @@ class AgentMemory:
         lesson: str = "",
     ) -> None:
         """Append a run summary and persist to disk."""
-        # Strip ANSI colour codes AND Terraform box-drawing characters
         _ANSI_AND_BOX = re.compile(r"\x1b\[[0-9;]*m|[╷│╵]")
 
         def _clean(text: str) -> str:
             return _ANSI_AND_BOX.sub("", text)
 
-        # Collect unique errors from all failed commands
         errors: List[str] = []
         for r in execution_results:
             if not r.get("success") and r.get("stderr"):
                 raw = _clean(r["stderr"])
-                # Skip blank lines and leftover box-drawing artifacts
                 first_line = next(
                     (
                         ln.strip()
@@ -169,13 +163,10 @@ class AgentMemory:
                 if len(errors) >= self.MAX_ERRORS_PER_RUN:
                     break
 
-        # Collect fix descriptions from the LLM-written executor_summary fields
-        # in each iteration record (plain-English, not raw feedback blobs).
         fixes: List[str] = []
         for rec in records:
             summary = rec.get("executor_summary") or rec.get("feedback_used") or ""
             if summary:
-                # Take only the first sentence and cap length
                 sentence = summary.split(".")[0].strip()[:200]
                 if sentence and sentence not in fixes:
                     fixes.append(sentence)
@@ -201,9 +192,6 @@ class AgentMemory:
         if not runs:
             return ""
 
-        # Score: same-action recent first, then other-action recent.
-        # FIX-A1: clamp n_other to max(0, ...) so that when same fills the quota,
-        # `other[-0:]` is NOT evaluated (which would return the entire list).
         same = [r for r in runs if r.get("action_name", "") == action_name]
         other = [r for r in runs if r.get("action_name", "") != action_name]
         n_other = max(0, max_relevant - len(same))
@@ -230,9 +218,6 @@ class AgentMemory:
         )
         return "\n".join(lines)
 
-
-# ── Checkpointer ──────────────────────────────────────────────────────────────
-
 def _build_checkpointer() -> Any:
     """Return a checkpointer using a three-tier fallback strategy.
 
@@ -240,11 +225,10 @@ def _build_checkpointer() -> Any:
     Tier 2: SQLite    (local disk, 'database/' folder)
     Tier 3: MemorySaver (in-process fallback)
     """
-    # ── Tier 1: Postgres ──────────────────────────────────────────────────────
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
         from psycopg_pool import ConnectionPool
-        import psycopg  # noqa: PLC0415
+        import psycopg
         import atexit
 
         conn_string = os.getenv("POSTGRES_URL", "")
@@ -254,7 +238,7 @@ def _build_checkpointer() -> Any:
             with psycopg.connect(conn_string, autocommit=True) as conn:
                 PostgresSaver(conn).setup()
             pool = ConnectionPool(conn_string, max_size=10)
-            atexit.register(pool.close)  # Cleanly close pool to prevent PythonFinalizationError on shutdown
+            atexit.register(pool.close)
             checkpointer = PostgresSaver(pool)
             logger.info("checkpointer.postgres_setup_success")
             return checkpointer
@@ -264,10 +248,9 @@ def _build_checkpointer() -> Any:
     except Exception as exc:
         logger.warning("checkpointer.postgres_setup_failed", exc_info=exc)
 
-    # ── Tier 2: SQLite ────────────────────────────────────────────────────────
     try:
-        import sqlite3  # noqa: PLC0415
-        from langgraph.checkpoint.sqlite import SqliteSaver  # noqa: PLC0415
+        import sqlite3
+        from langgraph.checkpoint.sqlite import SqliteSaver
 
         db_dir = Path("database")
         db_dir.mkdir(parents=True, exist_ok=True)
@@ -282,12 +265,8 @@ def _build_checkpointer() -> Any:
     except Exception as exc:
         logger.warning("checkpointer.sqlite_setup_failed", exc_info=exc)
 
-    # ── Tier 3: In-memory ─────────────────────────────────────────────────────
     logger.warning("checkpointer.fallback_to_memory_saver")
     return MemorySaver()
-
-
-# ── Pydantic models ───────────────────────────────────────────────────────────
 
 class ActionAnalysis(BaseModel):
     needs_clarification: bool = Field(
@@ -344,24 +323,20 @@ class ActionAnalysis(BaseModel):
         ),
     )
 
-
 class GeneratedFile(BaseModel):
     filename: str
     content: str
     file_type: str
     description: str
 
-
 class ExecutableStep(BaseModel):
     description: str
     command: str
-
 
 class CodeGenerationResult(BaseModel):
     files: List[GeneratedFile]
     executableSteps: List[ExecutableStep]
     summary: str
-
 
 class ExecutionCommand(BaseModel):
     command: str = Field(description="Shell command to execute")
@@ -372,12 +347,10 @@ class ExecutionCommand(BaseModel):
     )
     order: int = Field(description="Execution order (1 = first)")
 
-
 class ExecutionPlan(BaseModel):
     execution_type: str = Field(description="'python' | 'terraform' | 'shell' | 'mixed'")
     commands: List[ExecutionCommand] = Field(description="Ordered list of commands to run")
     reasoning: str = Field(description="Brief explanation of the execution strategy")
-
 
 class ExecutionResult(BaseModel):
     command: str
@@ -390,19 +363,29 @@ class ExecutionResult(BaseModel):
     timed_out: bool = False
     timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT
 
-
 class IterationRecord(BaseModel):
     iteration: int
     generator_status: str
     executor_status: str
     executor_success: bool
     feedback_used: Optional[str] = None
-    executor_summary: Optional[str] = None   # LLM-written plain-English outcome
+    executor_summary: Optional[str] = None
     sandbox_path: Optional[str] = None
 
+class PlanReview(BaseModel):
+    matches_intent: bool = Field(
+        description="True if the plan's resource changes plausibly match the requested action"
+    )
+    destroy_or_replace_detected: bool = Field(
+        description="True if the plan contains any unexpected destroy or replace of a resource"
+    )
+    concerns: List[str] = Field(
+        default_factory=list,
+        description="Short list of specific concerns, if any (empty if plan looks correct)",
+    )
+    reasoning: str = Field(description="One or two sentence justification")
 
 class AgentState(TypedDict):
-    # shared / control
     action: Dict[str, Any]
     reference_folder: str
     command_timeout: int
@@ -410,13 +393,12 @@ class AgentState(TypedDict):
     iteration: int
     records: List[Dict]
     feedback_summary: str
-    memory_context: str          # cross-run memory injected into prompts
-    consecutive_same_error: int  # tracks stuck-loop detection for mid-run HITL
-    # FIX-5: explicit field for last seen error class — avoids false-positive
-    # substring matches in the old `current_error_class in prior_feedback` check.
+    memory_context: str
+    consecutive_same_error: int
     last_error_class: str
+    aws_context: str
+    terraform_state_context: str
 
-    # generator-related
     analysis: Optional[Dict]
     clarification: Optional[Dict]
     generated_files: List[Dict]
@@ -427,17 +409,24 @@ class AgentState(TypedDict):
     input_sandbox_path: str
     generator_summary: str
 
-    # executor-related
+    validate_iteration: int
+    validate_passed: bool
+    validate_feedback: str
+
     folder_contents: Optional[str]
     execution_plan: Optional[Dict]
     execution_results: List[Dict]
     success: bool
     executor_summary: str
 
-    # final
+    pre_apply_results: List[Dict]
+    plan_review: Optional[Dict]
+    plan_review_iteration: int
+    plan_review_precheck_failed: bool
+    plan_review_skipped: bool
+
     final_status: str
     final_summary: str
-
 
 class PipelineResponse(BaseModel):
     statusCode: int
@@ -450,12 +439,6 @@ class PipelineResponse(BaseModel):
     execution_results: Optional[List[ExecutionResult]] = None
     summary: Optional[str] = None
     questions: Optional[List[str]] = None
-
-# ── Shell execution helper ────────────────────────────────────────────────────
-# FIX-1: Removed @tool decorator. execute_shell_command is called directly as a
-# plain function — there is no reason to wrap it as a LangChain tool. Using @tool
-# for direct programmatic calls adds unnecessary overhead and risks silent behaviour
-# changes if LangChain ever alters how handle_tool_error defaults propagate.
 
 _active_subprocesses = {}
 _cancelled_threads = set()
@@ -560,8 +543,6 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
         "return_code": proc.returncode,
     }
 
-# ── Unified Agent ─────────────────────────────────────────────────────────────
-
 class ExecutionAgents:
 
     def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None, job_id: Optional[str] = None) -> None:
@@ -573,7 +554,6 @@ class ExecutionAgents:
         os.makedirs("logs", exist_ok=True)
         fh = logging.FileHandler(f"logs/{self.job_id}.log", mode='a', encoding='utf-8')
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
-        # Add handler if not already present
         if not any(isinstance(h, logging.FileHandler) and h.baseFilename == fh.baseFilename for h in self.logger.handlers):
             self.logger.addHandler(fh)
             
@@ -593,8 +573,6 @@ class ExecutionAgents:
         except Exception as exc:
             self.logger.exception("Failed to initialise ExecutionAgents: %s", exc)
             raise
-
-    # ── helpers ───────────────────────────────────────────────────────────────
 
     def _banner(self, text: str, char: str = "=", width: int = 78) -> None:
         self.logger.info(char * width)
@@ -647,13 +625,126 @@ class ExecutionAgents:
         self.logger.info("Read %d %s file(s) from %s", len(files), purpose, folder_path)
         return files
 
-    # ── generator nodes ───────────────────────────────────────────────────────
+    def _gather_aws_context(self) -> str:
+        try:
+            import boto3
+            from botocore.exceptions import BotoCoreError, ClientError
+
+            session = boto3.session.Session()
+            region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or ""
+
+            lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
+
+            try:
+                sts = session.client("sts", region_name=region or None)
+                identity = sts.get_caller_identity()
+                lines.append(f"  Account ID : {identity.get('Account')}")
+                lines.append(f"  Caller ARN : {identity.get('Arn')}")
+            except (BotoCoreError, ClientError) as exc:
+                self.logger.warning("aws_context.sts_failed: %s", exc)
+                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity)")
+
+            lines.append(f"  Region     : {region or '(not set — will rely on provider config)'}")
+
+            try:
+                ec2 = session.client("ec2", region_name=region or None)
+                vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
+                default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId")
+                if default_vpc:
+                    lines.append(f"  Default VPC: {default_vpc}")
+                    subnets = ec2.describe_subnets(
+                        Filters=[{"Name": "vpc-id", "Values": [default_vpc]}]
+                    )
+                    subnet_ids = [s["SubnetId"] for s in subnets.get("Subnets", [])]
+                    if subnet_ids:
+                        lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
+                else:
+                    lines.append("  Default VPC: (none found in this account/region)")
+
+                # Fetch available Availability Zones
+                azs = ec2.describe_availability_zones()
+                az_names = [az["ZoneName"] for az in azs.get("AvailabilityZones", []) if az["State"] == "available"]
+                if az_names:
+                    lines.append(f"  Available AZs: {', '.join(az_names)}")
+
+                # Fetch existing Key Pairs
+                key_pairs = ec2.describe_key_pairs()
+                kp_names = [kp["KeyName"] for kp in key_pairs.get("KeyPairs", [])]
+                if kp_names:
+                    lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
+                else:
+                    lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
+                # Fetch existing Security Groups in Default VPC
+                if default_vpc:
+                    sgs = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [default_vpc]}])
+                    sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in sgs.get("SecurityGroups", [])]
+                    if sg_info:
+                        lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
+                    else:
+                        lines.append("  Existing Security Groups: (none found)")
+
+            except (BotoCoreError, ClientError) as exc:
+                self.logger.warning("aws_context.ec2_failed: %s", exc)
+
+            try:
+                route53 = session.client("route53", region_name=region or None)
+                zones = route53.list_hosted_zones()
+                zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in zones.get("HostedZones", []) if not z["Config"]["PrivateZone"]]
+                if zone_info:
+                    lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
+                else:
+                    lines.append("  Public Route53 Zones: (none found)")
+            except (BotoCoreError, ClientError) as exc:
+                self.logger.warning("aws_context.route53_failed: %s", exc)
+
+            lines.append(
+                "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones), hardcode it directly in your Terraform code to avoid data source filter errors. "
+                "ONLY use Terraform data sources (e.g. data \"aws_vpc\") if the required resource is marked as '(none found)' or is missing from the context.\n"
+                "\nTERRAFORM GOLDEN RULES:\n"
+                "1. S3 Buckets: Names must be globally unique. Always use random_id or random_pet to append a suffix to bucket names.\n"
+                "2. IAM Roles/Policies: Always use name_prefix instead of name to avoid conflicts with existing roles.\n"
+                "3. EC2/RDS Security Groups: Prefer using existing security groups if they match your needs, or use name_prefix when creating new ones.\n"
+                "4. Circular Dependencies: Never make a Security Group depend on an EC2 instance's IP if the EC2 instance also depends on that Security Group.\n"
+                "5. Hardcoding: Hardcode environment IDs (like VPCs) *only* if they are provided in the context above. NEVER hardcode full ARNs or Regions (use data.aws_caller_identity.current and data.aws_region.current instead).\n"
+                "6. Stateful Resources: For databases (RDS, DynamoDB) and storage (S3), always set lifecycle { prevent_destroy = true } unless instructed otherwise.\n"
+                "7. Provider Version: Use the required_providers block to specify hashicorp/aws version ~> 5.0 to ensure modern syntax is supported.\n"
+                "8. Local Files: NEVER use shell commands (like jq, echo, or icacls) to save files or parse Terraform output. Use the Terraform local_file resource instead."
+            )
+            return "\n".join(lines)
+        except ImportError:
+            self.logger.info("aws_context.boto3_unavailable — skipping live AWS grounding")
+            return ""
+        except Exception as exc:
+            self.logger.warning("aws_context.failed: %s", exc)
+            return ""
+
+    def _get_terraform_state_list(self, sandbox_dir: str) -> str:
+        if not sandbox_dir:
+            return ""
+        path = Path(sandbox_dir)
+        if not (path / "terraform.tfstate").exists() and not (path / ".terraform").exists():
+            return ""
+        try:
+            result = execute_shell_command("terraform state list", cwd=str(path), timeout=30)
+            if result["return_code"] == 0 and result["stdout"].strip():
+                return result["stdout"].strip()
+        except Exception as exc:
+            self.logger.warning("terraform_state_list.failed: %s", exc)
+        return ""
 
     def _read_existing_node(self, state: AgentState) -> dict:
         existing = self._read_files_from_folder(
             state.get("input_sandbox_path", ""), "existing"
         )
-        return {"existing_files": existing, "clarification": None}
+        state_ctx = self._get_terraform_state_list(state.get("input_sandbox_path", ""))
+        return {
+            "existing_files": existing,
+            "clarification": None,
+            "terraform_state_context": state_ctx,
+            "validate_iteration": 0,
+            "validate_passed": False,
+            "validate_feedback": "",
+        }
 
     def _read_reference_node(self, state: AgentState) -> dict:
         reference = self._read_files_from_folder(
@@ -668,6 +759,7 @@ class ExecutionAgents:
         existing_files = state.get("existing_files") or []
         feedback = state.get("feedback_summary") or ""
         memory_ctx = state.get("memory_context") or ""
+        aws_ctx = state.get("aws_context") or ""
 
         ref_ctx = ""
         if reference_files:
@@ -688,13 +780,14 @@ class ExecutionAgents:
         )
 
         memory_section = f"\n\n{memory_ctx}" if memory_ctx else ""
+        aws_section = f"\n\n{aws_ctx}" if aws_ctx else ""
 
         prompt = f"""You are an AWS automation engineer. Analyze this action request and identify \
 what must be resolved DYNAMICALLY at runtime (never hardcoded).
 
 Action Name: {action["actionName"]}
 Action Description: {action["actionDescription"]}
-Steps: {json.dumps(action.get("steps") or [], indent=2)}{ref_ctx}{existing_ctx}{feedback_ctx}{memory_section}
+Steps: {json.dumps(action.get("steps") or [], indent=2)}{ref_ctx}{existing_ctx}{feedback_ctx}{memory_section}{aws_section}
 
 This action may provision ANY AWS resource type (compute, storage, database, networking, IAM,
 messaging, serverless, etc.) — do not assume it is EC2 unless the description says so. Reason
@@ -773,10 +866,22 @@ sources or sensible defaults, do NOT ask the user."""
         credential_strategy = analysis.get("credential_resolution_strategy") or ""
         post_deploy_outputs = analysis.get("post_deploy_outputs") or []
         memory_ctx = state.get("memory_context") or ""
+        aws_ctx = state.get("aws_context") or ""
+        terraform_state_ctx = state.get("terraform_state_context") or ""
+        validate_feedback = state.get("validate_feedback") or ""
+        plan_review = state.get("plan_review") or {}
+        plan_review_feedback = ""
+        if plan_review and (not plan_review.get("matches_intent") or plan_review.get("destroy_or_replace_detected")):
+            concerns = "; ".join(plan_review.get("concerns") or [])
+            plan_review_feedback = (
+                f"matches_intent={plan_review.get('matches_intent')}, "
+                f"destroy_or_replace_detected={plan_review.get('destroy_or_replace_detected')}, "
+                f"concerns: {concerns or '(none listed)'}, "
+                f"reasoning: {plan_review.get('reasoning', '')}"
+            )
 
         os_name = platform.system()
 
-        # Reference context
         reference_context = ""
         if reference_files:
             ref_dump = "\n\n".join(
@@ -788,7 +893,6 @@ sources or sensible defaults, do NOT ask the user."""
                 f"practices from these reference files:\n\n{ref_dump}\n"
             )
 
-        # Existing files context
         existing_context = ""
         if existing_files:
             existing_context = "\n\nEXISTING FILES TO UPDATE:\n" + "\n\n".join(
@@ -821,6 +925,29 @@ NEVER hardcode any of these — your code will fail in a different region or acc
 {items}"""
 
         memory_section = f"\n{memory_ctx}" if memory_ctx else ""
+        aws_section = f"\n{aws_ctx}" if aws_ctx else ""
+
+        state_section = ""
+        if terraform_state_ctx:
+            state_section = f"""
+
+EXISTING TERRAFORM STATE (already applied in this sandbox — do NOT recreate these resources;
+reference them or plan an import instead):
+{terraform_state_ctx}"""
+
+        validate_section = ""
+        if validate_feedback:
+            validate_section = f"""
+
+STATIC VALIDATION ERROR (HIGHEST PRIORITY — this blocked a real apply attempt, fix it first):
+{validate_feedback}"""
+
+        plan_review_section = ""
+        if plan_review_feedback:
+            plan_review_section = f"""
+
+PLAN REVIEW FLAGGED A PROBLEM (fix the underlying resource configuration, not just syntax):
+{plan_review_feedback}"""
 
         mode_instruction = (
             "UPDATE the existing files shown below while preserving their structure."
@@ -845,11 +972,6 @@ NEVER hardcode any of these — your code will fail in a different region or acc
             "boto3 will pick them up automatically."
         )
 
-        # Only relevant when the credential is actually a private-key file (e.g. SSH) —
-        # a DB password or token has no file-permission concern, so don't emit this note
-        # for every credential type. Default to NOT assuming a key file when the
-        # strategy is unspecified, since wrongly assuming SSH/.pem for e.g. a DB
-        # password would just reintroduce EC2-shaped bias under a different guise.
         is_key_file_credential = requires_creds and bool(credential_strategy) and (
             "key" in credential_strategy.lower()
             or "pem" in credential_strategy.lower()
@@ -858,19 +980,11 @@ NEVER hardcode any of these — your code will fail in a different region or acc
         pem_note = ""
         if is_key_file_credential:
             pem_note = (
-                "WINDOWS .pem FILE HANDLING: On Windows, 'chmod 400' does not exist. "
-                "After saving the .pem file, use 'icacls <file> /inheritance:r /grant:r \"%USERNAME%:R\"' "
-                "to restrict permissions so SSH clients will accept the key."
-                if os_name == "Windows"
-                else (
-                    "POSIX .pem FILE HANDLING: After saving the .pem private key file, "
-                    "run 'chmod 400 <keyname>.pem' before any SSH usage."
-                )
+                "SSH KEY FILE HANDLING: DO NOT use shell commands or post-deploy scripts to save the .pem file. "
+                "You MUST use the Terraform `local_file` resource to write the private key to disk (e.g. `filename = \"ssh_key.pem\"`). "
+                "Set `file_permission = \"0400\"` on the local_file resource so it is secured automatically by Terraform."
             )
 
-        # Generic, analysis-driven credential guidance — replaces a hardcoded EC2/SSH
-        # assumption. Only present when the analyzer determined this action actually
-        # needs remote-access credentials (and the analyzer also says HOW, per resource type).
         credential_context = ""
         if requires_creds:
             credential_context = f"""
@@ -879,23 +993,18 @@ REMOTE ACCESS CREDENTIALS REQUIRED (per analysis step):
 This action provisions something that needs direct human access post-deployment.
 Resolution strategy for THIS resource type: {credential_strategy or "Generate the credential dynamically using the appropriate Terraform resource for this resource type — never hardcode a password, key, or token."}
 {pem_note}
-Save any generated secret (private key, password, token) to a local file or expose it via a
-sensitive Terraform output — never print secrets in plain stdout logs."""
+Save any generated secret (private key, password, token) via a Terraform `local_file` resource or expose it via a
+sensitive Terraform output — never print secrets in plain stdout logs or use shell scripts to parse them."""
 
-        # Generic, analysis-driven output requirements — replaces a hardcoded EC2
-        # output list. post_deploy_outputs is whatever the analyzer determined a human
-        # operator needs to see for THIS specific action.
         outputs_context = ""
         if post_deploy_outputs:
             outputs_list = "\n".join(f"    output \"{name}\" {{ ... }}" for name in post_deploy_outputs)
-            outputs_terraform_cmds = "\n".join(f"    terraform output {name}" for name in post_deploy_outputs)
             outputs_context = f"""
 
 MANDATORY OUTPUTS (per analysis step) — define exactly these in outputs.tf, one block each,
 each referencing the real resource attribute it corresponds to (no placeholders):
 {outputs_list}
-The executableSteps after apply MUST run each of these so the user sees every relevant detail:
-{outputs_terraform_cmds}"""
+The executableSteps after apply MUST include a single step running `terraform output` (or `terraform output -json`) so all these details are printed for the user at once."""
 
         prompt = f"""You are a senior AWS automation engineer. {mode_instruction}
 
@@ -908,6 +1017,10 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 {credential_context}
 {outputs_context}
 {memory_section}
+{aws_section}
+{state_section}
+{validate_section}
+{plan_review_section}
 {reference_context}{clarification_context}{feedback_context}{existing_context}
 
 ═══════════════════════════════════════════════════════════════
@@ -1037,11 +1150,13 @@ RULE 6 — LEARN FROM FEEDBACK:
   iteration. Do not repeat errors from previous iterations.
 
 RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE:
-  Include all steps needed: terraform init → terraform validate → terraform plan →
-  terraform apply -auto-approve → then run terraform output for every output declared in
+  Include all steps needed: terraform init → terraform validate → terraform plan
+  → terraform apply -auto-approve → then run terraform output for every output declared in
   outputs.tf (see "MANDATORY OUTPUTS" above, derived from this action's actual resources)
   so the user gets every useful detail in the final summary. Do not run `terraform output`
-  for names that don't exist in outputs.tf, and don't omit any that do.
+  for names that don't exist in outputs.tf, and don't omit any that do. The terraform plan
+  step MUST be written as `terraform plan -out=tfplan` (not just `terraform plan`) so the
+  plan can be reviewed before apply.
 
 Generate the complete set of files now."""
 
@@ -1058,7 +1173,6 @@ Generate the complete set of files now."""
             raise
 
     def _write_files_node(self, state: AgentState) -> dict:
-        # FIX-4: resolve to absolute path so it stays stable regardless of cwd changes.
         input_path = state.get("input_sandbox_path") or ""
         if input_path:
             sandbox_dir = str(Path(input_path).resolve())
@@ -1066,11 +1180,8 @@ Generate the complete set of files now."""
             sandbox_dir = str(Path(f"aws_executed_files/sandbox_{secrets.token_hex(6)}").resolve())
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
+        self.logger.info("Using sandbox directory: %s", sandbox_dir)
 
-        # FIX-2: Remove stale generated files before re-writing so Terraform (or Python)
-        # does not pick up files that the LLM intentionally dropped in this iteration.
-        # We only remove files with the same extensions we write; we preserve
-        # .terraform/, terraform.tfstate*, .pem, and other runtime artefacts.
         CLEANABLE_EXTENSIONS = {".tf", ".py", ".sh", ".yaml", ".yml", ".json", ".md"}
         PRESERVE_NAMES = {
             "terraform.tfstate",
@@ -1078,10 +1189,6 @@ Generate the complete set of files now."""
             ".terraform.lock.hcl",
         }
         sandbox_path_obj = Path(sandbox_dir)
-        # FIX-A2: only clean on retry iterations (iteration > 1).
-        # The original guard `if state.get("input_sandbox_path")` was truthy on
-        # iteration 1 whenever the caller passed sandbox_path= to RunPipeline,
-        # which would delete legitimate pre-existing files on first write.
         if state.get("iteration", 1) > 1 and state.get("input_sandbox_path"):
             for existing_file in sandbox_path_obj.rglob("*"):
                 if not existing_file.is_file():
@@ -1111,7 +1218,102 @@ Generate the complete set of files now."""
 
         return {"sandbox_path": sandbox_dir, "input_sandbox_path": sandbox_dir}
 
-    # ── executor nodes ────────────────────────────────────────────────────────
+    def _validate_node(self, state: AgentState) -> dict:
+        check_cancelled()
+        sandbox_dir = state["sandbox_path"]
+        validate_iteration = state.get("validate_iteration", 0) + 1
+        errors: List[str] = []
+
+        tf_files = list(Path(sandbox_dir).glob("*.tf"))
+        if tf_files:
+            try:
+                init_result = execute_shell_command(
+                    "terraform init -input=false", cwd=sandbox_dir, timeout=180
+                )
+                if init_result["return_code"] != 0:
+                    errors.append(
+                        f"terraform init failed:\n{init_result['stderr'][:2000] or init_result['stdout'][:2000]}"
+                    )
+                else:
+                    val_result = execute_shell_command(
+                        "terraform validate -no-color", cwd=sandbox_dir, timeout=60
+                    )
+                    if val_result["return_code"] != 0:
+                        errors.append(
+                            "terraform validate failed:\n"
+                            f"{val_result['stdout'][:1500]}\n{val_result['stderr'][:1500]}"
+                        )
+            except Exception as exc:
+                errors.append(f"terraform validate step raised an exception: {exc}")
+
+        py_files = list(Path(sandbox_dir).glob("*.py"))
+        for py_file in py_files:
+            try:
+                result = execute_shell_command(
+                    f'python -m py_compile "{py_file.name}"', cwd=sandbox_dir, timeout=30
+                )
+                if result["return_code"] != 0:
+                    errors.append(
+                        f"py_compile failed for {py_file.name}:\n{result['stderr'][:1500]}"
+                    )
+            except Exception as exc:
+                errors.append(f"py_compile step raised an exception for {py_file.name}: {exc}")
+
+        passed = not errors
+        if passed:
+            self.logger.info("[validate] ✓ static checks passed (attempt %d)", validate_iteration)
+        else:
+            self.logger.warning(
+                "[validate] ✗ static checks failed (attempt %d/%d)",
+                validate_iteration, VALIDATE_MAX_RETRIES,
+            )
+
+        return {
+            "validate_iteration": validate_iteration,
+            "validate_passed": passed,
+            "validate_feedback": "\n\n".join(errors),
+        }
+
+    def _validate_exhausted_node(self, state: AgentState) -> dict:
+        """
+        Static validation kept failing after VALIDATE_MAX_RETRIES attempts.
+        Rather than waste a real terraform apply on code we already know is
+        broken, synthesize a failed execution result and route straight to
+        report/record_iteration — this still consumes one real iteration so
+        the main retry budget and stuck-loop detection behave normally.
+        """
+        feedback = state.get("validate_feedback", "") or "(no details captured)"
+        synthetic_result = {
+            "command": "terraform validate / py_compile (pre-flight)",
+            "description": "Static validation before real apply",
+            "working_dir": state.get("sandbox_path", ""),
+            "stdout": "",
+            "stderr": feedback[:6000],
+            "return_code": 1,
+            "success": False,
+            "timed_out": False,
+            "timeout_seconds": 0,
+        }
+        self.logger.error(
+            "[validate] exhausted %d attempts — skipping real apply, reporting as failed iteration",
+            VALIDATE_MAX_RETRIES,
+        )
+        return {
+            "execution_results": [synthetic_result],
+            "success": False,
+            "executor_summary": (
+                f"Static validation failed after {VALIDATE_MAX_RETRIES} attempts — "
+                f"real apply was skipped to avoid wasting time on known-broken code:\n{feedback[:2000]}"
+            ),
+        }
+
+    @staticmethod
+    def _route_after_validate(state: AgentState) -> str:
+        if state.get("validate_passed"):
+            return "proceed"
+        if state.get("validate_iteration", 0) >= VALIDATE_MAX_RETRIES:
+            return "give_up"
+        return "retry_generate"
 
     def _scan_folder_node(self, state: AgentState) -> dict:
         execute_folder = state["sandbox_path"]
@@ -1139,7 +1341,6 @@ Generate the complete set of files now."""
         self.logger.info("PLANNING EXECUTION STRATEGY")
         self.logger.info("=" * 80)
 
-        # Fast path: generator already supplied steps — no LLM call needed
         if state.get("executable_steps"):
             steps = state["executable_steps"]
             self.logger.info("✓ Using %d executable steps from generator", len(steps))
@@ -1156,6 +1357,7 @@ Generate the complete set of files now."""
                 }
                 for i, step in enumerate(steps)
             ]
+            commands = self._ensure_plan_out_flag(commands)
             return {
                 "execution_plan": {
                     "execution_type": "mixed",
@@ -1164,7 +1366,6 @@ Generate the complete set of files now."""
                 }
             }
 
-        # Slow path: ask LLM to derive a plan from the folder contents
         self.logger.info("Planning for action: %s", action.get("actionName"))
         os_name = platform.system()
         shell_note = (
@@ -1217,8 +1418,9 @@ Create a detailed execution plan:
 1. execution_type: "python" | "terraform" | "shell" | "mixed"
 
 2. commands — ordered list. Follow these workflows:
-   Terraform: terraform init → terraform validate → terraform plan → terraform apply -auto-approve
-              → terraform output (always run this last to display connection info, IDs, etc.)
+   Terraform: terraform init → terraform validate → terraform plan -out=tfplan →
+              terraform apply -auto-approve tfplan → terraform output (always run this last
+              to display connection info, IDs, etc.)
    Python:    pip install -r requirements.txt (if present) → python <script>.py [args]
    Shell:     chmod +x <script>.sh → ./<script>.sh
 
@@ -1231,12 +1433,45 @@ Only include commands needed for the actual files present."""
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
             self.logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
             self.logger.info("  Reasoning: %s", plan.reasoning)
-            for cmd in plan.commands:
-                self.logger.info("  [%d] %s | %s", cmd.order, cmd.description, cmd.command)
-            return {"execution_plan": plan.model_dump()}
+            commands = self._ensure_plan_out_flag([c.model_dump() for c in plan.commands])
+            for cmd in commands:
+                self.logger.info("  [%d] %s | %s", cmd["order"], cmd["description"], cmd["command"])
+            return {
+                "execution_plan": {
+                    "execution_type": plan.execution_type,
+                    "commands": commands,
+                    "reasoning": plan.reasoning,
+                }
+            }
         except Exception as exc:
             self.logger.exception("Execution planning failed: %s", exc)
             raise
+
+    @staticmethod
+    def _ensure_plan_out_flag(commands: List[Dict]) -> List[Dict]:
+        """
+        Make sure the 'terraform plan' step always writes a plan file
+        (-out=tfplan) so it can be reviewed before apply, and that the
+        matching apply step consumes that exact plan file rather than
+        re-planning implicitly.
+        """
+        updated = []
+        for cmd in commands:
+            command = cmd.get("command", "")
+            cmd_lower = command.lower().strip()
+            if cmd_lower.startswith("terraform plan") and "-out" not in cmd_lower:
+                command = command.rstrip() + " -out=tfplan"
+            elif cmd_lower.startswith("terraform apply") and "tfplan" not in cmd_lower:
+                if "-auto-approve" in cmd_lower:
+                    command = re.sub(r"-auto-approve\b", "tfplan", command, count=1).strip()
+                    if "tfplan" not in command:
+                        command = command.rstrip() + " tfplan"
+                else:
+                    command = command.rstrip() + " tfplan"
+            new_cmd = dict(cmd)
+            new_cmd["command"] = command
+            updated.append(new_cmd)
+        return updated
 
     def _validate_command(self, command: str, execute_folder: str) -> Tuple[bool, str]:
         """Pre-execution validation. Returns (is_valid, error_message)."""
@@ -1247,6 +1482,220 @@ Only include commands needed for the actual files present."""
             if not (base_path / var_file).exists():
                 return False, f"Variable file does not exist: {var_file}"
         return True, ""
+
+    def _run_commands(
+        self, commands: List[Dict], base_path: Path, timeout: int
+    ) -> Tuple[List[Dict], bool]:
+        """
+        Shared command-runner used by both the pre-apply plan-review pass and
+        the main execute node. Returns (results, halted_early).
+        """
+        results: List[Dict] = []
+        halted = False
+        for idx, cmd_info in enumerate(sorted(commands, key=lambda c: c.get("order", 9999)), 1):
+            command: str = cmd_info["command"]
+            description: str = cmd_info.get("description", "")
+            relative_dir: str = cmd_info.get("working_dir", ".")
+
+            cwd = (base_path / relative_dir).resolve()
+            if not cwd.exists():
+                cwd = base_path
+
+            is_valid, error_msg = self._validate_command(command, str(cwd))
+            if not is_valid:
+                self.logger.warning("✗ VALIDATION FAILED: %s — %s", description or command, error_msg)
+                results.append({
+                    "command": command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "",
+                    "stderr": f"Pre-execution validation failed: {error_msg}",
+                    "return_code": -1,
+                    "success": False,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                })
+                halted = True
+                break
+
+            self.logger.info("EXECUTING: %s | %s", description or command, command)
+
+            timed_out = False
+            result: Dict[str, Any]
+            try:
+                tool_output = execute_shell_command(command=command, cwd=str(cwd), timeout=timeout)
+                success = tool_output["return_code"] == 0
+                result = {
+                    "command": command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": tool_output["stdout"][:10_000],
+                    "stderr": tool_output["stderr"][:8_000],
+                    "return_code": tool_output["return_code"],
+                    "success": success,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                }
+                if success:
+                    self.logger.info("✓ SUCCESS: %s (rc=%d)", description or command, tool_output["return_code"])
+                else:
+                    self.logger.warning("✗ FAILED: %s (rc=%d)", description or command, tool_output["return_code"])
+            except TimeoutError as exc:
+                timed_out = True
+                timeout_msg = (
+                    f"Command '{command}' timed out after {timeout}s. "
+                    f"Step '{description}' did not complete within the allowed time."
+                )
+                result = {
+                    "command": command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "",
+                    "stderr": timeout_msg,
+                    "return_code": -1,
+                    "success": False,
+                    "timed_out": True,
+                    "timeout_seconds": timeout,
+                }
+                self.logger.error("✗ TIMEOUT: %s exceeded %ds", description or command, timeout)
+            except Exception as exc:
+                result = {
+                    "command": command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "",
+                    "stderr": str(exc),
+                    "return_code": -1,
+                    "success": False,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                }
+                self.logger.exception("✗ EXCEPTION in '%s': %s", description or command, exc)
+
+            results.append(result)
+            if not result["success"]:
+                halted = True
+                break
+
+        return results, halted
+
+    def _plan_review_node(self, state: AgentState) -> dict:
+        """
+        Run only the pre-apply commands (init/validate/plan) for real, capture
+        the resulting plan, and have the LLM sanity-check it against the
+        requested action BEFORE any apply command runs. Catches "ran fine but
+        did the wrong thing" failures that a bare exit-code check would miss.
+        """
+        check_cancelled()
+        execute_folder = state["sandbox_path"]
+        plan = state.get("execution_plan") or {}
+        commands = sorted(plan.get("commands", []), key=lambda c: c.get("order", 9999))
+        timeout = state.get("command_timeout") or DEFAULT_COMMAND_TIMEOUT
+        base_path = Path(execute_folder).resolve()
+
+        if plan.get("execution_type") not in ("terraform", "mixed") or not any(
+            "terraform" in c.get("command", "").lower() for c in commands
+        ):
+            return {"plan_review_skipped": True, "pre_apply_results": []}
+
+        pre_apply_cmds: List[Dict] = []
+        for c in commands:
+            cmd_lower = c.get("command", "").lower()
+            if "apply" in cmd_lower or "terraform output" in cmd_lower:
+                break
+            pre_apply_cmds.append(c)
+
+        if not pre_apply_cmds:
+            return {"plan_review_skipped": True, "pre_apply_results": []}
+
+        results, halted = self._run_commands(pre_apply_cmds, base_path, timeout)
+        if halted:
+            return {
+                "pre_apply_results": results,
+                "plan_review_precheck_failed": True,
+                "plan_review_skipped": False,
+            }
+
+        tfplan_path = base_path / "tfplan"
+        if not tfplan_path.exists():
+            self.logger.info("[plan_review] no tfplan file produced — skipping content review")
+            return {"pre_apply_results": results, "plan_review_skipped": True}
+
+        try:
+            show_result = execute_shell_command("terraform show -json tfplan", cwd=str(base_path), timeout=60)
+            plan_json_text = (show_result["stdout"] or "")[:12000]
+        except Exception as exc:
+            self.logger.warning("[plan_review] terraform show failed: %s", exc)
+            return {"pre_apply_results": results, "plan_review_skipped": True}
+
+        if not plan_json_text.strip():
+            return {"pre_apply_results": results, "plan_review_skipped": True}
+
+        action = state["action"]
+        review_prompt = f"""Review this Terraform plan against what was requested.
+
+Action Name: {action.get("actionName")}
+Action Description: {action.get("actionDescription")}
+
+Plan (terraform show -json, truncated):
+{plan_json_text}
+
+Determine:
+1. matches_intent — does the set of resource changes plausibly match the requested action?
+2. destroy_or_replace_detected — is there any destroy or replace action that looks unexpected
+   given the request (a fresh deploy should have no destroys; an update might have a few
+   deliberate replaces, but flag anything that looks like collateral damage)?
+3. concerns — short list of specific issues, if any (empty list if the plan looks correct).
+4. reasoning — one or two sentences."""
+
+        try:
+            structured_llm = self.Llm.with_structured_output(PlanReview)
+            review: PlanReview = structured_llm.invoke([HumanMessage(content=review_prompt)])
+            review_dict = review.model_dump()
+            self.logger.info(
+                "[plan_review] matches_intent=%s destroy_or_replace=%s concerns=%s",
+                review.matches_intent, review.destroy_or_replace_detected, review.concerns,
+            )
+        except Exception as exc:
+            self.logger.warning("[plan_review] LLM review failed, proceeding without review: %s", exc)
+            return {"pre_apply_results": results, "plan_review_skipped": True}
+
+        flagged = (not review.matches_intent) or review.destroy_or_replace_detected
+        next_iteration = state.get("plan_review_iteration", 0) + (1 if flagged else 0)
+
+        return {
+            "pre_apply_results": results,
+            "plan_review": review_dict,
+            "plan_review_iteration": next_iteration,
+            "plan_review_skipped": False,
+            "plan_review_precheck_failed": False,
+        }
+
+    @staticmethod
+    def _route_after_plan_review(state: AgentState) -> str:
+        if state.get("plan_review_precheck_failed"):
+            return "precheck_failed"
+        if state.get("plan_review_skipped"):
+            return "proceed"
+        review = state.get("plan_review") or {}
+        flagged = (not review.get("matches_intent", True)) or review.get("destroy_or_replace_detected", False)
+        if not flagged:
+            return "proceed"
+        if state.get("plan_review_iteration", 0) >= PLAN_REVIEW_MAX_RETRIES:
+            self_logger = logging.getLogger("ExecutionAgents")
+            self_logger.warning(
+                "[plan_review] exhausted %d review retries — proceeding with a flagged plan "
+                "rather than looping forever; flag surfaced in the final summary.",
+                PLAN_REVIEW_MAX_RETRIES,
+            )
+            return "proceed"
+        return "retry_generate"
+
+    def _plan_review_precheck_failed_node(self, state: AgentState) -> dict:
+        """init/validate/plan itself failed during the review pass — treat exactly
+        like a normal execution failure and let report/record_iteration handle it."""
+        results = state.get("pre_apply_results") or []
+        return {"execution_results": results, "success": False}
 
     def _execute_node(self, state: AgentState) -> dict:
         check_cancelled()
@@ -1264,156 +1713,21 @@ Only include commands needed for the actual files present."""
             return {"execution_results": [], "success": False}
 
         base_path = Path(execute_folder).resolve()
-        total_commands = len(plan["commands"])
-        results: List[Dict] = []
+        all_commands = sorted(plan["commands"], key=lambda c: c.get("order", 9999))
 
+        pre_apply_results = state.get("pre_apply_results") or []
+        commands_to_run = all_commands[len(pre_apply_results):] if pre_apply_results else all_commands
+
+        total_commands = len(all_commands)
         self.logger.info("=" * 80)
         self.logger.info(
-            "EXECUTION STARTED: %d command(s) in %s  [timeout=%ds/cmd]",
-            total_commands, execute_folder, timeout,
+            "EXECUTION STARTED: %d command(s) total (%d already run in plan review) in %s  [timeout=%ds/cmd]",
+            total_commands, len(pre_apply_results), execute_folder, timeout,
         )
         self.logger.info("=" * 80)
 
-        for idx, cmd_info in enumerate(
-            sorted(plan["commands"], key=lambda c: c.get("order", 9999)), 1
-        ):
-            command: str = cmd_info["command"]
-            description: str = cmd_info.get("description", "")
-            relative_dir: str = cmd_info.get("working_dir", ".")
-
-            cwd = (base_path / relative_dir).resolve()
-            if not cwd.exists():
-                cwd = base_path
-
-            # Pre-execution validation
-            is_valid, error_msg = self._validate_command(command, str(cwd))
-            if not is_valid:
-                self.logger.warning("[%d/%d] ✗ VALIDATION FAILED: %s", idx, total_commands, description or command)
-                self.logger.warning("        Validation Error: %s", error_msg)
-                results.append({
-                    "command": command,
-                    "description": description,
-                    "working_dir": str(cwd),
-                    "stdout": "",
-                    "stderr": f"Pre-execution validation failed: {error_msg}",
-                    "return_code": -1,
-                    "success": False,
-                    "timed_out": False,
-                    "timeout_seconds": timeout,
-                })
-                self.logger.error(
-                    "EXECUTION HALTED (VALIDATION FAILED): %d remaining command(s) skipped",
-                    total_commands - idx,
-                )
-                break
-
-            self.logger.info("-" * 80)
-            self.logger.info("[%d/%d] EXECUTING: %s", idx, total_commands, description or command)
-            self.logger.info("        Command    : %s", command)
-            self.logger.info("        Working Dir: %s", cwd)
-            self.logger.info("        Timeout    : %ds", timeout)
-            self.logger.info("-" * 80)
-
-            timed_out = False
-            result: Dict[str, Any]
-
-            try:
-                # FIX-1: call as a plain function, not via .invoke()
-                tool_output = execute_shell_command(
-                    command=command,
-                    cwd=str(cwd),
-                    timeout=timeout,
-                )
-
-                success = tool_output["return_code"] == 0
-                stdout_data = tool_output["stdout"]
-                stderr_data = tool_output["stderr"]
-                proc_returncode = tool_output["return_code"]
-
-                result = {
-                    "command": command,
-                    "description": description,
-                    "working_dir": str(cwd),
-                    "stdout": stdout_data[:10_000],
-                    "stderr": stderr_data[:8_000],
-                    "return_code": proc_returncode,
-                    "success": success,
-                    "timed_out": False,
-                    "timeout_seconds": timeout,
-                }
-
-                if success:
-                    self.logger.info(
-                        "[%d/%d] ✓ SUCCESS: %s (rc=%d)",
-                        idx, total_commands, description or command, proc_returncode,
-                    )
-                    if stdout_data:
-                        self.logger.info(
-                            "        Output: %s%s",
-                            stdout_data[:300],
-                            "..." if len(stdout_data) > 300 else "",
-                        )
-                else:
-                    self.logger.warning(
-                        "[%d/%d] ✗ FAILED: %s (rc=%d)",
-                        idx, total_commands, description or command, proc_returncode,
-                    )
-                    self.logger.warning("        Error: %s", stderr_data[:500])
-
-            except TimeoutError as exc:
-                timed_out = True
-                stderr_data = str(exc)
-                timeout_msg = (
-                    f"Command '{command}' timed out after {timeout}s. "
-                    f"Step '{description}' did not complete within the allowed time. "
-                    "If this is 'terraform init', it is likely a slow provider-plugin download "
-                    "on first run (not a code or credentials issue) — DO NOT add invalid provider "
-                    "arguments like 'timeout_client'/'timeout_server'. "
-                    "If this is 'terraform plan'/'apply', check AWS credentials or network access. "
-                    "The orchestrator will retry automatically; no code change is needed."
-                )
-                result = {
-                    "command": command,
-                    "description": description,
-                    "working_dir": str(cwd),
-                    "stdout": "",
-                    "stderr": timeout_msg,
-                    "return_code": -1,
-                    "success": False,
-                    "timed_out": True,
-                    "timeout_seconds": timeout,
-                }
-                self.logger.error(
-                    "[%d/%d] ✗ TIMEOUT: %s exceeded %ds",
-                    idx, total_commands, description or command, timeout,
-                )
-
-            except Exception as exc:
-                result = {
-                    "command": command,
-                    "description": description,
-                    "working_dir": str(cwd),
-                    "stdout": "",
-                    "stderr": str(exc),
-                    "return_code": -1,
-                    "success": False,
-                    "timed_out": False,
-                    "timeout_seconds": timeout,
-                }
-                self.logger.exception(
-                    "[%d/%d] ✗ EXCEPTION in '%s': %s",
-                    idx, total_commands, description or command, exc,
-                )
-
-            results.append(result)
-
-            if not result["success"]:
-                halt_reason = "TIMEOUT" if timed_out else "COMMAND FAILED"
-                self.logger.error(
-                    "EXECUTION HALTED (%s): %d remaining command(s) skipped",
-                    halt_reason, total_commands - idx,
-                )
-                break
+        new_results, _halted = self._run_commands(commands_to_run, base_path, timeout)
+        results: List[Dict] = list(pre_apply_results) + new_results
 
         overall_success = (
             bool(results)
@@ -1445,6 +1759,7 @@ Only include commands needed for the actual files present."""
         timeout = state.get("command_timeout") or DEFAULT_COMMAND_TIMEOUT
         analysis = state.get("analysis") or {}
         post_deploy_outputs = analysis.get("post_deploy_outputs") or []
+        plan_review = state.get("plan_review") or {}
 
         self.logger.info("=" * 80)
         self.logger.info("GENERATING EXECUTION REPORT")
@@ -1488,11 +1803,8 @@ Only include commands needed for the actual files present."""
             )
         )
 
-        # Generic, analysis-driven output-listing instruction — replaces a hardcoded
-        # EC2-specific mandate. post_deploy_outputs is whatever the analyzer derived
-        # for THIS action (e.g. bucket_arn for S3, db_endpoint for RDS, instance_id for EC2).
         if post_deploy_outputs and success:
-            output_lines = "\n".join(f"    {name} : <value from terraform output {name}>" for name in post_deploy_outputs)
+            output_lines = "\n".join(f"    {name} : <value extracted from terraform output>" for name in post_deploy_outputs)
             outputs_rule = (
                 "- On success, you MUST explicitly list ALL of these on separate lines, with "
                 "exact values extracted from the Output fields above — do not invent them:\n"
@@ -1502,6 +1814,14 @@ Only include commands needed for the actual files present."""
             outputs_rule = (
                 "- On success, list any resource IDs/ARNs/names visible in the Output fields "
                 "above so the user can identify what was created."
+            )
+
+        plan_review_rule = ""
+        if plan_review and ((not plan_review.get("matches_intent", True)) or plan_review.get("destroy_or_replace_detected")):
+            plan_review_rule = (
+                "\n- IMPORTANT: the automated plan review flagged a possible concern before apply "
+                f"(reasoning: {plan_review.get('reasoning', '')}). Mention this caveat explicitly "
+                "so the user double-checks the created resources."
             )
 
         prompt = f"""Summarize the execution of this AWS automation action in 2–4 sentences.
@@ -1518,7 +1838,7 @@ Rules:
 {timeout_rule}
 - Name exact argument/error from the 'Errors' field — do not invent errors.
 - Cover: what ran, whether it succeeded, resource IDs created, concrete next steps on failure.
-{outputs_rule}"""
+{outputs_rule}{plan_review_rule}"""
 
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
@@ -1543,28 +1863,70 @@ Rules:
 
         return {"executor_summary": summary}
 
-    # ── orchestration node ────────────────────────────────────────────────────
-
     @staticmethod
     def _extract_error_class(stderr: str) -> str:
         """
         Extract a short canonical error class from stderr so we can detect when
         the agent is stuck repeating the same error type across iterations.
+
         Examples:
-            "InvalidAMIID.NotFound: ..."  -> "InvalidAMIID.NotFound"
-            "Error: Duplicate output ..." -> "Duplicate output definition"
-            "Error: No such file ..."     -> "No such file"
+            "InvalidAMIID.NotFound: ..."       -> "InvalidAMIID.NotFound"
+            "Error: Duplicate output ..."      -> "Duplicate output definition"
+            "api error SomeCode: ..."          -> "SomeCode"
+            "ResourceAlreadyExistsException"   -> "ResourceAlreadyExistsException"
+            "ValidationException: ..."         -> "ValidationException"
+            "Error creating X: OperationAborted"-> "OperationAborted"
+            "Traceback ... FileNotFoundError:" -> "FileNotFoundError"
         """
         clean = re.sub(r"\x1b\[[0-9;]*m", "", stderr)
-        # AWS API errors like "api error SomeCode: ..."
+
         m = re.search(r"api error ([A-Za-z0-9_.]+)", clean)
         if m:
             return m.group(1)
-        # Terraform "Error: <title>" — grab first non-blank line after "Error:"
+
+        m = re.search(
+            r"\b([A-Z][A-Za-z0-9]*(?:Exception|NotFound|AlreadyExists|LimitExceeded|Denied|Invalid[A-Za-z]*))\b",
+            clean,
+        )
+        if m:
+            return m.group(1)
+
+        m = re.search(r"Error (?:creating|deleting|updating|reading)[^:]*:\s*([A-Za-z0-9_.]+)", clean)
+        if m:
+            return m.group(1)
+
         m = re.search(r"Error:\s+(.+)", clean)
         if m:
             return m.group(1).strip()[:80]
+
+        m = re.search(r"^([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)):", clean, re.MULTILINE)
+        if m:
+            return m.group(1)
+
         return clean.split("\n")[0].strip()[:80]
+
+    @staticmethod
+    def _compress_feedback_history(prior_feedback: str, max_detailed_iterations: int = 2) -> str:
+        if not prior_feedback:
+            return ""
+
+        markers = ["PRIOR ITERATION HISTORY", "THIS ITERATION'S EXACT ERROR", "AI-generated summary"]
+        if not any(m in prior_feedback for m in markers):
+            return prior_feedback
+
+        chunks = [c for c in prior_feedback.split("\n\n") if c.strip()]
+        if len(chunks) <= max_detailed_iterations * 2:
+            return prior_feedback
+
+        keep_detailed = chunks[-(max_detailed_iterations * 2):]
+        older = chunks[: -(max_detailed_iterations * 2)]
+
+        compressed_lines = ["EARLIER ITERATIONS (compressed — full detail dropped to save space):"]
+        for chunk in older:
+            first_line = chunk.strip().splitlines()[0][:150]
+            compressed_lines.append(f"  - {first_line}")
+
+        return "\n".join(compressed_lines) + "\n\n" + "\n\n".join(keep_detailed)
 
     def _record_iteration_node(self, state: AgentState) -> dict:
         iteration = state["iteration"]
@@ -1593,7 +1955,6 @@ Rules:
 
         max_iter = state.get("max_iterations", MAX_ITERATIONS)
 
-        # ── Build per-iteration feedback ──────────────────────────────────────
         raw_error = ""
         current_error_class = ""
         for r in state.get("execution_results") or []:
@@ -1605,10 +1966,6 @@ Rules:
                 current_error_class = self._extract_error_class(r.get("stderr", ""))
                 break
 
-        # FIX-3: Compare error classes directly using the stored last_error_class field
-        # instead of doing an unreliable substring search in the full feedback string.
-        # This prevents false-positive stuck detection when short error strings like
-        # "No such file" happen to appear anywhere in the accumulated feedback text.
         prior_error_class = state.get("last_error_class") or ""
         consecutive = state.get("consecutive_same_error", 0)
 
@@ -1622,7 +1979,6 @@ Rules:
             iteration, current_error_class, prior_error_class, consecutive, STUCK_THRESHOLD,
         )
 
-        # Accumulate full history so the LLM sees every past attempt
         prior_feedback = state.get("feedback_summary") or ""
         feedback_parts: List[str] = []
         if prior_feedback:
@@ -1644,13 +2000,15 @@ Rules:
             f"Execution failed on iteration {iteration}. "
             "Review the error output and fix the generated files."
         )
+
+        feedback = self._compress_feedback_history(feedback)
+
         self.logger.info(
-            "[Iteration %d] Feedback for next iteration: %s",
+            "[Iteration %d] Feedback for next iteration:\n%s",
             iteration,
-            feedback[:400] + "..." if len(feedback) > 400 else feedback,
+            feedback,
         )
 
-        # ── Exhausted iterations ──────────────────────────────────────────────
         if iteration >= max_iter:
             self._banner(f"✗ PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
             summary = (
@@ -1667,7 +2025,6 @@ Rules:
                 "last_error_class": current_error_class,
             }
 
-        # ── Stuck loop → trigger mid-run HITL ────────────────────────────────
         if consecutive >= STUCK_THRESHOLD:
             self.logger.warning(
                 "[Iteration %d] STUCK DETECTED — same error '%s' repeated %d times. "
@@ -1676,13 +2033,12 @@ Rules:
             )
             return {
                 "records": records,
-                "final_status": "stuck",        # internal status — routes to mid_run_hitl
+                "final_status": "stuck",
                 "feedback_summary": feedback,
                 "consecutive_same_error": consecutive,
                 "last_error_class": current_error_class,
             }
 
-        # ── Normal retry ──────────────────────────────────────────────────────
         return {
             "records": records,
             "iteration": iteration + 1,
@@ -1705,7 +2061,6 @@ Rules:
         iteration = state.get("iteration", 1)
         max_iter = state.get("max_iterations", MAX_ITERATIONS)
 
-        # Extract the repeated error for display
         error_snippet = ""
         for r in reversed(state.get("execution_results") or []):
             if not r.get("success"):
@@ -1713,7 +2068,6 @@ Rules:
                 
                 lines = []
                 for ln in raw.splitlines():
-                    # Strip Terraform box drawing characters without discarding the line
                     cleaned = re.sub(r"[╷╵│─╭╮╰╯]+", "", ln).strip()
                     if cleaned:
                         lines.append(cleaned)
@@ -1736,7 +2090,6 @@ Rules:
         guidance_list = user_guidance if isinstance(user_guidance, list) else [user_guidance]
         guidance_text = "\n".join(str(g) for g in guidance_list)
 
-        # Prepend user guidance as highest-priority instruction
         updated_feedback = (
             f"USER GUIDANCE (HIGHEST PRIORITY — apply this immediately):\n{guidance_text}\n\n"
             + feedback
@@ -1747,8 +2100,8 @@ Rules:
             "feedback_summary": updated_feedback,
             "final_status": "in_progress",
             "iteration": state.get("iteration", 1) + 1,
-            "consecutive_same_error": 0,   # reset after human input
-            "last_error_class": "",        # reset so next error is compared fresh
+            "consecutive_same_error": 0,
+            "last_error_class": "",
         }
 
     def _save_memory_node(self, state: AgentState) -> dict:
@@ -1762,7 +2115,6 @@ Rules:
         final_status = state.get("final_status", "unknown")
         iteration = state.get("iteration", 1)
 
-        # Ask the LLM to distil a one-sentence lesson from this run
         lesson = ""
         try:
             errors_seen = []
@@ -1799,8 +2151,6 @@ Rules:
         self.logger.info("memory.run_recorded  status=%s  lesson=%r", final_status, lesson[:80] if lesson else "")
         return {}
 
-    # ── routing ───────────────────────────────────────────────────────────────
-
     @staticmethod
     def _route_after_analysis(state: AgentState) -> str:
         if state["analysis"]["needs_clarification"]:
@@ -1818,12 +2168,9 @@ Rules:
             return "mid_run_hitl"
         return "retry"
 
-    # ── graph construction ────────────────────────────────────────────────────
-
     def _build_graph(self):
         builder = StateGraph(AgentState)
 
-        # generator nodes
         builder.add_node("read_existing", self._read_existing_node)
         builder.add_node("read_reference", self._read_reference_node)
         builder.add_node("analyze", self._analyze_node)
@@ -1831,15 +2178,18 @@ Rules:
         builder.add_node("generate", self._generate_node)
         builder.add_node("write_files", self._write_files_node)
 
-        # executor nodes
+        builder.add_node("validate", self._validate_node)
+        builder.add_node("validate_exhausted", self._validate_exhausted_node)
+
         builder.add_node("scan_folder", self._scan_folder_node)
         builder.add_node("plan", self._plan_node)
+        builder.add_node("plan_review", self._plan_review_node)
+        builder.add_node("plan_review_precheck_failed", self._plan_review_precheck_failed_node)
         builder.add_node("execute", self._execute_node)
         builder.add_node("report", self._report_node)
 
-        # orchestration nodes
         builder.add_node("record_iteration", self._record_iteration_node)
-        builder.add_node("mid_run_hitl", self._mid_run_hitl_node)   # stuck-loop escape hatch
+        builder.add_node("mid_run_hitl", self._mid_run_hitl_node)
         builder.add_node("save_memory_success", self._save_memory_node)
         builder.add_node("save_memory_fail", self._save_memory_node)
 
@@ -1853,9 +2203,33 @@ Rules:
         )
         builder.add_edge("hitl", "generate")
         builder.add_edge("generate", "write_files")
-        builder.add_edge("write_files", "scan_folder")
+        builder.add_edge("write_files", "validate")
+
+        builder.add_conditional_edges(
+            "validate",
+            self._route_after_validate,
+            {
+                "proceed": "scan_folder",
+                "retry_generate": "generate",
+                "give_up": "validate_exhausted",
+            },
+        )
+        builder.add_edge("validate_exhausted", "report")
+
         builder.add_edge("scan_folder", "plan")
-        builder.add_edge("plan", "execute")
+        builder.add_edge("plan", "plan_review")
+
+        builder.add_conditional_edges(
+            "plan_review",
+            self._route_after_plan_review,
+            {
+                "proceed": "execute",
+                "retry_generate": "generate",
+                "precheck_failed": "plan_review_precheck_failed",
+            },
+        )
+        builder.add_edge("plan_review_precheck_failed", "report")
+
         builder.add_edge("execute", "report")
         builder.add_edge("report", "record_iteration")
         builder.add_conditional_edges(
@@ -1868,16 +2242,11 @@ Rules:
                 "retry": "read_existing",
             },
         )
-        # After saving memory → END
         builder.add_edge("save_memory_success", END)
         builder.add_edge("save_memory_fail", END)
-        # After mid-run HITL the user provides guidance → resume from generate
-        # (files are already written; skip analysis to avoid re-triggering HITL)
         builder.add_edge("mid_run_hitl", "generate")
 
         return builder.compile(checkpointer=self.Checkpointer)
-
-    # ── public API ────────────────────────────────────────────────────────────
 
     def RunPipeline(
         self,
@@ -1898,8 +2267,6 @@ Rules:
         """
         tid = thread_id or str(uuid.uuid4())
 
-        # FIX-A7: resuming without the original thread_id silently creates a new
-        # checkpoint context with no history, causing an opaque LangGraph error.
         if answers and not thread_id:
             raise ValueError(
                 "thread_id is required when resuming with answers. "
@@ -1909,8 +2276,8 @@ Rules:
 
         config = {"configurable": {"thread_id": tid}}
 
-        # Load cross-run memory context once per pipeline call
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
+        aws_ctx = self._gather_aws_context() if not answers else ""
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
@@ -1946,7 +2313,9 @@ Rules:
                         "feedback_summary": "",
                         "memory_context": memory_ctx,
                         "consecutive_same_error": 0,
-                        "last_error_class": "",   # FIX-5: initialise new state field
+                        "last_error_class": "",
+                        "aws_context": aws_ctx,
+                        "terraform_state_context": "",
 
                         "analysis": None,
                         "clarification": None,
@@ -1958,11 +2327,21 @@ Rules:
                         "input_sandbox_path": sandbox_path or "",
                         "generator_summary": "",
 
+                        "validate_iteration": 0,
+                        "validate_passed": False,
+                        "validate_feedback": "",
+
                         "folder_contents": None,
                         "execution_plan": None,
                         "execution_results": [],
                         "success": False,
                         "executor_summary": "",
+
+                        "pre_apply_results": [],
+                        "plan_review": None,
+                        "plan_review_iteration": 0,
+                        "plan_review_precheck_failed": False,
+                        "plan_review_skipped": False,
 
                         "final_status": "in_progress",
                         "final_summary": "",
@@ -1972,7 +2351,6 @@ Rules:
 
             snapshot = self.Graph.get_state(config)
 
-            # HITL pause — covers both pre-execution clarification AND mid-run stuck HITL
             if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
                 questions = snapshot.tasks[0].interrupts[0].value
                 is_mid_run = snapshot.values.get("consecutive_same_error", 0) >= STUCK_THRESHOLD
@@ -2017,7 +2395,6 @@ Rules:
                     self.logger.warning("Failed to update Jira with final summary and status: %s", e)
 
             if final_status == "success":
-                # Sandbox intentionally kept: contains terraform.tfstate and .pem key
                 return PipelineResponse(
                     statusCode=200,
                     status="success",
@@ -2029,7 +2406,6 @@ Rules:
                     summary=final_summary_text,
                 )
 
-            # failed / exhausted
             self._cleanup_sandbox(sandbox_path_final)
             return PipelineResponse(
                 statusCode=207,
@@ -2044,16 +2420,14 @@ Rules:
 
         except BaseException as exc:
             self.logger.exception("RunPipeline error or interrupt: %s", exc)
-            # FIX-A13: attempt to clean up the sandbox if one was created before the crash/stop.
             try:
                 snapshot = self.Graph.get_state(config)
                 orphaned_sandbox = snapshot.values.get("sandbox_path") if snapshot.values else None
                 if orphaned_sandbox:
                     self._cleanup_sandbox(orphaned_sandbox)
             except Exception:
-                pass  # best-effort only; don't mask the original exception
+                pass
             
-            # If it's a SystemExit or KeyboardInterrupt, we MUST re-raise it so the thread dies properly
             if isinstance(exc, (SystemExit, KeyboardInterrupt, InterruptedError)):
                 raise
 
@@ -2063,7 +2437,6 @@ Rules:
                 exception=str(exc),
                 thread_id=tid,
             )
-
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -2093,6 +2466,6 @@ Rules:
 #     response = agent.RunPipeline(
 #         action=action_payload,
 #         reference_folder="",
-#         command_timeout=180,
+#         command_timeout=300,
 #     )
 #     print("Pipeline Response:", json.dumps(response.model_dump(), indent=2))
