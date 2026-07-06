@@ -696,17 +696,6 @@ export const WorkerActionExecutionCenter = forwardRef<
                                 <Download size={12} />
                                 Download Execution Artifacts
                               </button>
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
-                                  window.open(`${apiUrl}/download_sandbox?path=${encodeURIComponent(action.sandboxPath!)}`, '_blank');
-                                }}
-                                className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
-                              >
-                                <Download size={12} />
-                                Download Execution Artifacts
-                              </button>
                               {confirmDestroyId === action.id ? (
                                 <div className="flex items-center gap-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[0.65rem] tracking-[0.1em] text-red-400">
                                   <span className="mr-2 uppercase">Are you sure?</span>

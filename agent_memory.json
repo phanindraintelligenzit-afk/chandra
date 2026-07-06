@@ -152,6 +152,86 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use the aws_ami data source to dynamically fetch the latest AMI ID for the correct region — hardcoded AMIs cause region-specific deployment failures."
+    },
+    {
+      "timestamp": "2026-07-06T16:47:58",
+      "action_name": "Deploy VPC with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a VPC using Terraform in us-east-1 but failed during the `terraform validate` pre-flight check",
+        "The AWS automation successfully executed a Terraform deployment to create a VPC in us-east-1 to meet KRA-07 requirements"
+      ],
+      "lesson": "Always define VPC CIDR blocks and subnet ranges explicitly in Terraform rather than relying on defaults, ensuring consistent and predictable network configuration across environments."
+    },
+    {
+      "timestamp": "2026-07-06T16:51:41",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "terraform init failed:"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2"
+      ],
+      "lesson": "Always validate your Terraform configuration syntax and provider blocks before running `terraform init`—invalid or incomplete configs cause initialization failures."
+    },
+    {
+      "timestamp": "2026-07-06T16:57:37",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always define region-specific AMI IDs using the `aws_ami` data source to ensure portability across regions; hardcoded values fail in other regions."
+    },
+    {
+      "timestamp": "2026-07-06T17:02:54",
+      "action_name": "Create S3 bucket in us-east-1",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket and its ACL using Terraform in us-east-1, successfully initializing providers, validating configuration, and planning changes",
+        "The automation executed a series of Terraform commands to create an S3 bucket in us-east-1 to satisfy KRA-05"
+      ],
+      "lesson": "Always specify the region explicitly when creating S3 buckets — AWS requires it, and omitting it can cause silent failures in non-default regions."
+    },
+    {
+      "timestamp": "2026-07-06T17:20:23",
+      "action_name": "Create default S3 bucket in us-east-1",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to validate and initialize a Terraform configuration to create an S3 bucket named 'kra05-default-bucket' in us-east-1 to fulfill KRA-05, but failed during the `terraform init`",
+        "The automation attempted to create an S3 bucket named `kra05-default-bucket` in us-east-1 using Terraform but failed during the `terraform validate` pre-flight check",
+        "The automation attempted to create an S3 bucket named 'kra05-default-bucket' in us-east-1 using Terraform to meet KRA-05, but the execution failed during the `terraform validate` pre-flight check",
+        "The AWS automation successfully executed a Terraform workflow to create a default S3 bucket named 'kra05-default-bucket-5ade5effdd114796' in us-east-1, as required by KRA-05"
+      ],
+      "lesson": "Always specify the region explicitly when creating S3 buckets, as they are region-specific resources and defaulting to us-east-1 avoids region-mismatch errors."
+    },
+    {
+      "timestamp": "2026-07-06T17:25:43",
+      "action_name": "Deploy production-tagged PostgreSQL RDS instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "terraform validate failed:"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform but failed during the pre-flight `terraform validate` phase due to a `terraform init` failure",
+        "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform in us-east-1 but failed during the `terraform init` phase due to invalid configuration, as explicitly sta",
+        "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform in us-east-1 but failed during the pre-flight `terraform validate / py_compile` step",
+        "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform but failed during the `terraform init` pre-flight check",
+        "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform but failed during the `terraform validate` pre-flight check"
+      ],
+      "lesson": "Always use `subnet_id` (singular) instead of `subnet_ids` for `aws_db_instance` — it accepts a single subnet ID, not a list."
     }
   ]
 }

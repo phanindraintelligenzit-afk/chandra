@@ -1,0 +1,608 @@
+================================================================================
+CHANDRA — END-TO-END WORKFLOW
+Client-Facing Architecture & Data Flow Reference
+================================================================================
+
+This document explains, in plain language, what happens from the moment a user
+opens the Chandra console to the moment an AWS remediation action finishes
+running — including where the LLM is allowed to act, where humans are gated
+in, and what each component does.
+
+
+--------------------------------------------------------------------------------
+1. WHAT IS CHANDRA?
+--------------------------------------------------------------------------------
+
+Chandra is an AI Cloud Engineer that takes a user's operational goals
+(Key Result Areas, or KRAs), inspects an AWS account end-to-end, recommends
+concrete remediation actions, and — under human supervision — executes those
+actions safely inside a sandbox.
+
+The product is built on three layers:
+
+  1. A Next.js operations console (the UI the user sees)
+  2. A FastAPI backend service (HTTP/WS surface, async job tracking)
+  3. A set of "digital worker" agents built on LangGraph + Amazon Bedrock
+
+
+--------------------------------------------------------------------------------
+2. THE HIGH-LEVEL FLOW (ONE PICTURE)
+--------------------------------------------------------------------------------
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ 1. USER  ───  defines KRAs (predefined + custom)                         │
+  │                                                                          │
+  │ 2. FRONTEND  ───  posts KRAs + region to FastAPI                         │
+  │                                                                          │
+  │ 3. FASTAPI  ───  hands the request to the Observation Agent              │
+  │                                                                          │
+  │ 4. OBSERVATION  ───  11 AWS tools run in parallel → structured report    │
+  │       │            (KRA status, issues, cost snapshot, actions[])        │
+  │       ▼                                                                  │
+  │ 5. ANALYZER  ───  LLM scores each action (severity / priority /          │
+  │       │           needs-human?) → creates a Jira ticket per action       │
+  │       ▼                                                                  │
+  │ 6. EXECUTION AGENT  ───  LLM writes Terraform/code → validates →         │
+  │       │                 plans → applies inside an isolated sandbox       │
+  │       │                 → reports back                                   │
+  │       ▼                                                                  │
+  │ 7. UI  ───  user watches live status, logs, approve / reject / stop      │
+  │                                                                          │
+  │ 8. AUDIT  ───  every step, ticket, log line, and decision is persisted   │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+
+--------------------------------------------------------------------------------
+3. STAGE 1 — USER ONBOARDING (FRONTEND)
+--------------------------------------------------------------------------------
+
+The user lands on the app and walks through a 5-step wizard.
+
+  Step 1: Agent identity     — name, avatar, role, maturity level
+  Step 2: KRAs (Key Results) — pick from a catalog of predefined KRAs and/or
+                               type in CUSTOM KRAs (e.g. "create s3 bucket in
+                               us-east-1" or "deploy EC2 with Terraform")
+  Step 3: Permissions        — choose what the agent is allowed to do
+  Step 4: Review             — see the configured profile
+  Step 5: Deploy             — finish onboarding, enter the dashboard
+
+  Where the data lives:
+    - Browser:  sessionStorage + localStorage (instant restore on refresh)
+    - Backend:  customKras.json on disk (custom KRA library persists across
+               users and sessions)
+
+  Files involved:
+    frontend/app/onboarding/page.tsx          — hosts the wizard
+    frontend/components/OnboardingWizard.tsx  — 5-step flow, all form logic
+    frontend/store/OnboardingContext.tsx      — shared state, debounced save
+    frontend/store/kraCatalog.ts              — predefined KRA definitions
+    customKras.json                           — backend KRA persistence
+
+  Once the wizard is complete, the user is routed to the dashboard
+  (frontend/app/dashboard/page.tsx).
+
+
+--------------------------------------------------------------------------------
+4. STAGE 2 — OBSERVATION (THE "WHAT'S WRONG" AGENT)
+--------------------------------------------------------------------------------
+
+When the user clicks "Run" on the dashboard, the frontend submits the active
+KRAs and target region to the backend.
+
+  ┌────────────────────┐                              ┌─────────────────────┐
+  │  Frontend          │  POST /getAgentObservations  │  FastAPI            │
+  │  (Dashboard)       │ ────────────────────────────▶│  fastapi_app.py     │
+  │  region + KRAs     │   {region, kras: [...]}      │                     │
+  └────────────────────┘                              └──────────┬──────────┘
+                                                                 │ async job
+                                                                 │ (poll /jobs/status)
+                                                                 ▼
+                                                    ┌─────────────────────┐
+                                                    │ AwsObservabilityAgent│
+                                                    │ digitalworker_agents│
+                                                    │ /observation_agent.py│
+                                                    └──────────┬──────────┘
+                                                               │
+            ┌──────────────────┬──────────────────┬───────────┴───────────┐
+            ▼                  ▼                  ▼                       ▼
+     ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         ┌─────────────┐
+     │ Cost        │    │ Security    │    │ Compliance  │  ...    │  + 8 more   │
+     │ Explorer    │    │ Hub / IAM   │    │ Config rules│  tools  │  AWS tools  │
+     │ tool        │    │ tool        │    │ tool        │         │             │
+     └─────────────┘    └─────────────┘    └─────────────┘         └─────────────┘
+                                                               (all parallel)
+                                                               │
+                                                               ▼
+                                                ┌────────────────────────────────┐
+                                                │ Bedrock (Claude Sonnet 4.5)    │
+                                                │ produces a STRUCTURED REPORT: │
+                                                │  • health: Healthy/Degraded/   │
+                                                │    Critical                    │
+                                                │  • kra_status[]: per KRA       │
+                                                │    (Green/Yellow/Red + %)      │
+                                                │  • issues[]: P1/P2/P3 list     │
+                                                │  • cost_snapshot[]             │
+                                                │  • security_posture[]          │
+                                                │  • actions[]: RECOMMENDED      │
+                                                │    ACTIONS tied to each KRA,   │
+                                                │    with ordered steps[]        │
+                                                └──────────────┬─────────────────┘
+                                                               │
+                                                               ▼
+                                                { job_id: ..., status: "completed",
+                                                  result.output: ObservabilityReport }
+                                                               │
+                                                               ▼
+                                                Frontend renders the dashboard:
+                                                  • KRA scorecard tiles
+                                                  • Live ops event stream
+                                                  • Action queue (with Approve /
+                                                    Reject buttons per action)
+
+  Key files:
+    digitalworker_agents/observation_agent.py        — the agent + graph
+    tools/aws_cloud_tools/                           — Cost Explorer, CloudWatch,
+                                                       Security Hub, Config,
+                                                       CloudTrail, IAM, etc.
+    tools/langchain_tools.py                         — tool registry (TOOLS_LIST)
+
+  Key property:  THE LLM ONLY RANKS THE FINDINGS — IT NEVER INVENTS THEM.
+  All raw data is produced by deterministic boto3 tool calls.
+
+
+--------------------------------------------------------------------------------
+5. STAGE 3 — ANALYZER (THE "WHAT SHOULD WE DO" AGENT)
+--------------------------------------------------------------------------------
+
+The user reviews the Observation report. Each recommended action has an
+"Approve" button. When the user clicks Approve (or selects a batch), the
+frontend sends the actions to the Analyzer.
+
+  ┌────────────────────┐                  ┌─────────────────────────────────────┐
+  │  Frontend          │  POST            │  FastAPI                            │
+  │  Approval Center   │ /analyzeActions  │  _run_analyzer_task (bg thread)     │
+  │                    │ ────────────────▶│                                     │
+  │  [action, action,  │ {projectKey,     │  ┌──────────────────────────────┐  │
+  │   action...]       │  actions:[...]}  │  │  AnalyzerAgent               │  │
+  └────────────────────┘                  │  │  digitalworker_agents/       │  │
+                                          │  │   analyzer_agent.py          │  │
+                                          │  └──────────┬───────────────────┘  │
+                                          │             │                      │
+                                          │             ▼                      │
+                                          │   ┌────────────────────────┐       │
+                                          │   │  LLM (Bedrock)         │       │
+                                          │   │  For each action:      │       │
+                                          │   │   • severity           │       │
+                                          │   │     HIGH/MEDIUM/LOW    │       │
+                                          │   │   • humanReviewNeeded  │       │
+                                          │   │   • priority           │       │
+                                          │   └─────────┬──────────────┘       │
+                                          │             │                      │
+                                          │             ▼                      │
+                                          │   ┌────────────────────────┐       │
+                                          │   │  tools/jira_tools/     │       │
+                                          │   │  create_jira_ticket.py │       │
+                                          │   │  → 1 Jira ticket per   │       │
+                                          │   │    action (with steps  │       │
+                                          │   │    as comment)         │       │
+                                          │   └─────────┬──────────────┘       │
+                                          │             │                      │
+                                          │             ▼                      │
+                                          │   ┌────────────────────────┐       │
+                                          │   │  SNS Publisher         │       │
+                                          │   │  (chandra.escalation.  │       │
+                                          │   │   publisher)           │       │
+                                          │   │  → publish a payload   │       │
+                                          │   │    per HIGH-severity   │       │
+                                          │   │    action              │       │
+                                          │   └─────────┬──────────────┘       │
+                                          │             │                      │
+                                          └─────────────┼──────────────────────┘
+                                                        ▼
+                                          Returns ActionResult[]:
+                                          { actionName, severity,
+                                            humanReviewNeeded,
+                                            jiraIssueKey, jiraUrl, priority }
+
+  What the user sees:
+    • Each action gets a real Jira ticket (key + URL)
+    • High-severity actions are flagged "Requires Approval"
+    • A "Run" button appears next to each approved action in the
+      Worker Action Execution Center
+
+  Key files:
+    digitalworker_agents/analyzer_agent.py
+    tools/jira_tools/create_jira_ticket.py
+    src/chandra/escalation/                    — SNS publish + schemas
+
+
+--------------------------------------------------------------------------------
+6. STAGE 4 — EXECUTION (THE "MAKE IT HAPPEN" AGENT)
+--------------------------------------------------------------------------------
+
+When the user clicks "Run" on a single action, the Execution Agent kicks in.
+This is the most complex stage — a self-healing loop that runs inside an
+isolated sandbox.
+
+  ┌────────────────────┐                  ┌─────────────────────────────────────┐
+  │  Frontend          │  POST            │  FastAPI                            │
+  │  Execution Center  │ /orchestrate     │  _run_orchestration_task (bg thread)│
+  │                    │ ────────────────▶│                                     │
+  │  {action,          │ {action,         │  ┌──────────────────────────────┐  │
+  │   jiraUrl,         │  jiraUrl,        │  │  ExecutionAgents             │  │
+  │   sandbox_path?,   │  sandbox_path?,  │  │  digitalworker_agents/       │  │
+  │   ref_folder?,     │  reference_      │  │   aws_execution_agent.py     │  │
+  │   max_iterations}  │  folder?,        │  │                              │  │
+  └────────────────────┘  max_iterations} │  │  LangGraph state machine:    │  │
+                                          │  │                              │  │
+                                          │  │  per iteration:              │  │
+                                          │  │   read_existing              │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   read_reference            │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   analyze  ← (LLM Bedrock)  │  │
+                                          │  │       │  • aws_services[]    │  │
+                                          │  │       │  • expected_resrcs  │  │
+                                          │  │       │  • needs_clarify?    │  │
+                                          │  │       │  • dynamic_resols    │  │
+                                          │  │       │  • cred_strategy     │  │
+                                          │  │       │  • post_deploy_out   │  │
+                                          │  │       ▼                      │  │
+                                          │  │   [hitl?  ← INTERRUPT here   │  │
+                                          │  │       │       if questions]  │  │
+                                          │  │       ▼                      │  │
+                                          │  │   generate  ← (LLM Bedrock)  │  │
+                                          │  │       │  writes .tf / .py    │  │
+                                          │  │       ▼                      │  │
+                                          │  │   write_files                │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   validate  (terraform val.) │  │
+                                          │  │       │  on fail → re-       │  │
+                                          │  │       │  generate (max 3)    │  │
+                                          │  │       ▼                      │  │
+                                          │  │   scan_folder                │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   plan                       │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   plan_review  ← (LLM)       │  │
+                                          │  │       │  "matches intent?"   │  │
+                                          │  │       │  "no destroy?"       │  │
+                                          │  │       ▼                      │  │
+                                          │  │   execute  (subprocess in    │  │
+                                          │  │       │  sandbox; terraform  │  │
+                                          │  │       │  apply / python)     │  │
+                                          │  │       ▼                      │  │
+                                          │  │   report  (run summary)      │  │
+                                          │  │       │                      │  │
+                                          │  │       ▼                      │  │
+                                          │  │   route                      │  │
+                                          │  │     • success       → save   │  │
+                                          │  │                      memory  │  │
+                                          │  │     • fail (budget) → iterate │  │
+                                          │  │     • fail (stuck)  → mid    │  │
+                                          │  │                      run HITL│  │
+                                          │  └──────────────────────────────┘  │
+                                          └────────────────┬────────────────────┘
+                                                           │
+                                                           ▼
+                                          Sandbox:   logs/<job_id>.log
+                                          (zip      + per-command stdout/stderr
+                                          download) + on completion:
+                                                     → add Jira summary comment
+                                                     → return OrchestratorResponse
+
+  While the job runs, the frontend polls /orchestrate/status/<job_id> every
+  3 seconds and renders:
+    • Live progress bar
+    • Live log stream (from /logs)
+    • Stop / Cancel button (POST /orchestrate/stop/<job_id>)
+    • Download artifacts button (GET /download_sandbox)
+    • Destroy button (POST /destroy_sandbox → terraform destroy)
+
+  Key files:
+    digitalworker_agents/aws_execution_agent.py     — the full state machine
+    tools/jira_tools/create_jira_ticket.py          — adds summary comment
+    iac/reference/                                  — code-style reference
+                                                      templates
+
+  Key safety properties:
+    • All shell commands run with timeout (default 500s)
+    • Cancellation is cooperative (SIGKILL / taskkill /F on cancel)
+    • The agent remembers past errors via agent_memory.json and avoids
+      repeating them in future runs
+    • Mid-run HITL fires if the agent is "stuck" on the same error class
+    • When the budget (default 6 iterations) is exhausted, the job halts
+
+
+--------------------------------------------------------------------------------
+7. ASYNCHRONOUS JOB PATTERN (HOW THE UI STAYS RESPONSIVE)
+--------------------------------------------------------------------------------
+
+Every long-running backend operation is a job:
+
+  Submit   POST /getAgentObservations      → 202 { job_id, poll_url }
+  Submit   POST /analyzeActions            → 202 { job_id, poll_url }
+  Submit   POST /orchestrate               → 202 { job_id, poll_url }
+  Poll     GET  /jobs/status/{job_id}      → { status, progress, message,
+                                                  result | error }
+  Stop     POST /orchestrate/stop/{job_id} → 200 { status: "stopped" }
+  Logs     GET  /orchestrate/logs/{job_id} → text file
+  Sandbox  GET  /download_sandbox?path=…   → .zip of generated artifacts
+  Destroy  POST /destroy_sandbox           → terraform destroy + Jira note
+
+  Why this matters:
+    • The UI never blocks. The user can leave the page and come back.
+    • Multiple actions can run in parallel.
+    • Every job has a unique thread_id, so re-attaching mid-run is possible.
+
+
+--------------------------------------------------------------------------------
+8. HUMAN-IN-THE-LOOP (HITL) GATES
+--------------------------------------------------------------------------------
+
+Chandra is "supervised autonomy" — it never mutates AWS without a human
+willing it to. There are FOUR HITL touchpoints:
+
+  (a) OBSERVATION → ANALYZER GATE
+      The user must click "Approve" on the action list before
+      /analyzeActions is even called.
+
+  (b) ANALYZER → EXECUTION GATE
+      Each action in the analyzer output carries a humanReviewNeeded
+      boolean. The frontend only enables "Run" for actions marked
+      humanReviewNeeded=false unless the user explicitly overrides
+      (via "Approve & Run"). The action's Jira ticket captures this
+      audit trail.
+
+  (c) PRE-EXECUTION (interrupted inside the Execution Agent)
+      If the Execution Agent's `analyze` step decides it needs
+      clarification (e.g. "which VPC?"), it raises an `interrupt()`.
+      The graph halts, the user's frontend sees
+      "awaiting_input" + a list of questions, and the user submits
+      answers via the same orchestrate endpoint. The graph resumes
+      where it left off.
+
+  (d) MID-RUN HITL (stuck loop)
+      If the agent hits STUCK_THRESHOLD consecutive identical errors,
+      it raises an interrupt with the failing error text. The user
+      can provide guidance (e.g. "use a different AMI") and the agent
+      resumes with that context.
+
+  Persistence:
+    • All approval state, escalation payloads, and audit receipts
+      persist to PostgreSQL via SQLAlchemy + Alembic
+      (src/chandra/db/models.py)
+    • Every orchestration run writes logs/<job_id>.log
+    • Cross-run memory: agent_memory.json (rolling log of 50 runs)
+
+
+--------------------------------------------------------------------------------
+9. TECHNOLOGY STACK (ONE-GLANCE TABLE)
+--------------------------------------------------------------------------------
+
+  Layer              Tech                                  Where
+  ─────────────────  ───────────────────────────────────   ─────────────────────
+  Frontend           Next.js 16, React 18, TypeScript 5   frontend/
+                     Tailwind 3, Framer Motion 11
+                     Recharts 2, lucide-react
+
+  Backend service    FastAPI (uvicorn)                     fastapi_app.py
+                     async jobs via ThreadPoolExecutor    (port 6001)
+                     in-process log buffer (last 2000)
+
+  LLM                Amazon Bedrock — Claude Sonnet 4.5    langchain_aws
+                     via ChatBedrockConverse               (only model allowed)
+
+  Agent framework    LangGraph (StateGraph + Send fan-out) src/chandra/graphs/
+                     LangChain tool registry
+
+  AWS SDK            boto3 (via AwsClientFactory)          src/chandra/aws/
+                     paginators on every list/describe
+                     no raw boto3.client() anywhere
+
+  Persistence        PostgreSQL 16 + SQLAlchemy 2          src/chandra/db/
+                     Alembic migrations                    alembic.ini
+
+  Sandbox            subprocess (Windows + POSIX)          digitalworker_agents/
+                     Terraform ~> 5.0, Python 3.12         aws_execution_agent.py
+                     cross-run memory: agent_memory.json
+
+  Issue tracking     Jira REST API (DEV project)           tools/jira_tools/
+                     CloudWatch SNS for high severity      create_jira_ticket.py
+
+  Testing            pytest, moto (mocked AWS)             tests/unit/
+                     Terraform synthetic env for evals     evals/harness.py
+                     4 layers: unit, node, integration,    evals/seed_manifest.yaml
+                     eval harness
+
+  Deployment         Docker (slim)                         Dockerfile
+                     docker-compose (Postgres + LocalStack)docker-compose.yml
+                     Railway                               railway.toml
+                     Nginx reverse proxy                   nginx.conf
+                     start.sh boots 3 background procs     start.sh
+
+
+--------------------------------------------------------------------------------
+10. DATA SCHEMAS THAT FLOW THROUGH THE SYSTEM
+--------------------------------------------------------------------------------
+
+  KRAInput          { code?: KRA-XX, name?, description }
+                    Sent: frontend → /getAgentObservations
+                    Used by: Observation Agent to scope its report
+
+  ObservabilityReport (output of Stage 2)
+                    { health, kra_status[], issues[],
+                      observations[], cost_snapshot[],
+                      security_posture[], compliance_summary,
+                      actions[]: ActionItem }
+                    ActionItem: { actionName, actionDescription,
+                                  service, kraCode, priorityLevel,
+                                  steps[] }
+                    Sent back: Stage 2 → frontend dashboard
+
+  ActionResult      (output of Stage 3)
+                    { actionName, severity, humanReviewNeeded,
+                      jiraIssueKey, jiraUrl, priority }
+                    Sent back: Stage 3 → frontend approval cards
+
+  ActionInput       (sent to /orchestrate)
+                    { actionName, actionDescription, service,
+                      kraCode, priorityLevel, steps[] }
+                    Drives: Stage 4 (Execution Agent)
+
+  PipelineResponse  (output of Stage 4)
+                    { statusCode, status, thread_id,
+                      sandbox_path, iterations_used,
+                      iterations[IterationRecord],
+                      execution_results[ExecutionResult],
+                      summary }
+                    Sent back: Stage 4 → frontend execution card
+
+  EscalationPayload { finding_id, resource_id, severity,
+                      service, region, summary,
+                      recommended_action }
+                    Used by: SNS publisher when a HIGH-severity
+                             action needs human eyes
+
+
+--------------------------------------------------------------------------------
+11. COMPLETE END-TO-END SEQUENCE (NUMERIC)
+--------------------------------------------------------------------------------
+
+  T+0s    User opens app                       → /onboarding wizard
+  T+30s   User finishes wizard                  → /dashboard
+  T+31s   User clicks "Run observation"         → POST /getAgentObservations
+                                                   (job_id returned in 202)
+  T+31s   Frontend starts polling               → GET /jobs/status/<id> (3s)
+  T+15s   11 AWS tools finish in parallel
+  T+18s   Bedrock produces ObservabilityReport
+  T+19s   Job status: "completed"
+  T+19s   Dashboard renders KRA tiles + actions
+
+  T+45s   User reviews 7 actions, clicks        → POST /analyzeActions
+            "Approve & Analyze"                    (job_id returned)
+  T+48s   Bedrock scores each action
+  T+50s   7 Jira tickets created
+  T+50s   2 SNS messages fired (HIGH severity)
+  T+51s   Job status: "completed"
+  T+51s   Approval cards now show Jira URLs
+
+  T+90s   User clicks "Run" on "Deploy VPC"     → POST /orchestrate
+                                                   (job_id returned)
+  T+91s   ExecutionAgent starts iteration 1
+  T+93s   analyze step — may interrupt for
+            clarification; if not, proceeds
+  T+95s   generate step — writes main.tf
+  T+97s   validate step — terraform validate OK
+  T+99s   plan + plan_review — LLM approves plan
+  T+105s  execute step — terraform apply
+  T+110s  Job status: "completed"
+  T+110s  Sandbox zipped for download
+  T+111s  Jira comment posted with summary
+  T+111s  User clicks "Download artifacts"      → GET /download_sandbox
+
+
+--------------------------------------------------------------------------------
+12. WHAT THE CLIENT SEES AT EACH STAGE
+--------------------------------------------------------------------------------
+
+  Stage 1 — Onboarding
+    • 5-step wizard with animated transitions
+    • KRA library persists across sessions
+    • Custom KRA = "name + description" (free-form)
+
+  Stage 2 — Observation
+    • Animated progress while job runs
+    • "Live ops event stream" populates as issues come in
+    • KRA scorecard tiles (Green / Yellow / Red, %)
+    • Cost snapshot cards (daily spend, 24h delta)
+    • Issues table with P1/P2/P3 badges
+    • Action queue with per-action "Approve" buttons
+
+  Stage 3 — Analyzer
+    • Action cards now show:
+        - Severity (HIGH / MEDIUM / LOW)
+        - Human Review badge
+        - Jira issue key + link
+    • "Run" button enabled per action
+
+  Stage 4 — Execution
+    • Per-action execution card with:
+        - Live status (pending → running → completed)
+        - Real-time log stream (auto-scrolling)
+        - Stop / Cancel button
+        - Download artifacts (.zip)
+        - Destroy (terraform destroy + Jira note)
+    • Mid-run "questions" panel if agent needs clarification
+
+  Always-on
+    • Audit trail in Postgres (runs, findings, briefings, escalations)
+    • Cross-run memory in agent_memory.json
+    • Bedrock token usage + cost tracked per run
+    • Eval harness scores pipeline vs Terraform-seeded ground truth
+
+
+--------------------------------------------------------------------------------
+13. SAFETY GUARDRAILS (NON-NEGOTIABLE)
+--------------------------------------------------------------------------------
+
+  1. LLM never invents findings.    Detectors produce data; LLM ranks.
+  2. LLM never invents cloud IDs.   Generator must use `data` sources or
+                                     pre-fetched account context.
+  3. Sandbox isolation.             subprocess is killed on stop; sandbox
+                                     zip is downloadable but isolated.
+  4. Every boto3 call paginated.    No silent truncation.
+  5. Every AWS client via factory.  No raw `boto3.client(...)`.
+  6. Postgres writes only in `persist`
+     and in Alembic migrations.     One node owns all DB writes.
+  7. Read-only by default.          Writes are gated by approval + dry-run.
+  8. Circuit breakers.              Validate retries capped at 3, plan
+                                     review retries capped at 2, total
+                                     orchestration iterations capped at 6.
+  9. Cancellation cooperative.      User stop = immediate subprocess kill.
+ 10. Decisions in `decision_router`,
+     `action_executor`, and
+     `escalation` are DETERMINISTIC.
+                                     LLM is not allowed in these nodes.
+
+
+--------------------------------------------------------------------------------
+14. WHERE TO LOOK IN THE CODE (CHEAT SHEET)
+--------------------------------------------------------------------------------
+
+  Need to change...                       Open this file
+  ──────────────────────────────────────  ──────────────────────────────────
+  KRA catalog / predefined KRAs           frontend/store/kraCatalog.ts
+  Custom KRA persistence                  customKras.json (on disk)
+                                          + frontend/store/OnboardingContext.tsx
+                                          + fastapi_app.py : /customKras
+  Onboarding wizard steps                 frontend/components/OnboardingWizard.tsx
+  Dashboard layout                        frontend/components/ChandraExperience.tsx
+  Approval / Execution center             frontend/components/WorkerActionExecutionCenter.tsx
+  Backend API surface                     fastapi_app.py
+  Observation agent logic                 digitalworker_agents/observation_agent.py
+  Analyzer / Jira logic                   digitalworker_agents/analyzer_agent.py
+  Execution / sandbox logic               digitalworker_agents/aws_execution_agent.py
+  LangGraph core (canonical graph)        src/chandra/graphs/chandra_graph.py
+  All graph node implementations          src/chandra/graphs/action_nodes/__init__.py
+  LLM prompts                             src/chandra/prompts/
+  Detector / tool implementations         src/chandra/tools/  AND
+                                          tools/aws_cloud_tools/
+  AWS client factory                      src/chandra/aws/client_factory.py
+  Postgres models                         src/chandra/db/models.py
+  Escalation / approval schemas           src/chandra/escalation/
+  Eval ground truth                       evals/seed_manifest.yaml
+  Unit tests                              tests/unit/
+  Per-node tests                          tests/test_nodes/
+
+
+================================================================================
+END OF WORKFLOW DOCUMENT
+Generated: 2026-07-06
+Audience: Client / executive briefing
+================================================================================

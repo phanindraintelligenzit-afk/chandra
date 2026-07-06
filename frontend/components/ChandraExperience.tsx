@@ -1194,10 +1194,7 @@ function HumanReviewQueue({ seed, rawActions, sync, onAutoApproved }: { seed?: A
                 </div>
               </div>
               <div className="mt-3 grid gap-2 text-[0.68rem] text-frost/75">
-                <div className="flex items-center justify-between border-t border-white/8 pt-2">
-                  <span className="text-muted">Lock</span>
-                  <span className="break-words">{approval.lockState}</span>
-                </div>
+
                 <div className="normal-case leading-5 break-words">{approval.note}</div>
                 {approval.steps && approval.steps.length ? (
                   <div className="rounded-xl border border-white/10 bg-black/40 p-4 mt-2 overflow-hidden">
@@ -2853,27 +2850,7 @@ export function ChandraExperience() {
     () => (observations?.actions ? deriveApprovals(observations.actions) : []),
     [observations]
   );
-  const [locallyCompletedActions, setLocallyCompletedActions] = useState<Map<string, string>>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("chandra_completed_actions");
-        if (stored) return new Map(JSON.parse(stored));
-      } catch (e) {
-        console.warn("Failed to load completed actions from local storage", e);
-      }
-    }
-    return new Map();
-  });
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("chandra_completed_actions", JSON.stringify(Array.from(locallyCompletedActions.entries())));
-      } catch (e) {
-        console.warn("Failed to save completed actions to local storage", e);
-      }
-    }
-  }, [locallyCompletedActions]);
+  const [locallyCompletedActions, setLocallyCompletedActions] = useState<Map<string, string>>(new Map());
 
   const maxActionsPerKraRef = useRef<Map<string, number>>(new Map());
 
