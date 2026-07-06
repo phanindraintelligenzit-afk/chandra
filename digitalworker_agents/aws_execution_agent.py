@@ -648,7 +648,7 @@ class ExecutionAgents:
             lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
 
             try:
-                sts = session.client("sts", region_name=region or None)
+                sts = session.client("sts")
                 identity = sts.get_caller_identity()
                 lines.append(f"  Account ID : {identity.get('Account')}")
                 lines.append(f"  Caller ARN : {identity.get('Arn')}")
@@ -1180,6 +1180,26 @@ RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE:
   step MUST be written as `terraform plan -out=tfplan` (not just `terraform plan`) so the
   plan can be reviewed before apply.
 
+RULE 8 — SELF-VALIDATING TERRAFORM (native checks, not just data sources):
+  Where it materially reduces risk of a bad apply, add Terraform's own
+  validation primitives so problems surface at `terraform plan` instead of
+  `terraform apply`:
+  - variable "validation" blocks for any variable with a constrained valid
+    range or format (e.g. reject empty strings, validate CIDR format, ensure
+    a count variable is >= 0).
+  - resource-level `lifecycle {{ precondition {{ ... }} }}` / `postcondition`
+    blocks for assumptions the config relies on but can't express as plain
+    HCL constraints (e.g. "the chosen AMI must exist in this region",
+    "the S3 bucket name must be globally available" — where a data source
+    result can be checked).
+  - top-level `check` blocks (Terraform 1.5+) for cross-resource invariants
+    that don't map to a single resource (e.g. "the RDS instance's subnet
+    group must span at least 2 AZs").
+  Do not add validation blocks reflexively to every variable — only where a
+  bad value would otherwise fail late (at apply, or worse, silently succeed
+  with wrong behavior). A single well-placed precondition beats five
+  boilerplate ones.
+
 Generate the complete set of files now."""
 
         try:
@@ -1706,11 +1726,11 @@ Determine:
         if state.get("plan_review_iteration", 0) >= PLAN_REVIEW_MAX_RETRIES:
             self_logger = logging.getLogger("ExecutionAgents")
             self_logger.warning(
-                "[plan_review] exhausted %d review retries — proceeding with a flagged plan "
-                "rather than looping forever; flag surfaced in the final summary.",
+                "[plan_review] exhausted %d review retries — failing the precheck "
+                "rather than proceeding with a dangerously flagged plan.",
                 PLAN_REVIEW_MAX_RETRIES,
             )
-            return "proceed"
+            return "precheck_failed"
         return "retry_generate"
 
     def _plan_review_precheck_failed_node(self, state: AgentState) -> dict:
@@ -2345,7 +2365,7 @@ Rules:
         )
         builder.add_edge("save_memory_success", END)
         builder.add_edge("save_memory_fail", END)
-        builder.add_edge("mid_run_hitl", "generate")
+        builder.add_edge("mid_run_hitl", "read_existing")
 
         return builder.compile(checkpointer=self.Checkpointer)
 
