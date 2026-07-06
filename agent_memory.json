@@ -113,6 +113,19 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use the `aws_ami` data source to dynamically fetch the latest Amazon Linux 2 AMI — hardcoded AMI IDs are region-specific and cause deployment failures elsewhere."
+    },
+    {
+      "timestamp": "2026-07-06T13:10:42",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform but failed during the `terraform init` phase due to invalid configuration, as explicitly stated in the error: “Terraform encountered ",
+        "The automation ran Terraform to deploy a t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use region-agnostic AMI lookup via `aws_ami` data source — hardcoded AMI IDs fail across regions, but dynamic lookup ensures compatibility."
     }
   ]
 }

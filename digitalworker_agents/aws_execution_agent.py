@@ -269,6 +269,14 @@ def _build_checkpointer() -> Any:
     return MemorySaver()
 
 class ActionAnalysis(BaseModel):
+    aws_services_involved: List[str] = Field(
+        default_factory=list,
+        description="List of AWS service names involved in this action (e.g., ['ec2', 'lambda', 'ecs', 'apigateway', 's3']). Use common short names.",
+    )
+    expected_resources: List[str] = Field(
+        default_factory=list,
+        description="List of exact Terraform resource types expected to be used (e.g., ['aws_instance', 'aws_lambda_function', 'aws_api_gateway_rest_api']). Must not be empty.",
+    )
     needs_clarification: bool = Field(
         description="True ONLY when critical information is missing that cannot be resolved dynamically"
     )
@@ -398,6 +406,8 @@ class AgentState(TypedDict):
     last_error_class: str
     aws_context: str
     terraform_state_context: str
+    service_quotas_context: str
+    terraform_docs: str
 
     analysis: Optional[Dict]
     clarification: Optional[Dict]
@@ -710,7 +720,9 @@ class ExecutionAgents:
                 "7. Provider Version: Use the required_providers block to specify hashicorp/aws version ~> 5.0 to ensure modern syntax is supported.\n"
                 "8. Local Files: NEVER use shell commands (like jq, echo, or icacls) to save files or parse Terraform output. Use the Terraform local_file resource instead."
             )
-            return "\n".join(lines)
+            ctx_str = "\n".join(lines)
+            self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
+            return ctx_str
         except ImportError:
             self.logger.info("aws_context.boto3_unavailable — skipping live AWS grounding")
             return ""
@@ -821,7 +833,11 @@ Determine:
 
 6. recommended_approach — 'python' | 'terraform' | 'both'
 
-7. reasoning — Brief justification. If agent memory above contains lessons for this action,
+7. aws_services_involved — List of AWS service codes involved (e.g. ["ec2", "lambda"]). This is used to fetch service quotas.
+
+8. expected_resources — Exact Terraform resource block names you plan to use (e.g. ["aws_instance", "aws_lambda_function"]). This is CRITICAL for fetching documentation.
+
+9. reasoning — Brief justification. If agent memory above contains lessons for this action,
    incorporate them.
 
 Be conservative with clarification requests: if the generator can figure it out from AWS data
@@ -868,6 +884,8 @@ sources or sensible defaults, do NOT ask the user."""
         memory_ctx = state.get("memory_context") or ""
         aws_ctx = state.get("aws_context") or ""
         terraform_state_ctx = state.get("terraform_state_context") or ""
+        service_quotas_context = state.get("service_quotas_context") or ""
+        terraform_docs_context = state.get("terraform_docs") or ""
         validate_feedback = state.get("validate_feedback") or ""
         plan_review = state.get("plan_review") or {}
         plan_review_feedback = ""
@@ -1018,6 +1036,8 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 {outputs_context}
 {memory_section}
 {aws_section}
+{service_quotas_context}
+{terraform_docs_context}
 {state_section}
 {validate_section}
 {plan_review_section}
@@ -2151,11 +2171,77 @@ Rules:
         self.logger.info("memory.run_recorded  status=%s  lesson=%r", final_status, lesson[:80] if lesson else "")
         return {}
 
+    def _gather_docs_and_quotas_node(self, state: AgentState) -> dict:
+        check_cancelled()
+        analysis = state.get("analysis") or {}
+        services = analysis.get("aws_services_involved") or []
+        resources = analysis.get("expected_resources") or []
+        
+        quotas_context = ""
+        if services:
+            quotas_context += "\nSERVICE QUOTAS (from dynamic lookup):\n"
+            try:
+                import boto3
+                client = boto3.client('service-quotas')
+                for svc in services:
+                    try:
+                        res = client.list_service_quotas(ServiceCode=svc.lower(), MaxResults=20)
+                        if res.get('Quotas'):
+                            quotas_context += f"--- {svc.upper()} Quotas ---\n"
+                            for q in res['Quotas']:
+                                quotas_context += f"- {q.get('QuotaName')}: {q.get('Value')}\n"
+                    except Exception as e:
+                        self.logger.warning("Failed to fetch quotas for %s: %s", svc, e)
+            except Exception as e:
+                self.logger.warning("Boto3 service-quotas error: %s", e)
+                
+        docs_context = ""
+        if resources:
+            docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
+            import urllib.request
+            import re
+            for res_type in resources:
+                if not res_type.startswith("aws_"):
+                    continue
+                short_name = res_type[4:]
+                url = f"https://raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/{short_name}.html.markdown"
+                try:
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        markdown = response.read().decode('utf-8')
+                        
+                    match = re.search(r'## Argument Reference(.*?)(?:##|\Z)', markdown, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        snippet = match.group(1).strip()
+                        docs_context += f"\n--- {res_type} Argument Reference ---\n{snippet[:1500]}...\n"
+                    else:
+                        docs_context += f"\n--- {res_type} ---\nNo Argument Reference found in docs.\n"
+                except Exception as e:
+                    self.logger.warning("Failed to fetch TF docs for %s at %s: %s", res_type, url, e)
+
+        self.logger.info(
+            "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
+            services, resources
+        )
+        self.logger.info(
+            "Dynamic Grounding: Fetched quotas for %d services, docs for %d resources.",
+            len(services), len(resources)
+        )
+        if quotas_context:
+            self.logger.info("Dynamic Grounding: Quotas context output:\n%s", quotas_context)
+        if docs_context:
+            self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
+        
+        return {
+            "service_quotas_context": quotas_context,
+            "terraform_docs": docs_context
+        }
+
     @staticmethod
     def _route_after_analysis(state: AgentState) -> str:
         if state["analysis"]["needs_clarification"]:
             return "hitl"
-        return "generate"
+        return "gather_docs"
 
     @staticmethod
     def _route_after_record(state: AgentState) -> str:
@@ -2175,6 +2261,7 @@ Rules:
         builder.add_node("read_reference", self._read_reference_node)
         builder.add_node("analyze", self._analyze_node)
         builder.add_node("hitl", self._hitl_node)
+        builder.add_node("gather_docs", self._gather_docs_and_quotas_node)
         builder.add_node("generate", self._generate_node)
         builder.add_node("write_files", self._write_files_node)
 
@@ -2199,9 +2286,10 @@ Rules:
         builder.add_conditional_edges(
             "analyze",
             self._route_after_analysis,
-            {"hitl": "hitl", "generate": "generate"},
+            {"hitl": "hitl", "gather_docs": "gather_docs"},
         )
-        builder.add_edge("hitl", "generate")
+        builder.add_edge("hitl", "gather_docs")
+        builder.add_edge("gather_docs", "generate")
         builder.add_edge("generate", "write_files")
         builder.add_edge("write_files", "validate")
 
