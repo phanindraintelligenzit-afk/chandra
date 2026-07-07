@@ -52,7 +52,10 @@ A premium, futuristic operations console (HTML/CSS/TypeScript) for observing, tr
 
 ### 3. **FastAPI backend service** (at repo root)
 A second service — `fastapi_app.py` + `app.py` + `run.py` — exposes HTTP and WebSocket endpoints
-consumed by the Next.js console and (read-only) the Streamlit dashboard. It wraps a
+consumed by the Next.js console and (read-only) the Streamlit dashboard. It also hosts the
+Digital Worker intake surface: `POST /requests`, `POST /webhooks/{source}` (10 channels;
+optional `CHANDRA_WEBHOOK_TOKEN` auth), `POST /requests/{job_id}/approve`, and
+`GET /health/ready`. It wraps a
 multi-agent orchestrator (`digitalworker_agents/`) and a LangGraph chat surface (`copilot_agents/`).
 This is the runtime the Next.js console is being wired to. **All write actions** routed from the FE
 approval center flow through this service and ultimately land in the `escalation` queue above.
@@ -213,6 +216,20 @@ src/chandra/
 │   ├── schemas.py            # Action, ApprovalDecision, EscalationEnvelope
 │   ├── formatter.py          # Render escalation payloads for the FE approval center
 │   └── publisher.py          # Publish approvals to the Next.js WS stream / Postgres
+├── digital_worker/           # DW-01: omnichannel Digital Worker (IMPLEMENTED)
+│   ├── intake.py             # 10-channel payload normalization → CloudRequest
+│   ├── classifier.py         # Deterministic category/platform/priority classification
+│   ├── context.py            # CloudWatch alarms + runbooks/KB + prior-Jira collectors
+│   ├── planner.py            # memory-cache ▸ composer LLM ▸ deterministic playbooks
+│   ├── risk.py               # Deterministic risk scoring + approval gating
+│   ├── memory.py             # resolution_memory read path + persist helper
+│   ├── graph.py              # 17-node workflow graph (approval via interrupt_before)
+│   ├── notifications.py      # Slack/Teams/email/SNS outcome notifications
+│   ├── tracker.py            # Jira comment/create/transition (best-effort)
+│   ├── guidance.py           # Engineer hand-off markdown renderer
+│   ├── schemas.py            # CloudRequest, ResolutionPlan, RiskAssessment, …
+│   └── state.py              # DigitalWorkerState TypedDict
+├── prompts/digital_worker.md # RCA + resolution-planning prompt (composer-only Bedrock)
 ├── db/                       # SQLAlchemy ORM + Alembic migrations
 │   ├── models.py             # Run, Briefing, Finding, EvalRun, Action tables
 │   ├── session.py            # session_scope context manager

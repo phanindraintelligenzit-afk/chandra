@@ -1,25 +1,33 @@
-import os
-import boto3
-import psycopg2
+"""Container HEALTHCHECK probe.
 
-def check_aws():
-    sts = boto3.client("sts")
-    sts.get_caller_identity()
+Checks that the FastAPI service inside this container answers its
+liveness endpoint. Deliberately does NOT call AWS or Postgres: a
+container healthcheck must reflect the health of *this* container, and
+external-dependency status is reported separately by /health/ready.
 
-def check_db():
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        dbname=os.getenv("DB_NAME")
-    )
+Exit code 0 = healthy, 1 = unhealthy (Docker restarts the container
+after the configured retries).
+"""
 
-    cur = conn.cursor()
-    cur.execute("SELECT 1")
-    cur.close()
-    conn.close()
+import sys
+import urllib.error
+import urllib.request
+
+HEALTH_URL = "http://127.0.0.1:6001/health"
+
+
+def main() -> int:
+    try:
+        with urllib.request.urlopen(HEALTH_URL, timeout=5) as response:
+            if response.status == 200:
+                print("healthy")
+                return 0
+            print(f"unhealthy: HTTP {response.status}")
+            return 1
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"unhealthy: {exc}")
+        return 1
+
 
 if __name__ == "__main__":
-    check_aws()
-    check_db()
-    print("healthy")
+    sys.exit(main())

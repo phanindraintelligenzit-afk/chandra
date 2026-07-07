@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Header, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -183,7 +183,40 @@ class PipelineRequest(BaseModel):
 
 @app.get("/health")
 def health():
+    """Liveness probe: the process is up and serving. No dependencies checked."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness probe: per-component status for orchestrators and dashboards.
+
+    Reports each dependency independently so a degraded component (e.g.
+    Postgres down → audit rows lost but workflows still run) is visible
+    without flapping the whole service. Returns 200 with status "ok" when
+    every component is up, 503 with status "degraded" otherwise.
+    """
+    components: Dict[str, str] = {}
+
+    components["copilot_agent"] = "ok" if _copilot_agent is not None else "unavailable"
+    components["digital_worker"] = "ok" if _digital_worker is not None else "unavailable"
+
+    try:
+        from sqlalchemy import text as _sql_text
+        from src.chandra.db.session import get_engine
+
+        with get_engine().connect() as conn:
+            conn.execute(_sql_text("SELECT 1"))
+        components["postgres"] = "ok"
+    except Exception as exc:
+        components["postgres"] = f"unavailable: {str(exc)[:120]}"
+
+    degraded = [name for name, state in components.items() if state != "ok"]
+    status_code = 200 if not degraded else 503
+    return JSONResponse(status_code=status_code, content={
+        "status": "ok" if not degraded else "degraded",
+        "components": components,
+    })
 
 
 # ── Custom KRA persistence (customKras.json) ──────────────────────────────────
@@ -1182,9 +1215,24 @@ def submit_cloud_request(submission: CloudRequestSubmission):
 
 
 @app.post("/webhooks/{source}")
-def receive_webhook(source: str, payload: Dict[str, Any]):
+def receive_webhook(
+    source: str,
+    payload: Dict[str, Any],
+    x_chandra_webhook_token: Optional[str] = Header(default=None),
+):
     """Omnichannel webhook intake: jira | slack | teams | email | monitoring |
-    cloudwatch | azure_monitor | gcp_monitoring | webhook."""
+    cloudwatch | azure_monitor | gcp_monitoring | webhook.
+
+    When the CHANDRA_WEBHOOK_TOKEN environment variable is set, callers
+    must send the same value in the X-Chandra-Webhook-Token header;
+    unset means unauthenticated intake (development only).
+    """
+    expected_token = os.getenv("CHANDRA_WEBHOOK_TOKEN")
+    if expected_token and x_chandra_webhook_token != expected_token:
+        logger.warning("Webhook rejected: bad or missing X-Chandra-Webhook-Token (source=%s)", source)
+        return JSONResponse(status_code=401, content={
+            "status": "error", "message": "invalid or missing X-Chandra-Webhook-Token",
+        })
     return _submit_digital_worker_job(
         CloudRequestSubmission(source=source, payload=payload, dry_run=True)
     )

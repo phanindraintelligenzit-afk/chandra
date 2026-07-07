@@ -1,5 +1,26 @@
 services:
 
+  # Local development database. `make db-up` starts only this service.
+  # Credentials match .env.example's POSTGRES_URL default.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: chandra
+      POSTGRES_PASSWORD: chandra
+      POSTGRES_DB: chandra
+    ports:
+      - "5432:5432"
+    volumes:
+      - chandra-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chandra"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - chandra-network
+
   backend:
     build:
       context: .
@@ -13,6 +34,11 @@ services:
     environment:
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3000/api/backend}
+      # Inside the compose network the database host is the service name.
+      - POSTGRES_URL=${POSTGRES_URL:-postgresql+psycopg://chandra:chandra@postgres:5432/chandra}
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - chandra-network
@@ -65,3 +91,6 @@ services:
 networks:
   chandra-network:
     driver: bridge
+
+volumes:
+  chandra-pgdata:
