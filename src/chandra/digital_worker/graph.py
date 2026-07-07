@@ -1,0 +1,660 @@
+"""Digital Worker LangGraph — the end-to-end request workflow.
+
+Topology (mission workflow, mapped 1:1 onto nodes)::
+
+    START → receive_request → understand_request → classify_request
+          → identify_platform → collect_context → root_cause_analysis
+          → plan_resolution → risk_analysis → decision
+          → { execute_automation | approval_gate | generate_guidance }
+          → validate_result → update_tracker → notify → audit
+          → persist → END
+
+Determinism contract: only ``plan_resolution`` may (indirectly, via the
+composer) invoke Bedrock. ``decision``, ``execute_automation`` and every
+router in this module are deterministic, mirroring the core graph's
+``decision_router`` / ``action_executor`` / ``escalation`` invariant.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
+from sqlalchemy.exc import SQLAlchemyError
+from src.chandra.config import settings
+from src.chandra.db.models import CloudRequestRecord
+from src.chandra.db.session import session_scope
+from src.chandra.digital_worker import notifications as channels
+from src.chandra.digital_worker.classifier import classify_request, identify_platform
+from src.chandra.digital_worker.context import ContextCollector
+from src.chandra.digital_worker.guidance import render_guidance
+from src.chandra.digital_worker.intake import normalize_request
+from src.chandra.digital_worker.memory import persist_plan
+from src.chandra.digital_worker.planner import (
+    build_plan,
+    derive_root_cause,
+    explicit_resource_id,
+)
+from src.chandra.digital_worker.risk import assess_risk
+from src.chandra.digital_worker.schemas import (
+    ApprovalRecord,
+    AuditEvent,
+    CloudPlatform,
+    CloudRequest,
+    DecisionMode,
+    ExecutionDecision,
+    ExecutionOutcome,
+    NotificationResult,
+    RequestPriority,
+    RiskLevel,
+    ValidationCheck,
+    ValidationResult,
+    WorkflowResult,
+)
+from src.chandra.digital_worker.state import DigitalWorkerState
+from src.chandra.digital_worker.tracker import update_request_ticket
+from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.graphs.action_nodes.action_executor import (
+    ActionExecutor,
+    registered_problem_type,
+)
+from src.chandra.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def _audit(node: str, event: str, **data: Any) -> AuditEvent:
+    return AuditEvent(node=node, event=event, data=data)
+
+
+# ---------------------------------------------------------------------------
+# Intake + understanding
+# ---------------------------------------------------------------------------
+
+
+def receive_request(state: DigitalWorkerState) -> dict[str, Any]:
+    """Normalize the channel payload into the CloudRequest envelope."""
+    request = state.get("request")
+    if request is None:
+        request = normalize_request(state.get("source", "rest_api"), state.get("payload", {}))
+    elif not isinstance(request, CloudRequest):
+        request = CloudRequest.model_validate(request)
+    logger.info(
+        "graph.receive_request",
+        request_id=request.request_id,
+        source=request.source.value,
+    )
+    return {
+        "request": request,
+        "status": "in_progress",
+        "audit_trail": [
+            _audit(
+                "receive_request",
+                "request_received",
+                source=request.source.value,
+                external_id=request.external_id,
+                title=request.title,
+            )
+        ],
+    }
+
+
+def understand_request(state: DigitalWorkerState) -> dict[str, Any]:
+    """Distill the request into a one-line intent statement."""
+    request = state["request"]
+    title = request.title.strip()
+    first_line = (request.description or request.title).strip().splitlines()[0]
+    intent = f"{title} — {first_line}" if first_line != title else title
+    resource = explicit_resource_id(request)
+    return {
+        "intent": intent[:300],
+        "audit_trail": [
+            _audit(
+                "understand_request",
+                "intent_extracted",
+                intent=intent[:300],
+                explicit_resource=resource,
+            )
+        ],
+    }
+
+
+def classify_request_node(state: DigitalWorkerState) -> dict[str, Any]:
+    classification = classify_request(state["request"])
+    return {
+        "classification": classification,
+        "audit_trail": [
+            _audit(
+                "classify_request",
+                "request_classified",
+                category=classification.category.value,
+                priority=classification.priority.value,
+                confidence=classification.confidence,
+            )
+        ],
+    }
+
+
+def identify_platform_node(state: DigitalWorkerState) -> dict[str, Any]:
+    """Confirm (or refine) the target cloud platform."""
+    classification = state["classification"]
+    platform = classification.platform
+    if platform is CloudPlatform.UNKNOWN:
+        platform = identify_platform(state["request"])
+        classification = classification.model_copy(update={"platform": platform})
+    return {
+        "classification": classification,
+        "audit_trail": [
+            _audit("identify_platform", "platform_identified", platform=platform.value)
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Context, RCA, planning, risk
+# ---------------------------------------------------------------------------
+
+
+def collect_context(state: DigitalWorkerState) -> dict[str, Any]:
+    bundle = ContextCollector().collect(state["request"], state["classification"])
+    return {
+        "context": bundle,
+        "errors": [{"node": "collect_context", "error": e} for e in bundle.errors],
+        "audit_trail": [
+            _audit(
+                "collect_context",
+                "context_collected",
+                items=len(bundle.items),
+                errors=len(bundle.errors),
+            )
+        ],
+    }
+
+
+def root_cause_analysis(state: DigitalWorkerState) -> dict[str, Any]:
+    root_cause = derive_root_cause(state["request"], state["classification"], state["context"])
+    return {
+        "root_cause": root_cause,
+        "audit_trail": [
+            _audit(
+                "root_cause_analysis",
+                "root_cause_derived",
+                confidence=root_cause.confidence,
+                generated_by=root_cause.generated_by,
+            )
+        ],
+    }
+
+
+def plan_resolution(state: DigitalWorkerState) -> dict[str, Any]:
+    """Memory ▸ LLM ▸ deterministic planning. The LLM route may also
+    upgrade the deterministic root cause from the previous node."""
+    root_cause, plan = build_plan(state["request"], state["classification"], state["context"])
+    existing = state.get("root_cause")
+    if existing is not None and root_cause.generated_by != "llm":
+        root_cause = existing
+    return {
+        "root_cause": root_cause,
+        "plan": plan,
+        "audit_trail": [
+            _audit(
+                "plan_resolution",
+                "plan_generated",
+                generated_by=plan.generated_by,
+                steps=len(plan.steps),
+                automation_available=plan.automation_available,
+                detector_id=plan.detector_id,
+            )
+        ],
+    }
+
+
+def risk_analysis(state: DigitalWorkerState) -> dict[str, Any]:
+    risk = assess_risk(state["classification"], state["plan"])
+    return {
+        "risk": risk,
+        "audit_trail": [
+            _audit(
+                "risk_analysis",
+                "risk_assessed",
+                level=risk.level.value,
+                score=risk.score,
+                requires_approval=risk.requires_approval,
+            )
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Decision + approval + execution (all deterministic)
+# ---------------------------------------------------------------------------
+
+
+def decision(state: DigitalWorkerState) -> dict[str, Any]:
+    """Deterministic execute-vs-guidance decision. No LLM allowed here."""
+    plan = state["plan"]
+    risk = state["risk"]
+    if plan.automation_available and not risk.requires_approval:
+        verdict = ExecutionDecision(
+            mode=DecisionMode.AUTO_EXECUTE,
+            reason=(
+                f"automation registered ({plan.detector_id}) and "
+                f"risk {risk.level.value} needs no approval"
+            ),
+        )
+    elif plan.automation_available:
+        gate = (
+            "P1 priority"
+            if state["classification"].priority is RequestPriority.P1
+            else f"risk {risk.level.value}"
+        )
+        verdict = ExecutionDecision(
+            mode=DecisionMode.AWAIT_APPROVAL,
+            reason=(
+                f"automation registered ({plan.detector_id}) but "
+                f"{gate} requires human approval"
+            ),
+        )
+    else:
+        verdict = ExecutionDecision(
+            mode=DecisionMode.ENGINEER_GUIDANCE,
+            reason="no registered automation path for this request; producing engineer guidance",
+        )
+    logger.info(
+        "graph.decision",
+        request_id=state["request"].request_id,
+        mode=verdict.mode.value,
+        reason=verdict.reason,
+    )
+    return {
+        "decision": verdict,
+        "audit_trail": [
+            _audit("decision", "decision_made", mode=verdict.mode.value, reason=verdict.reason)
+        ],
+    }
+
+
+def route_decision(state: DigitalWorkerState) -> str:
+    mode = state["decision"].mode
+    if mode is DecisionMode.AUTO_EXECUTE:
+        return "execute_automation"
+    if mode is DecisionMode.AWAIT_APPROVAL:
+        return "approval_gate"
+    return "generate_guidance"
+
+
+def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
+    """Human-in-the-loop gate. The graph is compiled with
+    ``interrupt_before=["approval_gate"]``; on resume the ``interrupt``
+    call returns the approval decision payload."""
+    plan = state["plan"]
+    payload = interrupt(
+        {
+            "request_id": state["request"].request_id,
+            "title": state["request"].title,
+            "plan": plan.model_dump(mode="json"),
+            "risk": state["risk"].model_dump(mode="json"),
+            "reason": state["decision"].reason,
+        }
+    )
+    record = (
+        payload if isinstance(payload, ApprovalRecord) else ApprovalRecord.model_validate(payload)
+    )
+    logger.info(
+        "graph.approval_gate",
+        request_id=state["request"].request_id,
+        approved=record.approved,
+        approver=record.approver,
+    )
+    return {
+        "approval": record,
+        "audit_trail": [
+            _audit(
+                "approval_gate",
+                "approval_decided",
+                approved=record.approved,
+                approver=record.approver,
+                comment=record.comment,
+            )
+        ],
+    }
+
+
+def route_approval(state: DigitalWorkerState) -> str:
+    approval = state.get("approval")
+    if approval is not None and approval.approved:
+        return "execute_automation"
+    return "generate_guidance"
+
+
+def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
+    """Run the registered handler for the planned detector id.
+
+    Deterministic: resource id comes from the channel payload, never
+    inferred. ``dry_run`` defaults to True — real mutation is opt-in.
+    """
+    request = state["request"]
+    plan = state["plan"]
+    dry_run = state.get("dry_run", True)
+    detector_id = plan.detector_id or ""
+    problem_type = registered_problem_type(detector_id)
+    resource_id = explicit_resource_id(request)
+    region = str(request.raw_payload.get("region") or settings.aws_default_region)
+
+    if not (problem_type and resource_id):
+        outcome = ExecutionOutcome(
+            status="skipped",
+            dry_run=dry_run,
+            detail="no registered handler or explicit resource id; nothing executed",
+        )
+    else:
+        executor = ActionExecutor(dry_run=dry_run, region=region)
+        result = executor.run(
+            {
+                "action_type": f"remediate_{detector_id}",
+                "resource_id": resource_id,
+                "region": region,
+                "problem_type": problem_type,
+            }
+        )
+        status_map = {"success": "executed", "dry_run": "dry_run", "failure": "failed"}
+        outcome = ExecutionOutcome(
+            status=status_map.get(str(result.get("status")), "failed"),
+            dry_run=dry_run,
+            detail=str(result.get("message", "")),
+            step_results=[result],
+            errors=[str(result["error"])] if result.get("error") else [],
+        )
+    logger.info(
+        "graph.execute_automation",
+        request_id=request.request_id,
+        status=outcome.status,
+        dry_run=dry_run,
+        detector_id=detector_id or None,
+    )
+    return {
+        "execution": outcome,
+        "audit_trail": [
+            _audit(
+                "execute_automation",
+                "automation_executed",
+                status=outcome.status,
+                dry_run=dry_run,
+                detector_id=detector_id or None,
+                resource_id=resource_id,
+            )
+        ],
+    }
+
+
+def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
+    guidance = render_guidance(
+        state["request"],
+        state["classification"],
+        state["root_cause"],
+        state["plan"],
+        state["risk"],
+        state["context"],
+    )
+    approval = state.get("approval")
+    detail = (
+        "automation rejected by approver; engineer guidance produced"
+        if approval is not None and not approval.approved
+        else "engineer guidance produced"
+    )
+    return {
+        "guidance_md": guidance,
+        "execution": ExecutionOutcome(status="skipped", dry_run=True, detail=detail),
+        "audit_trail": [_audit("generate_guidance", "guidance_generated", chars=len(guidance))],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Validation, tracker, notifications, audit, persist
+# ---------------------------------------------------------------------------
+
+
+def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
+    execution = state["execution"]
+    checks: list[ValidationCheck] = []
+    if execution.status in ("executed", "dry_run"):
+        checks.append(
+            ValidationCheck(
+                name="execution_completed",
+                passed=not execution.errors,
+                detail=execution.detail,
+            )
+        )
+        checks.append(
+            ValidationCheck(
+                name="all_steps_succeeded",
+                passed=all(r.get("status") != "failure" for r in execution.step_results),
+            )
+        )
+    elif execution.status == "failed":
+        checks.append(
+            ValidationCheck(name="execution_completed", passed=False, detail=execution.detail)
+        )
+    else:  # guidance path
+        checks.append(
+            ValidationCheck(
+                name="guidance_produced",
+                passed=bool(state.get("guidance_md")),
+                detail="engineer guidance rendered",
+            )
+        )
+    validation = ValidationResult(passed=all(c.passed for c in checks), checks=checks)
+    return {
+        "validation": validation,
+        "audit_trail": [
+            _audit("validate_result", "validated", passed=validation.passed, checks=len(checks))
+        ],
+    }
+
+
+def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
+    execution = state["execution"]
+    validation = state["validation"]
+    resolved = execution.status == "executed" and validation.passed
+    if state.get("guidance_md"):
+        comment = (
+            "Chandra Digital Worker analyzed this request and produced engineer "
+            f"guidance (decision: {state['decision'].reason}).\n\n{state['guidance_md'][:6000]}"
+        )
+    else:
+        comment = (
+            f"Chandra Digital Worker outcome: {execution.status} "
+            f"(dry_run={execution.dry_run}). {execution.detail} "
+            f"Validation passed: {validation.passed}."
+        )
+    update = update_request_ticket(state["request"], comment, resolved)
+    return {
+        "tracker_updates": [update],
+        "audit_trail": [
+            _audit(
+                "update_tracker",
+                "tracker_updated",
+                status=update.status,
+                issue_key=update.issue_key,
+            )
+        ],
+    }
+
+
+def notify(state: DigitalWorkerState) -> dict[str, Any]:
+    request = state["request"]
+    execution = state["execution"]
+    title = f"[Chandra] {request.title[:120]} — {execution.status}"
+    body = (
+        f"Category: {state['classification'].category.value} | "
+        f"Platform: {state['classification'].platform.value} | "
+        f"Priority: {state['classification'].priority.value} | "
+        f"Risk: {state['risk'].level.value}\n"
+        f"Decision: {state['decision'].mode.value} — {state['decision'].reason}\n"
+        f"Outcome: {execution.detail or execution.status}"
+    )
+    results: list[NotificationResult] = channels.dispatch_all(title, body)
+
+    if state["classification"].priority is RequestPriority.P1 or state["risk"].level in (
+        RiskLevel.HIGH,
+        RiskLevel.CRITICAL,
+    ):
+        severity = "critical" if state["risk"].level is RiskLevel.CRITICAL else "high"
+        results.append(
+            channels.notify_sns(
+                EscalationPayload(
+                    finding_id=request.request_id,
+                    resource_id=explicit_resource_id(request) or request.external_id or "unknown",
+                    severity=severity,
+                    service=", ".join(state["classification"].services) or "cloud",
+                    region=str(request.raw_payload.get("region") or settings.aws_default_region),
+                    summary=request.title[:200],
+                    recommended_action=state["decision"].reason,
+                )
+            )
+        )
+    return {
+        "notifications": results,
+        "audit_trail": [
+            _audit(
+                "notify",
+                "notifications_dispatched",
+                channels={r.channel: r.status for r in results},
+            )
+        ],
+    }
+
+
+def audit(state: DigitalWorkerState) -> dict[str, Any]:
+    """Assemble the terminal WorkflowResult from all stage artifacts."""
+    result = WorkflowResult(
+        request=state["request"],
+        classification=state["classification"],
+        root_cause=state["root_cause"],
+        plan=state["plan"],
+        risk=state["risk"],
+        decision=state["decision"],
+        execution=state["execution"],
+        validation=state["validation"],
+        tracker_updates=state.get("tracker_updates", []),
+        notifications=state.get("notifications", []),
+        guidance_md=state.get("guidance_md", ""),
+        audit_trail=state.get("audit_trail", []),
+        status="completed" if state["validation"].passed else "completed_with_issues",
+    )
+    return {
+        "result": result.model_dump(mode="json"),
+        "status": result.status,
+        "audit_trail": [_audit("audit", "workflow_summarized", status=result.status)],
+    }
+
+
+def persist(state: DigitalWorkerState) -> dict[str, Any]:
+    """Write the audit record + resolution memory. The ONLY node in this
+    graph allowed to write to Postgres."""
+    request = state["request"]
+    try:
+        with session_scope() as session:
+            session.add(
+                CloudRequestRecord(
+                    request_id=request.request_id,
+                    source=request.source.value,
+                    external_id=request.external_id,
+                    title=request.title,
+                    category=state["classification"].category.value,
+                    platform=state["classification"].platform.value,
+                    priority=state["classification"].priority.value,
+                    risk_level=state["risk"].level.value,
+                    decision_mode=state["decision"].mode.value,
+                    status=state.get("status", "completed"),
+                    result_jsonb=state.get("result", {}),
+                    audit_jsonb=[e.model_dump(mode="json") for e in state.get("audit_trail", [])],
+                    received_at=request.received_at,
+                    completed_at=datetime.now(UTC),
+                )
+            )
+            if state["plan"].fingerprint:
+                persist_plan(
+                    session,
+                    request,
+                    state["classification"],
+                    state["plan"],
+                    outcome=state["execution"].status,
+                )
+        logger.info("graph.persist", request_id=request.request_id)
+        return {}
+    except SQLAlchemyError as exc:
+        # The workflow result is still returned to the caller; losing the
+        # audit row must not lose the work.
+        logger.warning("graph.persist_unavailable", request_id=request.request_id, error=str(exc))
+        return {"errors": [{"node": "persist", "error": str(exc)}]}
+
+
+# ---------------------------------------------------------------------------
+# Graph assembly
+# ---------------------------------------------------------------------------
+
+
+def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
+    """Compile the Digital Worker request workflow.
+
+    Pass an explicit checkpointer in tests; defaults to an in-memory
+    saver (each request is a fresh thread keyed by the FastAPI job id).
+    """
+    graph: StateGraph[DigitalWorkerState] = StateGraph(DigitalWorkerState)
+
+    graph.add_node("receive_request", receive_request)
+    graph.add_node("understand_request", understand_request)
+    graph.add_node("classify_request", classify_request_node)
+    graph.add_node("identify_platform", identify_platform_node)
+    graph.add_node("collect_context", collect_context)
+    graph.add_node("root_cause_analysis", root_cause_analysis)
+    graph.add_node("plan_resolution", plan_resolution)
+    graph.add_node("risk_analysis", risk_analysis)
+    graph.add_node("decision", decision)
+    graph.add_node("approval_gate", approval_gate)
+    graph.add_node("execute_automation", execute_automation)
+    graph.add_node("generate_guidance", generate_guidance)
+    graph.add_node("validate_result", validate_result)
+    graph.add_node("update_tracker", update_tracker)
+    graph.add_node("notify", notify)
+    graph.add_node("audit", audit)
+    graph.add_node("persist", persist)
+
+    graph.add_edge(START, "receive_request")
+    graph.add_edge("receive_request", "understand_request")
+    graph.add_edge("understand_request", "classify_request")
+    graph.add_edge("classify_request", "identify_platform")
+    graph.add_edge("identify_platform", "collect_context")
+    graph.add_edge("collect_context", "root_cause_analysis")
+    graph.add_edge("root_cause_analysis", "plan_resolution")
+    graph.add_edge("plan_resolution", "risk_analysis")
+    graph.add_edge("risk_analysis", "decision")
+
+    graph.add_conditional_edges(
+        "decision",
+        route_decision,
+        ["execute_automation", "approval_gate", "generate_guidance"],
+    )
+    graph.add_conditional_edges(
+        "approval_gate",
+        route_approval,
+        ["execute_automation", "generate_guidance"],
+    )
+
+    graph.add_edge("execute_automation", "validate_result")
+    graph.add_edge("generate_guidance", "validate_result")
+    graph.add_edge("validate_result", "update_tracker")
+    graph.add_edge("update_tracker", "notify")
+    graph.add_edge("notify", "audit")
+    graph.add_edge("audit", "persist")
+    graph.add_edge("persist", END)
+
+    saver = checkpointer if checkpointer is not None else MemorySaver()
+    # ``interrupt_before`` makes the human gate real (see the core graph's
+    # build_graph for why the function-level interrupt alone is not enough
+    # in LangGraph 1.x).
+    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate"])
