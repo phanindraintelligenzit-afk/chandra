@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """Ultra Simple + Full Compliance Runner (All KRAs) - Asyncio Optimized with JSON Export"""
 
+import asyncio
 import os
 import sys
-import json
-import asyncio
-from pathlib import Path
-from dataclasses import asdict
 from collections import defaultdict
+from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
-from src.chandra.briefing.schemas import Finding
-from src.chandra.logging import get_logger
-from src.chandra.tools.base import DetectorContext, detector_guard, paginate
+
 from src.chandra.aws.client_factory import AwsClientFactory
+from src.chandra.logging import get_logger
+from src.chandra.tools.base import DetectorContext
 
 logger = get_logger(__name__)
 
 logger.info("Script started")
 from dotenv import load_dotenv
+
 load_dotenv()
 logger.info("Env loaded")
 
-import boto3
 
 # ==================== ADD PROJECT ROOT TO PATH ====================
 project_root = str(Path(__file__).parent.resolve())
@@ -53,7 +52,7 @@ async def run_module(module_name: str, ctx: DetectorContext) -> list:
         logger.info("Finished %s: Found %d issues", module_name.upper(), len(findings))
         return findings
 
-    except Exception as e:
+    except Exception:
         logger.exception("Skipped %s (not found or error)", module_name.upper())
         return []
 

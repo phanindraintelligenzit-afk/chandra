@@ -1,14 +1,12 @@
 import asyncio
-import aioboto3
-import json
-import pytz
-from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Any
-from dotenv import load_dotenv
+from typing import Any
+
+import aioboto3
+import pytz
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -93,7 +91,7 @@ class AWSXRayFetcher:
     async def fetch_all_regions_raw_traces(
         self, 
         hours_lookback: int = 8, 
-        regions: Optional[list[str]] = None
+        regions: list[str] | None = None
     ) -> list[dict]:
         """
         Fetches X-Ray trace summaries across all specified regions concurrently.

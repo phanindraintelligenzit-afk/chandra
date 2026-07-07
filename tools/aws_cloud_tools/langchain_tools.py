@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable
 import os
+from collections.abc import Callable
+from typing import Any
+
+from dotenv import load_dotenv
 from langchain_core.tools import tool
 
-from .tool_findings import run_all_detectors
 from .account_audit import AWSOptimizationAndSecurityFetcher
 from .aws_config import AWSConfigHistoryFetcher
 from .budgets_fetcher import AWSBudgetsFetcher
@@ -18,8 +20,9 @@ from .guardduty_fetcher import AWSGuardDutyFetcher
 from .health_events_fetcher import AWSHealthEventsFetcher
 from .logs_fetcher import AWSCloudWatchLogsFetcher
 from .metrics_fetcher import CloudWatchMetricsFetcher
+from .tool_findings import run_all_detectors
 from .xray_tracer import AWSXRayFetcher
-from dotenv import load_dotenv
+
 load_dotenv()
 
 _metrics = CloudWatchMetricsFetcher()

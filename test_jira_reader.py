@@ -1,6 +1,7 @@
-from tools.jira_tools.read_jira_ticket import get_jira_ticket_details
 import json
 import os
+
+from tools.jira_tools.read_jira_ticket import get_jira_ticket_details
 
 if __name__ == "__main__":
     tests = [

@@ -1,9 +1,11 @@
+# ruff: noqa: N806, PLR0911, E501
 import os
+
 import requests
-from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
 from jira import JIRA
 from jira.exceptions import JIRAError
-from dotenv import load_dotenv
+from requests.auth import HTTPBasicAuth
 
 # Load variables from your .env file
 load_dotenv() 

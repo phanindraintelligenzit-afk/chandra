@@ -1,13 +1,10 @@
-import asyncio
-import aioboto3
-import json
-from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Any
+from typing import Any
+
+import aioboto3
 from dotenv import load_dotenv
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
 
 load_dotenv(override=True)
 

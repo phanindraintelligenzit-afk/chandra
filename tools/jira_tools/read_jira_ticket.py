@@ -1,9 +1,12 @@
-import os
-import requests
-import re
-from requests.auth import HTTPBasicAuth
-from dotenv import load_dotenv
+# ruff: noqa: N806, PLR0911, E501
 import logging
+# ruff: noqa: N806, PLR0911, E501, N803
+import os
+import re
+
+import requests
+from dotenv import load_dotenv
+from requests.auth import HTTPBasicAuth
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +68,8 @@ def get_jira_ticket_details(jiraUrl: str) -> dict:
             return {"error": "Could not extract issue key from URL. Ensure it contains a valid key (e.g. PROJ-123)."}
         issue_key = match.group(1).upper()
     except Exception as e:
-        logger.error(f"Invalid URL format: {str(e)}")
-        return {"error": f"Invalid URL format: {str(e)}"}
+        logger.error(f"Invalid URL format: {e!s}")
+        return {"error": f"Invalid URL format: {e!s}"}
 
     url = f"{JIRA_SERVER}/rest/api/3/issue/{issue_key}"
     auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
@@ -121,11 +124,11 @@ def get_jira_ticket_details(jiraUrl: str) -> dict:
         }
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Network or API error while fetching Jira ticket: {str(e)}")
-        return {"error": f"Network or API error: {str(e)}"}
+        logger.error(f"Network or API error while fetching Jira ticket: {e!s}")
+        return {"error": f"Network or API error: {e!s}"}
     except ValueError:
         logger.error("Invalid JSON response from Jira.")
         return {"error": "Invalid JSON response from Jira."}
     except Exception as e:
-        logger.error(f"Unexpected error while fetching Jira ticket: {str(e)}")
-        return {"error": f"Unexpected error: {str(e)}"}
+        logger.error(f"Unexpected error while fetching Jira ticket: {e!s}")
+        return {"error": f"Unexpected error: {e!s}"}

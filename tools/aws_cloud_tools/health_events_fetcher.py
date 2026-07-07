@@ -1,11 +1,9 @@
-import asyncio
+from typing import Any
+
 import aioboto3
-import json
-from typing import Optional, Any
 from dotenv import load_dotenv
 
 # Framework imports
-from agents import Agent, Runner, function_tool
 
 load_dotenv(override=True)
 
@@ -59,7 +57,7 @@ class AWSHealthEventsFetcher:
                 return {"Events": formatted_events}
                 
             except Exception as e:
-                return {"Error": f"Failed to fetch health events: {str(e)}"}
+                return {"Error": f"Failed to fetch health events: {e!s}"}
 
 # ================================================================== #
 # Agent Integration                                                  #
