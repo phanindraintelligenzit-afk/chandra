@@ -45,7 +45,7 @@ from src.chandra.db.models import Briefing, Run, serialize_finding_evidence
 from src.chandra.db.models import Finding as FindingRow
 from src.chandra.db.session import session_scope
 from src.chandra.escalation.publisher import SNSPublisher
-from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.escalation.schemas import EscalationPayload, EscalationResult
 from src.chandra.graphs.action_nodes.action_executor import action_executor_node
 from src.chandra.graphs.state import ChandraState
 from src.chandra.logging import get_logger
