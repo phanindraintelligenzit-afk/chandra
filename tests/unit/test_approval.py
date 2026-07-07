@@ -53,11 +53,12 @@ def test_approval_node_routing(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         ]
     )
-    monkeypatch.setattr("src.chandra.graphs.nodes.interrupt", mock_interrupt)
+    monkeypatch.setattr("src.chandra.graphs.action_nodes.interrupt", mock_interrupt)
 
     result = approval_node(state)
 
     # Verify that interrupt was called with the pending writes
+    assert result["approvals"][0].decision == "approve"
     mock_interrupt.assert_called_once()
     call_args = mock_interrupt.call_args[0][0]
     assert "pending_writes" in call_args

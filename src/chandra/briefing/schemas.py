@@ -99,7 +99,7 @@ class ProposedWrite(BaseModel):
     # node can render one SNS message per write without reverse-lookup
     # of ``analyzed_findings``. Optional for backward compatibility
     # with fixtures / persisted rows written before these existed.
-    severity: Literal["low", "medium", "high", "critical"] | None = None
+    severity: Severity | None = None
     summary: str | None = None
 
 

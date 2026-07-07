@@ -2,6 +2,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import signal
 import sys
 import threading
 from collections.abc import Callable
@@ -13,10 +14,10 @@ import structlog.contextvars
 logger = logging.getLogger(__name__)
 
 
-def traced_node(
+def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
     fn: Callable[..., Any] | None = None,
     name: str | None = None,
-    timeout_s: int | None = None,
+    timeout_s: float | None = None,
 ) -> Callable[..., Any]:
     """
     Decorator to trace node execution with optional timeout.
@@ -25,7 +26,7 @@ def traced_node(
     Supports both sync and async functions.
     """
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:  # noqa: PLR0915
         node_name = name or func.__name__
 
         if inspect.iscoroutinefunction(func):
@@ -60,7 +61,21 @@ def traced_node(
 
             @functools.wraps(func)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                # SIGALRM-based enforcement: POSIX + main thread only.
+                # Elsewhere (Windows, worker threads) run without a timeout.
                 effective_timeout = None if sys.platform == "win32" else timeout_s
+                alarm_armed = False
+                previous_handler: Any = None
+                if effective_timeout and threading.current_thread() is threading.main_thread():
+
+                    def _on_alarm(signum: int, frame: Any) -> None:
+                        raise TimeoutError(
+                            f"node {node_name} exceeded timeout of {effective_timeout}s"
+                        )
+
+                    previous_handler = signal.signal(signal.SIGALRM, _on_alarm)
+                    signal.setitimer(signal.ITIMER_REAL, float(effective_timeout))
+                    alarm_armed = True
                 try:
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
@@ -81,6 +96,10 @@ def traced_node(
                     logger.error("node.error", extra={"node": node_name, "error": str(exc)})
                     _emit_metric("NodeErrors", 1.0, "Count", {"node": node_name})
                     raise
+                finally:
+                    if alarm_armed:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+                        signal.signal(signal.SIGALRM, previous_handler)
 
             return sync_wrapper
 
