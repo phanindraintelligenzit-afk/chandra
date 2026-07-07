@@ -69,7 +69,7 @@ logger = logging.getLogger("ExecutionAgents")
 
 MAX_ITERATIONS = 6
 DEFAULT_COMMAND_TIMEOUT = 500
-STUCK_THRESHOLD = 2
+STUCK_THRESHOLD = 3
 VALIDATE_MAX_RETRIES = 3
 PLAN_REVIEW_MAX_RETRIES = 2
 
@@ -637,77 +637,172 @@ class ExecutionAgents:
         self.logger.info("Read %d %s file(s) from %s", len(files), purpose, folder_path)
         return files
 
+    def _run_mcp_aws_command(self, command: str) -> dict:
+        import os
+        import json
+        import asyncio
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        server_config = {
+            "aws_api": {
+                "command": "uvx",
+                "args": ["awslabs.aws-api-mcp-server@latest"],
+                "env": {
+                    "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+                    "AWS_DEFAULT_REGION": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+                    **({"AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID")} if os.getenv("AWS_ACCESS_KEY_ID") else {}),
+                    **({"AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY")} if os.getenv("AWS_SECRET_ACCESS_KEY") else {}),
+                    **({"AWS_SESSION_TOKEN": os.getenv("AWS_SESSION_TOKEN")} if os.getenv("AWS_SESSION_TOKEN") else {}),
+                    **({"AWS_PROFILE": os.getenv("AWS_PROFILE")} if os.getenv("AWS_PROFILE") else {}),
+                },
+                "transport": "stdio",
+            },
+        }
+
+        async def _run():
+            try:
+                client = MultiServerMCPClient(server_config)
+                tools = await client.get_tools(server_name="aws_api")
+                aws_tool = next((t for t in tools if t.name == "call_aws"), None)
+                if aws_tool:
+                    res = await aws_tool.ainvoke({"cli_command": command})
+                    inner_text = res if isinstance(res, str) else json.dumps(res)
+                    try:
+                        parsed = json.loads(inner_text)
+                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+                            inner_text = parsed[0]["text"]
+                        elif isinstance(parsed, dict) and "text" in parsed:
+                            inner_text = parsed["text"]
+                    except Exception:
+                        pass
+                    
+                    try:
+                        parsed_text = json.loads(inner_text)
+                        if isinstance(parsed_text, list) and parsed_text and "response" in parsed_text[0]:
+                            as_json = parsed_text[0]["response"].get("as_json")
+                            if as_json:
+                                return json.loads(as_json)
+                    except Exception:
+                        pass
+                return {}
+            except Exception as exc:
+                self.logger.warning(f"MCP AWS CLI execution failed for '{command}': {exc}")
+                return {}
+
+        return asyncio.run(_run())
+
+    def _run_mcp_terraform_docs(self, provider_name: str, provider_namespace: str, service_slug: str, provider_document_type: str) -> str:
+        import os
+        import json
+        import asyncio
+        import re
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        TERRAFORM_MCP_BINARY = os.getenv("TERRAFORM_MCP_BINARY", os.path.join(os.path.dirname(_SCRIPT_DIR), "terraform", "terraform-mcp-server.exe"))
+        
+        server_config = {
+            "terraform": {
+                "command": TERRAFORM_MCP_BINARY,
+                "args": ["stdio"],
+                "transport": "stdio",
+            }
+        }
+        
+        async def _run():
+            try:
+                client = MultiServerMCPClient(server_config)
+                tools = await client.get_tools(server_name="terraform")
+                search_tool = next((t for t in tools if t.name == "search_providers"), None)
+                details_tool = next((t for t in tools if t.name == "get_provider_details"), None)
+                
+                if search_tool and details_tool:
+                    search_args = {
+                        "provider_name": provider_name,
+                        "provider_namespace": provider_namespace,
+                        "service_slug": service_slug,
+                        "provider_document_type": provider_document_type,
+                    }
+                    search_raw = await search_tool.ainvoke(search_args)
+                    search_text = search_raw if isinstance(search_raw, str) else json.dumps(search_raw, default=str)
+                    
+                    inner_text = search_text
+                    try:
+                        parsed = json.loads(search_text)
+                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+                            inner_text = parsed[0]["text"]
+                        elif isinstance(parsed, dict) and "text" in parsed:
+                            inner_text = parsed["text"]
+                    except Exception:
+                        pass
+                    
+                    match = re.search(r"providerDocID:\s*(\d+)", inner_text)
+                    if match:
+                        provider_doc_id = match.group(1)
+                        details_raw = await details_tool.ainvoke({"provider_doc_id": provider_doc_id})
+                        if isinstance(details_raw, list) and details_raw and isinstance(details_raw[0], dict) and "text" in details_raw[0]:
+                            return details_raw[0]["text"]
+                        return details_raw if isinstance(details_raw, str) else json.dumps(details_raw, default=str)
+                return ""
+            except Exception as exc:
+                self.logger.warning(f"MCP Terraform docs failed: {exc}")
+                return ""
+
+        return asyncio.run(_run())
+
     def _gather_aws_context(self) -> str:
         try:
-            import boto3
-            from botocore.exceptions import BotoCoreError, ClientError
-
-            session = boto3.session.Session()
-            region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or ""
-
+            import os
+            region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
             lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
 
-            try:
-                sts = session.client("sts")
-                identity = sts.get_caller_identity()
+            identity = self._run_mcp_aws_command("aws sts get-caller-identity")
+            if identity:
                 lines.append(f"  Account ID : {identity.get('Account')}")
                 lines.append(f"  Caller ARN : {identity.get('Arn')}")
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.sts_failed: %s", exc)
-                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity)")
+            else:
+                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
 
-            lines.append(f"  Region     : {region or '(not set — will rely on provider config)'}")
+            lines.append(f"  Region     : {region}")
 
-            try:
-                ec2 = session.client("ec2", region_name=region or None)
-                vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
-                default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId")
-                if default_vpc:
-                    lines.append(f"  Default VPC: {default_vpc}")
-                    subnets = ec2.describe_subnets(
-                        Filters=[{"Name": "vpc-id", "Values": [default_vpc]}]
-                    )
-                    subnet_ids = [s["SubnetId"] for s in subnets.get("Subnets", [])]
-                    if subnet_ids:
-                        lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
+            vpcs = self._run_mcp_aws_command(f"aws ec2 describe-vpcs --filters Name=is-default,Values=true --region {region}")
+            default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId") if vpcs else None
+            
+            if default_vpc:
+                lines.append(f"  Default VPC: {default_vpc}")
+                subnets = self._run_mcp_aws_command(f"aws ec2 describe-subnets --filters Name=vpc-id,Values={default_vpc} --region {region}")
+                subnet_ids = [s["SubnetId"] for s in (subnets.get("Subnets") or [])] if subnets else []
+                if subnet_ids:
+                    lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
+            else:
+                lines.append("  Default VPC: (none found in this account/region)")
+
+            azs = self._run_mcp_aws_command(f"aws ec2 describe-availability-zones --region {region}")
+            az_names = [az["ZoneName"] for az in (azs.get("AvailabilityZones") or []) if az["State"] == "available"] if azs else []
+            if az_names:
+                lines.append(f"  Available AZs: {', '.join(az_names)}")
+
+            key_pairs = self._run_mcp_aws_command(f"aws ec2 describe-key-pairs --region {region}")
+            kp_names = [kp["KeyName"] for kp in (key_pairs.get("KeyPairs") or [])] if key_pairs else []
+            if kp_names:
+                lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
+            else:
+                lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
+
+            if default_vpc:
+                sgs = self._run_mcp_aws_command(f"aws ec2 describe-security-groups --filters Name=vpc-id,Values={default_vpc} --region {region}")
+                sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in (sgs.get("SecurityGroups") or [])] if sgs else []
+                if sg_info:
+                    lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
                 else:
-                    lines.append("  Default VPC: (none found in this account/region)")
+                    lines.append("  Existing Security Groups: (none found)")
 
-                # Fetch available Availability Zones
-                azs = ec2.describe_availability_zones()
-                az_names = [az["ZoneName"] for az in azs.get("AvailabilityZones", []) if az["State"] == "available"]
-                if az_names:
-                    lines.append(f"  Available AZs: {', '.join(az_names)}")
-
-                # Fetch existing Key Pairs
-                key_pairs = ec2.describe_key_pairs()
-                kp_names = [kp["KeyName"] for kp in key_pairs.get("KeyPairs", [])]
-                if kp_names:
-                    lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
-                else:
-                    lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
-                # Fetch existing Security Groups in Default VPC
-                if default_vpc:
-                    sgs = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [default_vpc]}])
-                    sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in sgs.get("SecurityGroups", [])]
-                    if sg_info:
-                        lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
-                    else:
-                        lines.append("  Existing Security Groups: (none found)")
-
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.ec2_failed: %s", exc)
-
-            try:
-                route53 = session.client("route53", region_name=region or None)
-                zones = route53.list_hosted_zones()
-                zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in zones.get("HostedZones", []) if not z["Config"]["PrivateZone"]]
-                if zone_info:
-                    lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
-                else:
-                    lines.append("  Public Route53 Zones: (none found)")
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.route53_failed: %s", exc)
+            zones = self._run_mcp_aws_command(f"aws route53 list-hosted-zones --region {region}")
+            zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in (zones.get("HostedZones") or []) if not z.get("Config", {}).get("PrivateZone")] if zones else []
+            if zone_info:
+                lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
+            else:
+                lines.append("  Public Route53 Zones: (none found)")
 
             lines.append(
                 "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones), hardcode it directly in your Terraform code to avoid data source filter errors. "
@@ -725,9 +820,6 @@ class ExecutionAgents:
             ctx_str = "\n".join(lines)
             self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
             return ctx_str
-        except ImportError:
-            self.logger.info("aws_context.boto3_unavailable — skipping live AWS grounding")
-            return ""
         except Exception as exc:
             self.logger.warning("aws_context.failed: %s", exc)
             return ""
@@ -2199,74 +2291,48 @@ Rules:
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
         
-        quotas_context = ""
-        if services:
-            quotas_context += "\nSERVICE QUOTAS (from dynamic lookup):\n"
-            try:
-                import boto3
-                session = boto3.Session()
-                region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
-                client = session.client('service-quotas', region_name=region)
-                for svc in services:
-                    if svc in self._quotas_cache:
-                        quotas_context += self._quotas_cache[svc]
-                        continue
-                    try:
-                        res = client.list_service_quotas(ServiceCode=svc.lower(), MaxResults=20)
-                        if res.get('Quotas'):
-                            svc_ctx = f"--- {svc.upper()} Quotas ---\n"
-                            for q in res['Quotas']:
-                                svc_ctx += f"- {q.get('QuotaName')}: {q.get('Value')}\n"
-                            self._quotas_cache[svc] = svc_ctx
-                            quotas_context += svc_ctx
-                    except Exception as e:
-                        self.logger.warning("Failed to fetch quotas for %s: %s", svc, e)
-            except Exception as e:
-                self.logger.warning("Boto3 service-quotas error: %s", e)
-                
         docs_context = ""
         if resources:
             docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
-            import urllib.request
+            import re
             for res_type in resources:
                 if res_type in self._docs_cache:
                     docs_context += self._docs_cache[res_type]
                     continue
                 if not res_type.startswith("aws_"):
                     continue
-                short_name = res_type[4:]
-                url = f"https://raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/{short_name}.html.markdown"
+                
                 try:
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        markdown = response.read().decode('utf-8')
+                    markdown = self._run_mcp_terraform_docs(
+                        provider_name="aws",
+                        provider_namespace="hashicorp",
+                        service_slug=res_type,
+                        provider_document_type="resources"
+                    )
                         
-                    match = re.search(r'## Argument Reference(.*?)(?:##|\Z)', markdown, re.DOTALL | re.IGNORECASE)
-                    if match:
-                        snippet = match.group(1).strip()
-                        res_ctx = f"\n--- {res_type} Argument Reference ---\n{snippet[:1500]}...\n"
+                    if markdown:
+                        res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
                     else:
-                        res_ctx = f"\n--- {res_type} ---\nNo Argument Reference found in docs.\n"
+                        res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
+                    
                     self._docs_cache[res_type] = res_ctx
                     docs_context += res_ctx
                 except Exception as e:
-                    self.logger.warning("Failed to fetch TF docs for %s at %s: %s", res_type, url, e)
+                    self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
 
         self.logger.info(
             "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
             services, resources
         )
         self.logger.info(
-            "Dynamic Grounding: Fetched quotas for %d services, docs for %d resources.",
-            len(services), len(resources)
+            "Dynamic Grounding: Fetched docs for %d resources.",
+            len(resources)
         )
-        if quotas_context:
-            self.logger.info("Dynamic Grounding: Quotas context output:\n%s", quotas_context)
         if docs_context:
             self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
         
         return {
-            "service_quotas_context": quotas_context,
+            "service_quotas_context": "",
             "terraform_docs": docs_context
         }
 

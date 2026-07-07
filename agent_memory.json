@@ -261,6 +261,18 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use dynamic AMI lookup via `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and successful deployments across AWS regions."
+    },
+    {
+      "timestamp": "2026-07-07T17:58:48",
+      "action_name": "Deploy EC2 Instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a t2",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use dynamic AMI lookup with `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and deployability across AWS regions."
     }
   ]
 }
