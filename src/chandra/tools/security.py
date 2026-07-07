@@ -53,7 +53,7 @@ DANGEROUS_PORTS: dict[int, str] = {
 # ---------------------------------------------------------------------------
 
 
-def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:
+def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:  # noqa: PLR0915  # enumerates checks
     """Detect S3 buckets that are effectively public.
 
     Triggers when EITHER:
@@ -395,9 +395,7 @@ def _policy_doc_is_wildcard(doc: dict[str, Any]) -> bool:
 def _has_wildcard(field: Any) -> bool:
     if field == "*":
         return True
-    if isinstance(field, list) and "*" in field:
-        return True
-    return False
+    return bool(isinstance(field, list) and "*" in field)
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +480,9 @@ def find_guardduty_threats(ctx: DetectorContext) -> list[Finding]:
     """Surface active GuardDuty findings across all detectors in the account.
 
     Severity mapping mirrors GuardDuty's own numeric scale:
-    * 7.0–10.0 → critical
-    * 4.0–6.9  → high
-    * 1.0–3.9  → medium
+    * 7.0-10.0 → critical
+    * 4.0-6.9  → high
+    * 1.0-3.9  → medium
     """
     detector_id = "SEC-007-guardduty"
     findings: list[Finding] = []

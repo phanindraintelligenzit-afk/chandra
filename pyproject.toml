@@ -81,7 +81,17 @@ select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "PL"]
 ignore = ["PLR0913", "PLR2004"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR2004", "S101"]
+# E402/PLC0415 in tests: runnable node scripts and fixtures set AWS env vars
+# (and activate moto) before importing the modules under test.
+"tests/**" = ["PLR2004", "S101", "E402", "PLC0415"]
+# typer.Option in argument defaults is the canonical Typer API.
+"src/chandra/cli.py" = ["B008"]
+# Alembic bootstraps sys.path/config before imports by convention.
+"src/chandra/db/migrations/env.py" = ["E402"]
+# Deliberate process-wide singletons guarded by module globals.
+"src/chandra/aws/client_factory.py" = ["PLW0603"]
+"src/chandra/db/session.py" = ["PLW0603"]
+"src/chandra/logging.py" = ["PLW0603"]
 
 [tool.mypy]
 python_version = "3.12"

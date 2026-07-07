@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -27,7 +28,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 class Base(DeclarativeBase):
     """Shared declarative base. JSONB on Postgres, JSON elsewhere (for sqlite tests)."""
 
-    type_annotation_map = {
+    type_annotation_map: ClassVar[dict[type, Any]] = {
         dict: JSONB().with_variant(JSON(), "sqlite"),
         list: JSONB().with_variant(JSON(), "sqlite"),
     }

@@ -66,7 +66,8 @@ def test_ingestobservations() -> dict:
                 if e.response["Error"]["Code"] == "AccessDenied":
                     msg = e.response["Error"].get("Message", "")
                     print(
-                        f"    - Warning: AccessDenied setting alarm state for {name}, ignoring... Details: {msg}"
+                        f"    - Warning: AccessDenied setting alarm state for {name}, "
+                        f"ignoring... Details: {msg}"
                     )
                 else:
                     raise
@@ -84,7 +85,8 @@ def test_ingestobservations() -> dict:
                 if e.response["Error"]["Code"] in ("AccessDenied", "AccessDeniedException"):
                     msg = e.response["Error"].get("Message", "")
                     print(
-                        f"    - Warning: AccessDenied putting rule {name}, ignoring... Details: {msg}"
+                        f"    - Warning: AccessDenied putting rule {name}, "
+                        f"ignoring... Details: {msg}"
                     )
                 else:
                     raise

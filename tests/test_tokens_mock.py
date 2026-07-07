@@ -28,7 +28,10 @@ cb.total_cost = calculate_cost(
 )
 
 # Simulate LLM response
-response_text = "The capital of France is Paris, the largest city in the country. It is known as the City of Light and serves as the cultural and political center of France."
+response_text = (
+    "The capital of France is Paris, the largest city in the country. It is known "
+    "as the City of Light and serves as the cultural and political center of France."
+)
 
 print("LLM RESPONSE:")
 print("-" * 70)
@@ -46,8 +49,8 @@ print("COST CALCULATION:")
 print("-" * 70)
 input_cost = (cb.input_tokens / 1_000_000) * 3.0
 output_cost = (cb.output_tokens / 1_000_000) * 15.0
-print(f"Input Cost:    ${input_cost:.6f}  (1,250 tokens × $3.00/1M)")
-print(f"Output Cost:   ${output_cost:.6f}  (487 tokens × $15.00/1M)")
+print(f"Input Cost:    ${input_cost:.6f}  (1,250 tokens x $3.00/1M)")
+print(f"Output Cost:   ${output_cost:.6f}  (487 tokens x $15.00/1M)")
 print(f"Total Cost:    ${cb.total_cost:.6f}")
 print()
 

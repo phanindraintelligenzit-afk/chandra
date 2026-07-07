@@ -66,7 +66,8 @@ def test_observesecurity() -> dict:
             if code in ("AccessDenied", "BucketAlreadyExists", "BucketAlreadyOwnedByYou"):
                 msg = e.response["Error"].get("Message", "")
                 print(
-                    f"    - Warning: Could not create test bucket {bucket_name} ({code}), ignoring... Details: {msg}"
+                    f"    - Warning: Could not create test bucket {bucket_name} ({code}), "
+                    f"ignoring... Details: {msg}"
                 )
             else:
                 raise

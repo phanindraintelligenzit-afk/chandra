@@ -1,7 +1,6 @@
 import json
 
 from src.chandra.aws.client_factory import get_default_factory
-from src.chandra.escalation.formatter import format_escalation_message
 from src.chandra.escalation.schemas import (
     EscalationPayload,
     EscalationResult,
@@ -16,16 +15,19 @@ class SNSPublisher:
 
     def publish(self, payload: EscalationPayload) -> EscalationResult:
         try:
-            # Base dictionary
-            raw_message = format_escalation_message(payload)
-
             # Wrap in AWS Chatbot Custom Notification format so Slack doesn't drop it
             chatbot_message = {
                 "version": "1.0",
                 "source": "custom",
                 "content": {
-                    "title": f":rotating_light: [{payload.severity.upper()}] Escalation: {payload.finding_id}",
-                    "description": f"{payload.summary}\n\n*Resource:* `{payload.resource_id}`\n*Service:* {payload.service} ({payload.region})",
+                    "title": (
+                        f":rotating_light: [{payload.severity.upper()}] "
+                        f"Escalation: {payload.finding_id}"
+                    ),
+                    "description": (
+                        f"{payload.summary}\n\n*Resource:* `{payload.resource_id}`\n"
+                        f"*Service:* {payload.service} ({payload.region})"
+                    ),
                     "nextSteps": [payload.recommended_action],
                 },
             }
@@ -43,14 +45,16 @@ class SNSPublisher:
 
         except Exception as e:
             try:
-                import botocore.exceptions
+                import botocore.exceptions  # noqa: PLC0415  # lazy: optional dep
 
-                if isinstance(e, botocore.exceptions.ClientError):
-                    if e.response["Error"]["Code"] == "NotFound":
-                        return EscalationResult(
-                            status="skipped",
-                            error="Topic does not exist",
-                        )
+                if (
+                    isinstance(e, botocore.exceptions.ClientError)
+                    and e.response["Error"]["Code"] == "NotFound"
+                ):
+                    return EscalationResult(
+                        status="skipped",
+                        error="Topic does not exist",
+                    )
             except ImportError:
                 pass
             return EscalationResult(

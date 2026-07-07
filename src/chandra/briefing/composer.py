@@ -98,7 +98,9 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         return []
 
     try:
-        from langchain_aws import ChatBedrockConverse  # type: ignore[import-not-found]
+        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
+            ChatBedrockConverse,  # type: ignore[import-not-found]
+        )
     except ImportError:
         logger.warning("llm.bedrock_unavailable_fallback_to_deterministic")
         return deterministic_rank(findings)
@@ -187,7 +189,9 @@ def compose_executive_summary(
     """Three-bullet exec summary. LLM-generated when Bedrock is reachable."""
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
-        from langchain_aws import ChatBedrockConverse  # type: ignore[import-not-found]
+        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
+            ChatBedrockConverse,  # type: ignore[import-not-found]
+        )
     except ImportError:
         return _deterministic_summary(analyzed, score_dict)
 
@@ -308,7 +312,9 @@ def render_markdown(
         for i, a in enumerate(top_findings, start=1):
             f = a.finding
             lines.append(
-                f"| {i} | {_severity_badge(f.severity)} | {f.kra} | `{_truncate(f.resource_arn, 60)}` | {_md_escape(f.title)} | {_md_escape(_truncate(f.recommendation, 140))} |"
+                f"| {i} | {_severity_badge(f.severity)} | {f.kra} "
+                f"| `{_truncate(f.resource_arn, 60)}` | {_md_escape(f.title)} "
+                f"| {_md_escape(_truncate(f.recommendation, 140))} |"
             )
     lines.append("")
 
@@ -319,7 +325,8 @@ def render_markdown(
     lines.append("| -------- | -------- | --- | ------ | -------- |")
     for f in all_findings:
         lines.append(
-            f"| {f.detector_id} | {_severity_badge(f.severity)} | {f.kra} | {f.region} | `{_truncate(f.resource_arn, 80)}` |"
+            f"| {f.detector_id} | {_severity_badge(f.severity)} | {f.kra} "
+            f"| {f.region} | `{_truncate(f.resource_arn, 80)}` |"
         )
     lines.append("")
     lines.append("</details>")
@@ -359,7 +366,7 @@ _SEVERITY_BADGES = {
     "high": "🟧 high",
     "medium": "🟨 medium",
     "low": "🟩 low",
-    "info": "ℹ️ info",
+    "info": "ℹ️ info",  # noqa: RUF001  # intentional badge
 }
 
 

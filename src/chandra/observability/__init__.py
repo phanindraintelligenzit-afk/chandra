@@ -123,7 +123,9 @@ def _emit_metric(
 
     def _put() -> None:
         try:
-            from src.chandra.aws.client_factory import get_default_factory
+            from src.chandra.aws.client_factory import (  # noqa: PLC0415  # lazy: avoid cycle
+                get_default_factory,
+            )
 
             cw = get_default_factory().client("cloudwatch")
             dim_list = (

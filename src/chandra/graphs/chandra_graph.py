@@ -50,7 +50,9 @@ def _build_checkpointer() -> Any:
     fallback is logged at WARNING so it never silently regresses.
     """
     try:
-        from langgraph.checkpoint.postgres import PostgresSaver
+        from langgraph.checkpoint.postgres import (  # noqa: PLC0415  # lazy: optional dep
+            PostgresSaver,
+        )
     except ImportError:
         logger.warning("checkpointer.postgres_unavailable_fallback_to_memory")
         return MemorySaver()
@@ -58,8 +60,10 @@ def _build_checkpointer() -> Any:
     try:
         # Convert SQLAlchemy URL format to psycopg native format
         # postgresql+psycopg://... → postgresql://...
-        import psycopg
-        from psycopg_pool import ConnectionPool
+        import psycopg  # noqa: PLC0415  # lazy: optional dep
+        from psycopg_pool import (  # noqa: PLC0415  # lazy: optional dep
+            ConnectionPool,
+        )
 
         conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
 

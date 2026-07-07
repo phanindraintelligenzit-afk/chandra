@@ -8,12 +8,13 @@ Detector IDs:
 * ``PERF-004-xray-error-rate`` — X-Ray service with sustained error or fault rate >5%.
 * ``PERF-005-xray-latency``    — X-Ray service with p99 response latency >2 seconds.
 * ``PERF-006-co-ec2``          — Compute Optimizer EC2 recommendation with OVER_PROVISIONED finding.
-* ``PERF-007-co-lambda``       — Compute Optimizer Lambda recommendation with OVER_PROVISIONED finding.
+* ``PERF-007-co-lambda``       — Compute Optimizer Lambda OVER_PROVISIONED recommendation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import statistics
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -489,10 +490,8 @@ def find_compute_optimizer_ec2(ctx: DetectorContext) -> list[Finding]:
             monthly_savings: float | None = None
             savings_value = savings_opportunity.get("estimatedMonthlySavings", {})
             if savings_value:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     monthly_savings = float(savings_value.get("value", 0))
-                except (TypeError, ValueError):
-                    pass
 
             severity = "high" if (monthly_savings or 0) >= 100 else "medium"
 
@@ -584,10 +583,8 @@ def find_compute_optimizer_lambda(ctx: DetectorContext) -> list[Finding]:
             monthly_savings: float | None = None
             savings_value = savings_opportunity.get("estimatedMonthlySavings", {})
             if savings_value:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     monthly_savings = float(savings_value.get("value", 0))
-                except (TypeError, ValueError):
-                    pass
 
             severity = "high" if (monthly_savings or 0) >= 100 else "medium"
 

@@ -8,7 +8,7 @@ Detector IDs:
 * ``COMP-004-ebs-unencrypted``      — EBS volume created without encryption
 * ``COMP-005-s3-default-enc``       — S3 bucket without default encryption configured
 * ``COMP-006-no-backup-protection`` — no AWS Backup protected resources found in the account
-* ``COMP-007-config-rule-noncompliant`` — AWS Config rule whose overall compliance type is NON_COMPLIANT
+* ``COMP-007-config-rule-noncompliant`` — AWS Config rule whose compliance is NON_COMPLIANT
 * ``COMP-008-ebs-default-enc-off``  — EBS encryption-by-default disabled at the account/region level
 * ``COMP-009-missing-tags``         — resources missing mandatory organizational tags
 """

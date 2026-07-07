@@ -55,9 +55,9 @@ _session._SessionLocal = sessionmaker(  # type: ignore[attr-defined]
 if "sqlite" in engine_label:
     Base.metadata.create_all(_test_engine)
 
-from src.chandra.db.models import Briefing, Run  # noqa: E402
+from src.chandra.db.models import Briefing, Run
 from src.chandra.db.models import Finding as FindingRow
-from src.chandra.graphs.nodes import persist  # noqa: E402
+from src.chandra.graphs.nodes import persist
 
 
 def _finding(*, kra: str, severity: str, detector_id: str) -> Finding:

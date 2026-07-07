@@ -85,7 +85,7 @@ class TestS3DefaultEncryption:
     def test_bucket_without_encryption_is_flagged(self, ctx: DetectorContext, s3: Any) -> None:
         s3.create_bucket(Bucket="unencrypted-bucket")
         # Strip any default encryption moto may auto-attach.
-        try:
+        try:  # noqa: SIM105  # keep explicit for readability
             s3.delete_bucket_encryption(Bucket="unencrypted-bucket")
         except s3.exceptions.ClientError:
             pass

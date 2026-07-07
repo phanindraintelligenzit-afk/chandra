@@ -60,7 +60,8 @@ def test_observecost() -> dict:
             if code in ("UnauthorizedOperation", "AccessDenied"):
                 msg = e.response["Error"].get("Message", "")
                 print(
-                    f"    - Warning: Could not create test EBS volume ({code}), ignoring... Details: {msg}"
+                    f"    - Warning: Could not create test EBS volume ({code}), "
+                    f"ignoring... Details: {msg}"
                 )
             else:
                 raise

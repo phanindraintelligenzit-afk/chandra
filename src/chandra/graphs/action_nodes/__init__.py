@@ -20,8 +20,7 @@ Topology:
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
@@ -49,7 +48,6 @@ from src.chandra.escalation.schemas import EscalationPayload, EscalationResult
 from src.chandra.graphs.action_nodes.action_executor import action_executor_node
 from src.chandra.graphs.state import ChandraState
 from src.chandra.logging import get_logger
-from src.chandra.observability import traced_node
 from src.chandra.tools import compliance, cost, performance, reliability, security
 from src.chandra.tools.base import DetectorContext, detector_guard, paginate
 
