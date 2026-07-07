@@ -28,9 +28,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 class Base(DeclarativeBase):
     """Shared declarative base. JSONB on Postgres, JSON elsewhere (for sqlite tests)."""
 
-    type_annotation_map: ClassVar[dict[type, Any]] = {
+    type_annotation_map: ClassVar[dict[Any, Any]] = {
         dict: JSONB().with_variant(JSON(), "sqlite"),
+        dict[str, Any]: JSONB().with_variant(JSON(), "sqlite"),
         list: JSONB().with_variant(JSON(), "sqlite"),
+        list[Any]: JSONB().with_variant(JSON(), "sqlite"),
     }
 
 
@@ -41,13 +43,13 @@ def _uuid() -> str:
 class DateTimeEncoder(json.JSONEncoder):
     """Custom JSON encoder that converts datetime objects to ISO format strings."""
 
-    def default(self, obj):
+    def default(self, obj: Any) -> Any:
         if isinstance(obj, datetime):
             return obj.isoformat()  # Convert datetime to ISO 8601 string
         return super().default(obj)
 
 
-def serialize_finding_evidence(evidence_dict: dict) -> dict:
+def serialize_finding_evidence(evidence_dict: dict[str, Any]) -> dict[str, Any]:
     """
     Convert all datetime objects in evidence_jsonb to ISO strings.
     This prevents 'datetime is not JSON serializable' errors.
@@ -58,7 +60,8 @@ def serialize_finding_evidence(evidence_dict: dict) -> dict:
     # Use custom encoder to convert to JSON string, then back to dict
     # This ensures all datetime objects are converted to strings
     json_str = json.dumps(evidence_dict, cls=DateTimeEncoder)
-    return json.loads(json_str)
+    result: dict[str, Any] = json.loads(json_str)
+    return result
 
 
 class Run(Base):
@@ -75,7 +78,7 @@ class Run(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     account_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
-    errors_json: Mapped[list | None] = mapped_column("errors_json")
+    errors_json: Mapped[list[Any] | None] = mapped_column("errors_json")
     bedrock_cost_usd: Mapped[float] = mapped_column(server_default=text("0.0"), default=0.0)
 
     findings: Mapped[list[Finding]] = relationship(
@@ -107,7 +110,7 @@ class Finding(Base):
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     region: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence_jsonb: Mapped[dict] = mapped_column("evidence_jsonb", nullable=False)
+    evidence_jsonb: Mapped[dict[str, Any]] = mapped_column("evidence_jsonb", nullable=False)
     recommendation: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
@@ -127,7 +130,7 @@ class Briefing(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, unique=True
     )
-    scorecard_jsonb: Mapped[dict] = mapped_column("scorecard_jsonb", nullable=False)
+    scorecard_jsonb: Mapped[dict[str, Any]] = mapped_column("scorecard_jsonb", nullable=False)
     markdown_text: Mapped[str] = mapped_column(Text, nullable=False)
     findings_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -149,7 +152,9 @@ class EvalRun(Base):
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, unique=True
     )
     recall_overall: Mapped[float] = mapped_column(nullable=False)
-    recall_per_kra_jsonb: Mapped[dict] = mapped_column("recall_per_kra_jsonb", nullable=False)
+    recall_per_kra_jsonb: Mapped[dict[str, Any]] = mapped_column(
+        "recall_per_kra_jsonb", nullable=False
+    )
     precision_overall: Mapped[float] = mapped_column(nullable=False)
     fp_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 def traced_node(
-    fn: Callable | None = None,
+    fn: Callable[..., Any] | None = None,
     name: str | None = None,
     timeout_s: int | None = None,
-):
+) -> Callable[..., Any]:
     """
     Decorator to trace node execution with optional timeout.
 
@@ -25,7 +25,7 @@ def traced_node(
     Supports both sync and async functions.
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         node_name = name or func.__name__
 
         if inspect.iscoroutinefunction(func):
@@ -91,7 +91,7 @@ def traced_node(
 
 
 @contextmanager
-def task_context(run_id: str, account_id: str):
+def task_context(run_id: str, account_id: str) -> Any:
     """Bind run_id and account_id to structlog context."""
     structlog.contextvars.bind_contextvars(run_id=run_id, account_id=account_id)
     try:
@@ -103,19 +103,25 @@ def task_context(run_id: str, account_id: str):
 def configure_observability(
     otel_endpoint: str | None = None,
     log_level: str = "INFO",
+    environment: str = "production",
 ) -> None:
     """Configure observability (OTEL tracing + structlog)."""
     if otel_endpoint is None:
-        logger.info("observability.configured: noop")
+        logger.info("observability.configured: noop (environment=%s)", environment)
         return
-    logger.info(f"observability.configured: endpoint={otel_endpoint}, level={log_level}")
+    logger.info(
+        "observability.configured: endpoint=%s, level=%s, environment=%s",
+        otel_endpoint,
+        log_level,
+        environment,
+    )
 
 
 def _emit_metric(
     metric_name: str,
     value: float,
     unit: str = "None",
-    dimensions: dict | None = None,
+    dimensions: dict[str, str] | None = None,
     **tags: Any,
 ) -> None:
     """Emit a metric to CloudWatch in a background thread."""

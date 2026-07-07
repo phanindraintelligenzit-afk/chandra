@@ -437,7 +437,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
     scorecard = simplify_for_json(scorecard)
 
     # Errors are skipped for now
-    errors = []
+    errors: list[dict[str, Any]] = []
 
     flat: list[Finding] = []
     for kra_findings in raw.values():
@@ -532,7 +532,7 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
             ).model_dump()
         }
 
-    region = state.get("region", "us-east-1")
+    region = str(state.get("region") or "us-east-1")
     publisher = SNSPublisher(topic_arn=topic_arn, region=region)
     pending: list[ProposedWrite] = state.get("pending_writes", []) or []
 
@@ -568,7 +568,7 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
         payload = EscalationPayload(
             finding_id=finding_id,
             resource_id=write.target_arn,
-            severity=sev,  # type: ignore[arg-type]
+            severity=sev,
             service=service,
             region=write.region or region,
             summary=write.summary or write.justification,

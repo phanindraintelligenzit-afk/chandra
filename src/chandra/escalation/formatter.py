@@ -1,7 +1,7 @@
 from src.chandra.escalation.schemas import EscalationPayload
 
 
-def format_escalation_message(payload: EscalationPayload) -> dict:
+def format_escalation_message(payload: EscalationPayload) -> dict[str, str]:
     return {
         "finding_id": payload.finding_id,
         "resource_id": payload.resource_id,

@@ -212,6 +212,9 @@ class ActionExecutor:
                     "audit_log": audit_entry,
                 }
 
+            if not isinstance(resource_id, str) or not resource_id:
+                raise ValueError(f"Missing resource_id for action {action_type}")
+
             if problem_type == "public_s3":
                 self._fix_public_s3(resource_id, region)
             elif problem_type == "open_security_group":

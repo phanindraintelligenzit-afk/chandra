@@ -100,7 +100,11 @@ warn_return_any = true
 warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 explicit_package_bases = true
-mypy_path = "src"
+# The codebase imports via `from src.chandra...`, so modules must resolve
+# under the repo root. mypy_path = "src" made every file resolvable under
+# two names (chandra.* and src.chandra.*), which aborted every run with
+# "source file found twice under different module names".
+mypy_path = "."
 
 [[tool.mypy.overrides]]
 module = [
@@ -108,10 +112,14 @@ module = [
     "botocore.*",
     "moto.*",
     "streamlit.*",
+    "pandas.*",
     "plotly.*",
+    "psycopg_pool.*",
     "langgraph.*",
     "langgraph_checkpoint_postgres.*",
     "langchain_aws.*",
+    "jira.*",
+    "dotenv.*",
 ]
 ignore_missing_imports = true
 

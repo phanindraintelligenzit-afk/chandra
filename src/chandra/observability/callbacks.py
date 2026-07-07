@@ -1,15 +1,17 @@
+from typing import Any
+
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from src.chandra.observability.pricing import calculate_cost
 
 
 class UsageCapture(BaseCallbackHandler):
-    def __init__(self):
+    def __init__(self) -> None:
         self.input_tokens = 0
         self.output_tokens = 0
         self.total_cost = 0.0
 
-    def on_llm_end(self, response: LLMResult, **kwargs) -> None:
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         if response.llm_output is None:
             return
         usage = response.llm_output.get("usage", {})

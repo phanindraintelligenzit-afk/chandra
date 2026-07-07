@@ -397,10 +397,8 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 def escalation_node(state: ChandraState) -> dict[str, Any]:
     """Publish escalation alerts to SNS for critical/high findings."""
     publisher = SNSPublisher(
-        topic_arn=state.get(
-            "sns_topic_arn",
-            "arn:aws:sns:us-east-1:123456789012:chandra-escalations",
-        )
+        topic_arn=state.get("sns_topic_arn")
+        or "arn:aws:sns:us-east-1:123456789012:chandra-escalations"
     )
     payload = EscalationPayload(
         finding_id=state.get("finding_id", "unknown"),

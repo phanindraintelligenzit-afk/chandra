@@ -1,6 +1,6 @@
 import json
 
-from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.aws.client_factory import AwsClientFactory, get_default_factory
 from src.chandra.escalation.schemas import (
     EscalationPayload,
     EscalationResult,
@@ -8,7 +8,12 @@ from src.chandra.escalation.schemas import (
 
 
 class SNSPublisher:
-    def __init__(self, topic_arn: str, region: str = "us-east-1", factory=None):
+    def __init__(
+        self,
+        topic_arn: str,
+        region: str = "us-east-1",
+        factory: AwsClientFactory | None = None,
+    ):
         self.topic_arn = topic_arn
         factory = factory or get_default_factory()
         self.client = factory.client("sns", region=region)

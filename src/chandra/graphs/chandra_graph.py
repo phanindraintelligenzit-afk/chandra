@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -61,17 +61,20 @@ def _build_checkpointer() -> Any:
         # Convert SQLAlchemy URL format to psycopg native format
         # postgresql+psycopg://... → postgresql://...
         import psycopg  # noqa: PLC0415  # lazy: optional dep
+        from psycopg.rows import dict_row  # noqa: PLC0415  # lazy: optional dep
         from psycopg_pool import (  # noqa: PLC0415  # lazy: optional dep
             ConnectionPool,
         )
 
         conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
 
-        with psycopg.connect(conn_string, autocommit=True) as conn:
+        with psycopg.connect(conn_string, autocommit=True, row_factory=dict_row) as conn:
             PostgresSaver(conn).setup()
 
-        pool = ConnectionPool(conn_string, max_size=10)
-        checkpointer = PostgresSaver(pool)
+        # kwargs row_factory yields dict rows at runtime; ConnectionPool's
+        # type parameter cannot express that, hence the cast.
+        pool = ConnectionPool(conn_string, max_size=10, kwargs={"row_factory": dict_row})
+        checkpointer = PostgresSaver(cast(Any, pool))
         return checkpointer
     except Exception as exc:
         logger.warning(

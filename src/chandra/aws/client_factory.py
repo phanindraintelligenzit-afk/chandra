@@ -108,7 +108,8 @@ class AwsClientFactory:
 
         cached = _ASSUME_ROLE_CACHE.get(cache_key)
         if cached and cached["expiry"] > now:
-            return cached["factory"]
+            factory: AwsClientFactory = cached["factory"]
+            return factory
 
         sts = self.client("sts")
         resp = sts.assume_role(

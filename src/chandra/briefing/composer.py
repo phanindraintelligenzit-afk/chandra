@@ -99,7 +99,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
 
     try:
         from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,  # type: ignore[import-not-found]
+            ChatBedrockConverse,
         )
     except ImportError:
         logger.warning("llm.bedrock_unavailable_fallback_to_deterministic")
@@ -107,7 +107,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
 
     try:
         llm = ChatBedrockConverse(
-            model=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
             # temperature=0.0,
             # max_tokens=2048,
@@ -190,14 +190,14 @@ def compose_executive_summary(
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
         from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,  # type: ignore[import-not-found]
+            ChatBedrockConverse,
         )
     except ImportError:
         return _deterministic_summary(analyzed, score_dict)
 
     try:
         llm = ChatBedrockConverse(
-            model=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
             # temperature=0.2,
             # max_tokens=512,
