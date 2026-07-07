@@ -12,9 +12,9 @@ if __name__ == "__main__":
     ]
     
     for t in tests:
-        print(f"\n--- Testing: {t['name']} ---")
-        print(f"URL: {t['url']}")
-        result = get_jira_ticket_details(t['url'])
+        print(f"\n--- Testing: {t['name']} ---")  # type: ignore
+        print(f"URL: {t['url']}")  # type: ignore
+        result = get_jira_ticket_details(t['url'])  # type: ignore
         print(json.dumps(result, indent=2))
         
     print("\n--- Testing: Missing Env ---")

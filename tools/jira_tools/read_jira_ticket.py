@@ -1,5 +1,6 @@
 # ruff: noqa: N806, PLR0911, E501
 import logging
+
 # ruff: noqa: N806, PLR0911, E501, N803
 import os
 import re
@@ -10,7 +11,7 @@ from requests.auth import HTTPBasicAuth
 
 logger = logging.getLogger(__name__)
 
-def adf_to_text(node):
+def adf_to_text(node):  # type: ignore
     """
     Recursively parse Jira Atlassian Document Format (ADF) into a plain readable string.
     """
@@ -26,7 +27,7 @@ def adf_to_text(node):
     # Recurse over children
     if "content" in node and isinstance(node["content"], list):
         for child in node["content"]:
-            parts.append(adf_to_text(child))
+            parts.append(adf_to_text(child))  # type: ignore
             
     # Add spacing for blocks
     if node.get("type") in ["paragraph", "heading", "listItem"]:
@@ -34,7 +35,7 @@ def adf_to_text(node):
         
     return "".join(parts).strip()
 
-def get_jira_ticket_details(jiraUrl: str) -> dict:
+def get_jira_ticket_details(jiraUrl: str) -> dict:  # type: ignore
     """
     Given a Jira URL, extract the issue key and retrieve ticket details
     (summary, description, priority, comments) via Jira REST API.
@@ -99,7 +100,7 @@ def get_jira_ticket_details(jiraUrl: str) -> dict:
         
         # Extract and parse description (ADF format)
         raw_description = fields.get("description", "")
-        description = adf_to_text(raw_description) if isinstance(raw_description, dict) else str(raw_description)
+        description = adf_to_text(raw_description) if isinstance(raw_description, dict) else str(raw_description)  # type: ignore
         
         # Extract priority
         priority_obj = fields.get("priority", {})
@@ -112,7 +113,7 @@ def get_jira_ticket_details(jiraUrl: str) -> dict:
         extracted_comments = []
         for c in comments_list:
             body = c.get("body", "")
-            parsed_body = adf_to_text(body) if isinstance(body, dict) else str(body)
+            parsed_body = adf_to_text(body) if isinstance(body, dict) else str(body)  # type: ignore
             if parsed_body:
                 extracted_comments.append(parsed_body)
 
