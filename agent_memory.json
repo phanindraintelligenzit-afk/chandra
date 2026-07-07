@@ -232,6 +232,35 @@
         "The automation attempted to deploy a production-tagged PostgreSQL RDS instance using Terraform but failed during the `terraform validate` pre-flight check"
       ],
       "lesson": "Always use `subnet_id` (singular) instead of `subnet_ids` for `aws_db_instance` — it accepts a single subnet ID, not a list."
+    },
+    {
+      "timestamp": "2026-07-06T17:44:50",
+      "action_name": "Deploy EC2 instance with Terraform",
+      "iterations_used": 5,
+      "final_status": "failed",
+      "errors_encountered": [
+        "Error: Error in function call"
+      ],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1 but failed during the pre-flight `terraform validate` phase due to a `terraform init` error",
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1 but failed during the `terraform validate` pre-flight check",
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1 but failed during the `terraform plan` phase",
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1, successfully initializing providers, validating configuration, and planning resource creation — including a new `aws_ke",
+        "The automation attempt to deploy a t2"
+      ],
+      "lesson": "Always use `data.aws_ami.amazon_linux_2.image_id` instead of `image_location` when checking AMI properties, since `image_location` is a string, not a list, and `contains()` expects a list."
+    },
+    {
+      "timestamp": "2026-07-06T17:48:54",
+      "action_name": "Deploy EC2 instance with Terraform",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy an EC2 instance using Terraform in us-east-1 but failed during the pre-flight `terraform validate` phase due to `terraform init` failing",
+        "The AWS automation successfully deployed a t2"
+      ],
+      "lesson": "Always use dynamic AMI lookup via `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and successful deployments across AWS regions."
     }
   ]
 }
