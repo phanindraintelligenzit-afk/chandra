@@ -39,9 +39,7 @@ def notify_slack(title: str, body: str) -> NotificationResult:
             channel="slack", status="skipped", detail="SLACK_WEBHOOK_URL not set"
         )
     try:
-        response = requests.post(
-            url, json={"text": f"*{title}*\n{body}"}, timeout=_TIMEOUT_S
-        )
+        response = requests.post(url, json={"text": f"*{title}*\n{body}"}, timeout=_TIMEOUT_S)
         response.raise_for_status()
         logger.info("notify.slack_sent", title=title[:80])
         return NotificationResult(channel="slack", status="sent")

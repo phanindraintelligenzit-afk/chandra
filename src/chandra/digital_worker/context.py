@@ -75,8 +75,7 @@ class ContextCollector:
                     provider=f"intake.{request.source.value}",
                     kind=(
                         "monitoring"
-                        if "monitor" in request.source.value
-                        or request.source.value == "cloudwatch"
+                        if "monitor" in request.source.value or request.source.value == "cloudwatch"
                         else "tracker"
                     ),
                     summary=f"Original {request.source.value} payload for '{request.title[:80]}'",

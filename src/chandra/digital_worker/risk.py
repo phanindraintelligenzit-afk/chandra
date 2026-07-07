@@ -64,9 +64,7 @@ def assess_risk(classification: RequestClassification, plan: ResolutionPlan) -> 
     score = _CATEGORY_BASE.get(classification.category, 15)
     factors.append(f"category:{classification.category.value}(+{score})")
 
-    plan_text = " ".join(
-        f"{step.action} {step.detail} {step.command or ''}" for step in plan.steps
-    )
+    plan_text = " ".join(f"{step.action} {step.detail} {step.command or ''}" for step in plan.steps)
 
     reversible = True
     for pattern, weight, label in _DESTRUCTIVE_PATTERNS:

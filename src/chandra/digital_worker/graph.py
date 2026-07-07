@@ -254,8 +254,7 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
         verdict = ExecutionDecision(
             mode=DecisionMode.AWAIT_APPROVAL,
             reason=(
-                f"automation registered ({plan.detector_id}) but "
-                f"{gate} requires human approval"
+                f"automation registered ({plan.detector_id}) but {gate} requires human approval"
             ),
         )
     else:

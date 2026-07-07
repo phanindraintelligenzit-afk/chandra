@@ -160,8 +160,8 @@ class CloudRequestRecord(Base):
     risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
     decision_mode: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="completed")
-    result_jsonb: Mapped[dict] = mapped_column("result_jsonb", nullable=False)
-    audit_jsonb: Mapped[list] = mapped_column("audit_jsonb", nullable=False)
+    result_jsonb: Mapped[dict[str, Any]] = mapped_column("result_jsonb", nullable=False)
+    audit_jsonb: Mapped[list[Any]] = mapped_column("audit_jsonb", nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -187,7 +187,7 @@ class ResolutionMemoryRecord(Base):
     category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     platform: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
-    plan_jsonb: Mapped[dict] = mapped_column("plan_jsonb", nullable=False)
+    plan_jsonb: Mapped[dict[str, Any]] = mapped_column("plan_jsonb", nullable=False)
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     created_at: Mapped[datetime] = mapped_column(

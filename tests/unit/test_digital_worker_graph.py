@@ -55,15 +55,17 @@ def workflow(
     monkeypatch.setattr(memory, "lookup_plan", lambda fingerprint: None)
     monkeypatch.setattr(planner, "compose_request_analysis", lambda payload: None)
     # AWS clients (context collection + executor) go through moto.
-    monkeypatch.setattr(
-        "src.chandra.digital_worker.context.get_default_factory", lambda: factory
-    )
+    monkeypatch.setattr("src.chandra.digital_worker.context.get_default_factory", lambda: factory)
     monkeypatch.setattr(
         "src.chandra.graphs.action_nodes.action_executor.get_default_factory", lambda: factory
     )
     for var in (
-        "JIRA_SERVER", "JIRA_EMAIL", "JIRA_API_TOKEN",
-        "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL", "SMTP_HOST",
+        "JIRA_SERVER",
+        "JIRA_EMAIL",
+        "JIRA_API_TOKEN",
+        "SLACK_WEBHOOK_URL",
+        "TEAMS_WEBHOOK_URL",
+        "SMTP_HOST",
     ):
         monkeypatch.delenv(var, raising=False)
     return build_digital_worker_graph(checkpointer=MemorySaver())

@@ -20,8 +20,16 @@ from src.chandra.digital_worker.schemas import (
 class TestNormalizeRequest:
     def test_all_sources_supported(self) -> None:
         assert set(SUPPORTED_SOURCES) == {
-            "jira", "slack", "teams", "email", "rest_api", "monitoring",
-            "cloudwatch", "azure_monitor", "gcp_monitoring", "webhook",
+            "jira",
+            "slack",
+            "teams",
+            "email",
+            "rest_api",
+            "monitoring",
+            "cloudwatch",
+            "azure_monitor",
+            "gcp_monitoring",
+            "webhook",
         }
         for source in SUPPORTED_SOURCES:
             request = normalize_request(source, {})

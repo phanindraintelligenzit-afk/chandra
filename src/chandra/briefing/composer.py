@@ -303,7 +303,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     try:
         llm = ChatBedrockConverse(
-            model=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
         )
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")

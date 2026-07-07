@@ -4,6 +4,7 @@ Revision ID: a1d9e2f4b7c1
 Revises: c6f417c05ab8
 Create Date: 2026-07-07
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -57,7 +58,9 @@ def upgrade() -> None:
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("plan_jsonb", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("hit_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("last_outcome", sa.String(32), nullable=False, server_default=sa.text("'unknown'")),
+        sa.Column(
+            "last_outcome", sa.String(32), nullable=False, server_default=sa.text("'unknown'")
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

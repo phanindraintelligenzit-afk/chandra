@@ -32,16 +32,32 @@ logger = get_logger(__name__)
 
 _STOPWORDS = frozenset(
     {
-        "the", "a", "an", "in", "on", "for", "to", "of", "and", "or", "is",
-        "are", "with", "please", "need", "we", "our", "my", "this", "that",
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "for",
+        "to",
+        "of",
+        "and",
+        "or",
+        "is",
+        "are",
+        "with",
+        "please",
+        "need",
+        "we",
+        "our",
+        "my",
+        "this",
+        "that",
     }
 )
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9\-]*")
 
 
-def fingerprint_request(
-    request: CloudRequest, classification: RequestClassification
-) -> str:
+def fingerprint_request(request: CloudRequest, classification: RequestClassification) -> str:
     """Stable SHA-256 fingerprint of the *classified* request."""
     tokens = sorted(
         {
@@ -104,9 +120,7 @@ def persist_plan(
     caller owns the transaction.
     """
     record = session.execute(
-        select(ResolutionMemoryRecord).where(
-            ResolutionMemoryRecord.fingerprint == plan.fingerprint
-        )
+        select(ResolutionMemoryRecord).where(ResolutionMemoryRecord.fingerprint == plan.fingerprint)
     ).scalar_one_or_none()
     now = datetime.now(UTC)
     if record is None:

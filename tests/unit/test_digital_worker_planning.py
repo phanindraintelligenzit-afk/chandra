@@ -93,8 +93,13 @@ class TestPlannerRoutes:
                 "confidence": 0.8,
             },
             "steps": [
-                {"order": 1, "action": "Switch to unlimited mode", "detail": "",
-                 "command": None, "expected_outcome": "CPU no longer throttled"},
+                {
+                    "order": 1,
+                    "action": "Switch to unlimited mode",
+                    "detail": "",
+                    "command": None,
+                    "expected_outcome": "CPU no longer throttled",
+                },
             ],
             "rollback_steps": [],
             "notes": "",
