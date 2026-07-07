@@ -16,9 +16,9 @@ Detector IDs:
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.chandra.briefing.schemas import Finding
@@ -52,7 +52,8 @@ DANGEROUS_PORTS: dict[int, str] = {
 # SEC-001  Public S3 buckets
 # ---------------------------------------------------------------------------
 
-def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:
+
+def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:  # noqa: PLR0915  # enumerates checks
     """Detect S3 buckets that are effectively public.
 
     Triggers when EITHER:
@@ -163,6 +164,7 @@ def _bucket_policy_is_public(policy_doc: dict[str, Any]) -> bool:
 # SEC-002  Open security groups
 # ---------------------------------------------------------------------------
 
+
 def find_open_security_groups(ctx: DetectorContext) -> list[Finding]:
     """Detect SGs exposing dangerous ports to 0.0.0.0/0 in any active region."""
     detector_id = "SEC-002-open-sg-ssh"
@@ -178,9 +180,7 @@ def find_open_security_groups(ctx: DetectorContext) -> list[Finding]:
     return findings
 
 
-def _inspect_security_group(
-    sg: dict[str, Any], region: str, detector_id: str
-) -> list[Finding]:
+def _inspect_security_group(sg: dict[str, Any], region: str, detector_id: str) -> list[Finding]:
     findings: list[Finding] = []
     sg_id = sg["GroupId"]
     owner_id = sg.get("OwnerId", "unknown")
@@ -193,9 +193,7 @@ def _inspect_security_group(
             continue
         from_port = perm.get("FromPort")
         to_port = perm.get("ToPort")
-        open_to_world = any(
-            r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", []) or []
-        )
+        open_to_world = any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", []) or [])
         if not open_to_world:
             continue
         if ip_protocol == "-1":
@@ -220,10 +218,7 @@ def _inspect_security_group(
             resource_arn=arn,
             resource_type="AWS::EC2::SecurityGroup",
             region=region,
-            title=(
-                f"Security group {sg_id} exposes {ports_listed} "
-                f"to 0.0.0.0/0"
-            ),
+            title=(f"Security group {sg_id} exposes {ports_listed} to 0.0.0.0/0"),
             evidence={"GroupId": sg_id, "IpPermissions": sg.get("IpPermissions", [])},
             recommendation=(
                 "Restrict the offending ingress rules to your corporate CIDR range, "
@@ -239,12 +234,13 @@ def _inspect_security_group(
 # SEC-003  Stale IAM access keys
 # ---------------------------------------------------------------------------
 
+
 def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
     """Detect IAM access keys older than ``STALE_KEY_DAYS`` (default 90)."""
     detector_id = "SEC-003-stale-key"
     findings: list[Finding] = []
     iam = ctx.factory.client("iam")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     threshold_days = _stale_key_threshold_days()
     threshold = now - timedelta(days=threshold_days)
 
@@ -265,7 +261,7 @@ def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
                     if created is None:
                         continue
                     if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
+                        created = created.replace(tzinfo=UTC)
                     if created > threshold:
                         continue
                     age_days = (now - created).days
@@ -302,6 +298,7 @@ def find_stale_access_keys(ctx: DetectorContext) -> list[Finding]:
 # SEC-004  Root MFA
 # ---------------------------------------------------------------------------
 
+
 def check_root_mfa(ctx: DetectorContext) -> list[Finding]:
     """Emit a finding if the AWS account root user does not have MFA enabled."""
     detector_id = "SEC-004-root-mfa"
@@ -336,6 +333,7 @@ def check_root_mfa(ctx: DetectorContext) -> list[Finding]:
 # SEC-005  Wildcard IAM policies
 # ---------------------------------------------------------------------------
 
+
 def find_overly_permissive_iam(ctx: DetectorContext) -> list[Finding]:
     """Detect customer-managed policies that grant ``Action: *`` on ``Resource: *``."""
     detector_id = "SEC-005-wildcard-iam"
@@ -351,9 +349,7 @@ def find_overly_permissive_iam(ctx: DetectorContext) -> list[Finding]:
         policy_arn = policy["Arn"]
         with detector_guard(ctx, detector_id=detector_id, resource_arn=policy_arn):
             version_id = policy["DefaultVersionId"]
-            version = iam.get_policy_version(
-                PolicyArn=policy_arn, VersionId=version_id
-            )
+            version = iam.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)
             doc = version["PolicyVersion"]["Document"]
             if isinstance(doc, str):
                 doc = json.loads(doc)
@@ -399,14 +395,13 @@ def _policy_doc_is_wildcard(doc: dict[str, Any]) -> bool:
 def _has_wildcard(field: Any) -> bool:
     if field == "*":
         return True
-    if isinstance(field, list) and "*" in field:
-        return True
-    return False
+    return bool(isinstance(field, list) and "*" in field)
 
 
 # ---------------------------------------------------------------------------
 # SEC-006  AWS Config non-compliant rules
 # ---------------------------------------------------------------------------
+
 
 def find_config_noncompliant_rules(ctx: DetectorContext) -> list[Finding]:
     """Detect resources marked NON_COMPLIANT by any active AWS Config rule.
@@ -434,9 +429,8 @@ def find_config_noncompliant_rules(ctx: DetectorContext) -> list[Finding]:
                 ComplianceTypes=["NON_COMPLIANT"],
             ):
                 for result in page.get("EvaluationResults", []):
-                    qualifier = (
-                        result.get("EvaluationResultIdentifier", {})
-                        .get("EvaluationResultQualifier", {})
+                    qualifier = result.get("EvaluationResultIdentifier", {}).get(
+                        "EvaluationResultQualifier", {}
                     )
                     resource_id = qualifier.get("ResourceId", "unknown")
                     resource_type = qualifier.get("ResourceType", "Unknown")
@@ -481,13 +475,14 @@ def find_config_noncompliant_rules(ctx: DetectorContext) -> list[Finding]:
 # SEC-007  GuardDuty threat findings
 # ---------------------------------------------------------------------------
 
+
 def find_guardduty_threats(ctx: DetectorContext) -> list[Finding]:
     """Surface active GuardDuty findings across all detectors in the account.
 
     Severity mapping mirrors GuardDuty's own numeric scale:
-    * 7.0–10.0 → critical
-    * 4.0–6.9  → high
-    * 1.0–3.9  → medium
+    * 7.0-10.0 → critical
+    * 4.0-6.9  → high
+    * 1.0-3.9  → medium
     """
     detector_id = "SEC-007-guardduty"
     findings: list[Finding] = []
@@ -517,9 +512,7 @@ def find_guardduty_threats(ctx: DetectorContext) -> list[Finding]:
         for i in range(0, len(finding_ids), 50):
             batch = finding_ids[i : i + 50]
             with detector_guard(ctx, detector_id=detector_id):
-                resp = gd.get_findings(
-                    DetectorId=gd_detector_id, FindingIds=batch
-                )
+                resp = gd.get_findings(DetectorId=gd_detector_id, FindingIds=batch)
                 for gd_finding in resp.get("Findings", []):
                     numeric_severity = float(gd_finding.get("Severity", 0))
                     if numeric_severity >= 7.0:
@@ -575,6 +568,7 @@ def find_guardduty_threats(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # SEC-008  IAM Access Analyzer active findings
 # ---------------------------------------------------------------------------
+
 
 def _paginate_list_findings_v2(aa: Any, analyzer_arn: str) -> Any:
     if aa.can_paginate("list_findings_v2"):
@@ -693,6 +687,7 @@ def find_access_analyzer_findings(ctx: DetectorContext) -> list[Finding]:
 # SEC-009  KMS keys with rotation disabled
 # ---------------------------------------------------------------------------
 
+
 def find_kms_rotation_disabled(ctx: DetectorContext) -> list[Finding]:
     """Detect customer-managed KMS keys that do not have automatic rotation enabled.
 
@@ -735,7 +730,7 @@ def find_kms_rotation_disabled(ctx: DetectorContext) -> list[Finding]:
                     if aliases:
                         alias_name = aliases[0].get("AliasName", key_id)
                         break
-            except Exception:  # noqa: BLE001  — alias lookup is best-effort
+            except Exception:
                 pass
 
             findings.append(
@@ -746,8 +741,7 @@ def find_kms_rotation_disabled(ctx: DetectorContext) -> list[Finding]:
                     resource_type="AWS::KMS::Key",
                     region=meta.get("KeyUsage", "global"),
                     title=(
-                        f"KMS key {alias_name} ({key_id}) does not have "
-                        "automatic rotation enabled"
+                        f"KMS key {alias_name} ({key_id}) does not have automatic rotation enabled"
                     ),
                     evidence={
                         "KeyId": key_id,
@@ -773,6 +767,7 @@ def find_kms_rotation_disabled(ctx: DetectorContext) -> list[Finding]:
 # SEC-010  Security Hub findings
 # ---------------------------------------------------------------------------
 
+
 def find_security_hub_findings(ctx: DetectorContext) -> list[Finding]:
     """Surface active Security Hub findings at MEDIUM severity or above.
 
@@ -784,7 +779,7 @@ def find_security_hub_findings(ctx: DetectorContext) -> list[Finding]:
     sh = ctx.factory.client("securityhub")
 
     _severity_map = {
-        "INFORMATIONAL": "low",   # below our threshold — filtered out below
+        "INFORMATIONAL": "low",  # below our threshold — filtered out below
         "LOW": "low",
         "MEDIUM": "medium",
         "HIGH": "high",
@@ -799,16 +794,13 @@ def find_security_hub_findings(ctx: DetectorContext) -> list[Finding]:
                 "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
                 "WorkflowStatus": [{"Value": "SUPPRESSED", "Comparison": "NOT_EQUALS"}],
                 "SeverityLabel": [
-                    {"Value": sev, "Comparison": "EQUALS"}
-                    for sev in ("MEDIUM", "HIGH", "CRITICAL")
+                    {"Value": sev, "Comparison": "EQUALS"} for sev in ("MEDIUM", "HIGH", "CRITICAL")
                 ],
             },
         ):
             for sh_finding in page.get("Findings", []):
                 sh_id = sh_finding.get("Id", "unknown")
-                label = (
-                    sh_finding.get("Severity", {}).get("Label", "MEDIUM").upper()
-                )
+                label = sh_finding.get("Severity", {}).get("Label", "MEDIUM").upper()
                 severity = _severity_map.get(label, "medium")
 
                 # Use the first listed resource as the canonical resource.
@@ -838,9 +830,7 @@ def find_security_hub_findings(ctx: DetectorContext) -> list[Finding]:
                             "Resources": resources,
                         },
                         recommendation=(
-                            sh_finding.get("Remediation", {})
-                            .get("Recommendation", {})
-                            .get("Text")
+                            sh_finding.get("Remediation", {}).get("Recommendation", {}).get("Text")
                             or (
                                 "Review the finding in the Security Hub console and "
                                 "follow the provider's remediation guidance. Update "

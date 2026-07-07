@@ -13,8 +13,10 @@ Environment:
 """
 
 import json
-import sys
 import os
+import subprocess
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from collections import defaultdict
 from typing import Any
@@ -60,7 +62,21 @@ def load_fixture(fixture_path: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _terraform(*args: str, cwd: Path = TF_DIR, check: bool = True) -> subprocess.CompletedProcess[str]:
+def terraform_apply() -> None:
+    """terraform init + apply on the synthetic env (idempotent)."""
+    _terraform("init", "-input=false")
+    _terraform("apply", "-auto-approve", "-input=false")
+
+
+def terraform_seeds() -> dict[str, str]:
+    """detector_id -> resource ARN map from the synthetic env's `seeds` output."""
+    proc = _terraform("output", "-json", "seeds")
+    return {str(k): str(v) for k, v in json.loads(proc.stdout).items()}
+
+
+def _terraform(
+    *args: str, cwd: Path = TF_DIR, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     cmd = ["terraform", *args]
     logger.info("eval.terraform", cmd=" ".join(cmd))
     return subprocess.run(
@@ -84,8 +100,8 @@ class EvalHarness:
         self.detected_findings_path = Path(detected_findings_path)
 
         # Lazy-load on demand
-        self._seed_data = None
-        self._detected_findings = None
+        self._seed_data: dict[str, Any] | None = None
+        self._detected_findings: list[dict[str, Any]] | None = None
 
     @property
     def seed_data(self) -> dict[str, Any]:
@@ -94,8 +110,8 @@ class EvalHarness:
             import yaml
 
             with open(self.seed_manifest_path) as f:
-                self._seed_data = yaml.safe_load(f)
-        return self._seed_data
+                self._seed_data = yaml.safe_load(f) or {}
+        return self._seed_data or {}
 
     @property
     def detected_findings(self) -> list[dict[str, Any]]:
@@ -106,7 +122,7 @@ class EvalHarness:
                     self._detected_findings = json.load(f)
             else:
                 self._detected_findings = []
-        return self._detected_findings
+        return self._detected_findings or []
 
     def evaluate(self) -> dict[str, Any]:
         """
@@ -131,7 +147,7 @@ class EvalHarness:
         detected_ids = {d.get("detector_id") for d in detections if d.get("detector_id")}
 
         # Per-KRA tracking
-        per_kra = defaultdict(lambda: {"expected": 0, "detected": 0})
+        per_kra: dict[str, dict[str, int]] = defaultdict(lambda: {"expected": 0, "detected": 0})
         matched_ids = []
         missed_ids = []
 
@@ -257,6 +273,7 @@ class EvalHarness:
 
         self.write_report(report, status)
         self.print_summary(report, status)
+        return 0 if passed else 1
 
 def run_chandra(account_id: str) -> str:
     """Execute the LangGraph pipeline end-to-end and return the run_id."""
@@ -281,7 +298,8 @@ def run_chandra(account_id: str) -> str:
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return dict(loaded) if isinstance(loaded, dict) else {}
 
 
 def fetch_findings(run_id: str) -> list[FindingRow]:
@@ -350,6 +368,9 @@ def score(
             )
 
 
+    true_positives = len(recalled)
+    precision_overall = round(true_positives / max(1, true_positives + len(false_positives)), 4)
+
     thresholds = manifest.get("thresholds", {}) or {}
     failed_thresholds: list[str] = []
     if recall_overall < float(thresholds.get("recall_overall", 0.8)):
@@ -381,7 +402,7 @@ def score(
 
 
 def render_report(run_id: str, account_id: str, result: dict[str, Any]) -> str:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     lines: list[str] = []
     lines.append(f"# Chandra Eval Report â€” {now}")
     lines.append("")
@@ -456,8 +477,8 @@ def persist_eval(run_id: str, result: dict[str, Any]) -> None:
 
 def run_eval(
     *,
-    account_id: str = None,
-    fixture_path: str = None,
+    account_id: str | None = None,
+    fixture_path: str | None = None,
     manifest_path: Path = Path("evals/seed_manifest.yaml"),
     apply_terraform: bool = False,
     report_dir: Path = Path("evals/reports"),
@@ -483,16 +504,13 @@ def run_eval(
         
         # Convert fixture dicts to Finding-like objects
         class FixtureFinding:
-            pass
-        
-        findings = []
-        for f in findings_data:
-            obj = FixtureFinding()
-            obj.detector_id = f['detector_id']
-            obj.kra = f['kra']
-            obj.resource_arn = f.get('expected_arn', '')
-            obj.title = f.get('title', '')
-            findings.append(obj)
+            def __init__(self, data: dict[str, Any]) -> None:
+                self.detector_id: str = data["detector_id"]
+                self.kra: str = data["kra"]
+                self.resource_arn: str = data.get("expected_arn", "")
+                self.title: str = data.get("title", "")
+
+        findings: list[Any] = [FixtureFinding(f) for f in findings_data]
         
         expected_arns = {
             f['detector_id']: f.get('expected_arn', '')

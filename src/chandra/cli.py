@@ -17,7 +17,6 @@ from uuid import uuid4
 import typer
 from rich.console import Console
 from rich.table import Table
-
 from src.chandra.config import settings
 from src.chandra.db.models import Briefing, Run
 from src.chandra.db.session import session_scope
@@ -86,14 +85,11 @@ def run(
     scorecard = final_state.get("scorecard", {})
     _print_scorecard(scorecard)
 
-    findings_count = sum(
-        len(v) for v in (final_state.get("raw_findings", {}) or {}).values()
-    )
+    findings_count = sum(len(v) for v in (final_state.get("raw_findings", {}) or {}).values())
     console.print(f"[green]Wrote[/] {md_path}")
     console.print(f"[green]Wrote[/] {json_path}")
     console.print(
-        f"[bold]Done.[/] findings={findings_count} "
-        f"errors={len(final_state.get('errors', []))}"
+        f"[bold]Done.[/] findings={findings_count} errors={len(final_state.get('errors', []))}"
     )
 
 
@@ -130,14 +126,16 @@ def eval_cmd(
     ),
 ) -> None:
     """Run the eval harness against the synthetic env or offline fixture.
-    
+
     OFFLINE MODE (no AWS needed):
         chandra eval --fixture evals/fixtures/baseline_v1.jsonl
-    
+
     LIVE MODE (requires AWS account):
         chandra eval --account 123456789 --apply
     """
-    from evals.harness import run_eval  # local import: harness pulls in heavy deps
+    from evals.harness import (  # noqa: PLC0415  # lazy: heavy deps
+        run_eval,
+    )
 
     exit_code = run_eval(
         account_id=account,
@@ -169,9 +167,7 @@ def render_latest(
         if run is None:
             console.print(f"[red]No runs found for account {account}.[/]")
             raise typer.Exit(code=1)
-        briefing = (
-            sess.query(Briefing).filter(Briefing.run_id == run.id).one_or_none()
-        )
+        briefing = sess.query(Briefing).filter(Briefing.run_id == run.id).one_or_none()
         if briefing is None:
             console.print(f"[red]Run {run.id} has no briefing row.[/]")
             raise typer.Exit(code=1)

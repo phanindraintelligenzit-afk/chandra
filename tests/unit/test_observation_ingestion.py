@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import boto3
-import pytest
 from botocore.exceptions import ClientError
-
 from src.chandra.graphs.action_nodes import ingest_observations
 from src.chandra.graphs.state import ChandraState
 
 
 class TestIngestObservations:
-    def test_cloudwatch_alarm_normalized(
-        self, aws: None, cloudwatch: object
-    ) -> None:
+    def test_cloudwatch_alarm_normalized(self, aws: None, cloudwatch: object) -> None:
         """CloudWatch metric alarm is normalized to Observation."""
         # Seed alarm via boto3
         cloudwatch.put_metric_alarm(  # type: ignore[union-attr]
@@ -93,9 +88,7 @@ class TestIngestObservations:
         assert result["observations"] == []
         assert result["errors"] == []
 
-    def test_multiple_alarms_and_rules(
-        self, aws: None, cloudwatch: object, events: object
-    ) -> None:
+    def test_multiple_alarms_and_rules(self, aws: None, cloudwatch: object, events: object) -> None:
         """Multiple alarms and rules all collected."""
         # Two alarms
         for i in range(2):
@@ -149,7 +142,7 @@ class TestIngestObservations:
             {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
             "DescribeAlarms",
         )
-        with patch("src.chandra.graphs.nodes.paginate") as mock_paginate:
+        with patch("src.chandra.graphs.action_nodes.paginate") as mock_paginate:
             mock_paginate.side_effect = error
             result = ingest_observations(state)
 

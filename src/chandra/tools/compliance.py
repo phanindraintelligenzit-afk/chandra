@@ -8,7 +8,7 @@ Detector IDs:
 * ``COMP-004-ebs-unencrypted``      — EBS volume created without encryption
 * ``COMP-005-s3-default-enc``       — S3 bucket without default encryption configured
 * ``COMP-006-no-backup-protection`` — no AWS Backup protected resources found in the account
-* ``COMP-007-config-rule-noncompliant`` — AWS Config rule whose overall compliance type is NON_COMPLIANT
+* ``COMP-007-config-rule-noncompliant`` — AWS Config rule whose compliance is NON_COMPLIANT
 * ``COMP-008-ebs-default-enc-off``  — EBS encryption-by-default disabled at the account/region level
 * ``COMP-009-missing-tags``         — resources missing mandatory organizational tags
 """
@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # COMP-001  RDS unencrypted storage
 # ---------------------------------------------------------------------------
+
 
 def check_encryption_at_rest_rds(ctx: DetectorContext) -> list[Finding]:
     """Flag RDS DB instances without storage encryption."""
@@ -73,6 +74,7 @@ def check_encryption_at_rest_rds(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # COMP-002  CloudTrail multi-region
 # ---------------------------------------------------------------------------
+
 
 def check_cloudtrail_multi_region(ctx: DetectorContext) -> list[Finding]:
     """Emit a single account-scoped finding if no compliant trail exists.
@@ -127,6 +129,7 @@ def check_cloudtrail_multi_region(ctx: DetectorContext) -> list[Finding]:
 # COMP-003  Config recorder active per region
 # ---------------------------------------------------------------------------
 
+
 def check_config_recorder(ctx: DetectorContext) -> list[Finding]:
     """Emit one finding per active region missing an AWS Config recorder."""
     detector_id = "COMP-003-no-config-recorder"
@@ -137,9 +140,7 @@ def check_config_recorder(ctx: DetectorContext) -> list[Finding]:
         recorder_ok = False
         recorder_evidence: dict[str, Any] = {}
         with detector_guard(ctx, detector_id=detector_id, region=region):
-            recs = config.describe_configuration_recorders().get(
-                "ConfigurationRecorders", []
-            )
+            recs = config.describe_configuration_recorders().get("ConfigurationRecorders", [])
             statuses = config.describe_configuration_recorder_status().get(
                 "ConfigurationRecordersStatus", []
             )
@@ -179,6 +180,7 @@ def check_config_recorder(ctx: DetectorContext) -> list[Finding]:
 # COMP-004  EBS unencrypted volumes
 # ---------------------------------------------------------------------------
 
+
 def check_encryption_at_rest_ebs(ctx: DetectorContext) -> list[Finding]:
     """Flag any EBS volume with ``Encrypted=False``."""
     detector_id = "COMP-004-ebs-unencrypted"
@@ -201,8 +203,7 @@ def check_encryption_at_rest_ebs(ctx: DetectorContext) -> list[Finding]:
                             resource_type="AWS::EC2::Volume",
                             region=region,
                             title=(
-                                f"EBS volume {volume_id} ({vol.get('Size')} GiB) "
-                                "is unencrypted"
+                                f"EBS volume {volume_id} ({vol.get('Size')} GiB) is unencrypted"
                             ),
                             evidence={
                                 "VolumeId": volume_id,
@@ -224,6 +225,7 @@ def check_encryption_at_rest_ebs(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # COMP-005  S3 default encryption
 # ---------------------------------------------------------------------------
+
 
 def check_s3_default_encryption(ctx: DetectorContext) -> list[Finding]:
     """Flag S3 buckets without a default encryption configuration."""
@@ -277,6 +279,7 @@ def check_s3_default_encryption(ctx: DetectorContext) -> list[Finding]:
 # COMP-006  AWS Backup — no protected resources
 # ---------------------------------------------------------------------------
 
+
 def check_backup_protection(ctx: DetectorContext) -> list[Finding]:
     """Emit a single account-scoped finding if AWS Backup has no protected resources.
 
@@ -326,6 +329,7 @@ def check_backup_protection(ctx: DetectorContext) -> list[Finding]:
 # COMP-007  AWS Config rule-level compliance
 # ---------------------------------------------------------------------------
 
+
 def check_config_rule_compliance(ctx: DetectorContext) -> list[Finding]:
     """Emit one finding per Config rule whose aggregate compliance type is NON_COMPLIANT.
 
@@ -349,24 +353,18 @@ def check_config_rule_compliance(ctx: DetectorContext) -> list[Finding]:
                     rule_name = item.get("ConfigRuleName", "unknown")
                     # Annotate count of non-compliant vs compliant resources when
                     # the API provides it (not always populated for custom rules).
-                    contributor_counts = compliance.get(
-                        "ComplianceContributorCount", {}
-                    )
+                    contributor_counts = compliance.get("ComplianceContributorCount", {})
 
                     findings.append(
                         Finding(
                             kra="compliance",
                             severity="medium",
                             resource_arn=(
-                                f"arn:aws:config:{region}:{ctx.account_id}"
-                                f":config-rule/{rule_name}"
+                                f"arn:aws:config:{region}:{ctx.account_id}:config-rule/{rule_name}"
                             ),
                             resource_type="AWS::Config::ConfigRule",
                             region=region,
-                            title=(
-                                f"AWS Config rule '{rule_name}' is NON_COMPLIANT "
-                                f"in {region}"
-                            ),
+                            title=(f"AWS Config rule '{rule_name}' is NON_COMPLIANT in {region}"),
                             evidence={
                                 "ConfigRuleName": rule_name,
                                 "ComplianceType": "NON_COMPLIANT",
@@ -389,6 +387,7 @@ def check_config_rule_compliance(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # COMP-008  EBS encryption-by-default (account/region level)
 # ---------------------------------------------------------------------------
+
 
 def check_ebs_encryption_by_default(ctx: DetectorContext) -> list[Finding]:
     """Emit one finding per region where EBS encryption-by-default is disabled.
@@ -439,22 +438,23 @@ def check_ebs_encryption_by_default(ctx: DetectorContext) -> list[Finding]:
 
     return findings
 
+
 def check_missing_mandatory_tags(ctx: DetectorContext) -> list[Finding]:
     """Flag resources that are missing mandatory organizational tags.
-    
-    Checks across all active regions for resources lacking required 
-    tag keys (e.g., 'Environment', 'Owner', 'Project') using the 
+
+    Checks across all active regions for resources lacking required
+    tag keys (e.g., 'Environment', 'Owner', 'Project') using the
     AWS Resource Groups Tagging API.
     """
     detector_id = "COMP-009-missing-tags"
     findings: list[Finding] = []
-    
+
     # Define the baseline tags required by your policy
     mandatory_tags = {"Environment", "Owner", "Project"}
 
     for region in ctx.regions:
         tagging = ctx.factory.client("resourcegroupstaggingapi", region=region)
-        
+
         with detector_guard(ctx, detector_id=detector_id, region=region):
             # Use the framework's pagination tool to handle large environments
             for page in paginate(tagging, "get_resources"):
@@ -462,20 +462,20 @@ def check_missing_mandatory_tags(ctx: DetectorContext) -> list[Finding]:
                     arn = resource.get("ResourceARN")
                     if not arn:
                         continue
-                        
+
                     # Extract just the tag keys from the resource
                     current_tags = {t.get("Key") for t in resource.get("Tags", [])}
                     missing_tags = mandatory_tags - current_tags
-                    
+
                     if missing_tags:
-                        # Attempt to cleanly extract the resource type from the ARN 
+                        # Attempt to cleanly extract the resource type from the ARN
                         # (e.g., splitting "arn:aws:ec2:..." to get "ec2")
                         try:
                             service_name = arn.split(":")[2]
                             res_type = f"AWS::{service_name.upper()}::Resource"
                         except IndexError:
                             res_type = "AWS::Generic::Resource"
-                            
+
                         findings.append(
                             Finding(
                                 kra="compliance",
@@ -504,6 +504,7 @@ def check_missing_mandatory_tags(ctx: DetectorContext) -> list[Finding]:
 
     return findings
 
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -511,14 +512,14 @@ def check_missing_mandatory_tags(ctx: DetectorContext) -> list[Finding]:
 # TEMP (testing): high-volume detectors commented out to reduce finding count.
 # Re-enable by uncommenting the entries below once we're done with the smoke run.
 ALL_DETECTORS = (
-    check_encryption_at_rest_rds,       # COMP-001
-    check_cloudtrail_multi_region,      # COMP-002
-    check_config_recorder,              # COMP-003
+    check_encryption_at_rest_rds,  # COMP-001
+    check_cloudtrail_multi_region,  # COMP-002
+    check_config_recorder,  # COMP-003
     # check_encryption_at_rest_ebs,     # COMP-004 — disabled for testing
     # check_s3_default_encryption,      # COMP-005 — disabled for testing
-    check_backup_protection,            # COMP-006
+    check_backup_protection,  # COMP-006
     # check_config_rule_compliance,     # COMP-007 — disabled for testing
-    check_ebs_encryption_by_default,    # COMP-008
+    check_ebs_encryption_by_default,  # COMP-008
     # check_missing_mandatory_tags,     # COMP-009 — disabled for testing
 )
 

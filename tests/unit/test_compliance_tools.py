@@ -44,9 +44,7 @@ class TestCloudTrail:
 
 
 class TestRdsEncryption:
-    def test_unencrypted_rds_is_critical(
-        self, ctx: DetectorContext, rds: Any
-    ) -> None:
+    def test_unencrypted_rds_is_critical(self, ctx: DetectorContext, rds: Any) -> None:
         rds.create_db_instance(
             DBInstanceIdentifier="db1",
             DBInstanceClass="db.t3.micro",
@@ -61,9 +59,7 @@ class TestRdsEncryption:
         assert findings[0].detector_id == "COMP-001-rds-unencrypted"
         assert findings[0].severity == "critical"
 
-    def test_encrypted_rds_is_not_flagged(
-        self, ctx: DetectorContext, rds: Any
-    ) -> None:
+    def test_encrypted_rds_is_not_flagged(self, ctx: DetectorContext, rds: Any) -> None:
         rds.create_db_instance(
             DBInstanceIdentifier="db2",
             DBInstanceClass="db.t3.micro",
@@ -78,9 +74,7 @@ class TestRdsEncryption:
 
 
 class TestEbsEncryption:
-    def test_unencrypted_volume_is_high(
-        self, ctx: DetectorContext, ec2: Any
-    ) -> None:
+    def test_unencrypted_volume_is_high(self, ctx: DetectorContext, ec2: Any) -> None:
         ec2.create_volume(AvailabilityZone="us-east-1a", Size=10, Encrypted=False)
         findings = compliance.check_encryption_at_rest_ebs(ctx)
         assert len(findings) == 1
@@ -88,28 +82,22 @@ class TestEbsEncryption:
 
 
 class TestS3DefaultEncryption:
-    def test_bucket_without_encryption_is_flagged(
-        self, ctx: DetectorContext, s3: Any
-    ) -> None:
+    def test_bucket_without_encryption_is_flagged(self, ctx: DetectorContext, s3: Any) -> None:
         s3.create_bucket(Bucket="unencrypted-bucket")
         # Strip any default encryption moto may auto-attach.
-        try:
+        try:  # noqa: SIM105  # keep explicit for readability
             s3.delete_bucket_encryption(Bucket="unencrypted-bucket")
         except s3.exceptions.ClientError:
             pass
         findings = compliance.check_s3_default_encryption(ctx)
-        flagged = [
-            f for f in findings if "unencrypted-bucket" in f.resource_arn
-        ]
+        flagged = [f for f in findings if "unencrypted-bucket" in f.resource_arn]
         # moto may still report a default — accept either "flagged" or "not flagged"
         # but verify the detector ran cleanly and emitted a Finding only when no
         # encryption config was present.
         if flagged:
             assert flagged[0].detector_id == "COMP-005-s3-default-enc"
 
-    def test_bucket_with_encryption_is_not_flagged(
-        self, ctx: DetectorContext, s3: Any
-    ) -> None:
+    def test_bucket_with_encryption_is_not_flagged(self, ctx: DetectorContext, s3: Any) -> None:
         s3.create_bucket(Bucket="encrypted-bucket")
         s3.put_bucket_encryption(
             Bucket="encrypted-bucket",

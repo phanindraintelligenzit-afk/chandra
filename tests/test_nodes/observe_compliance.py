@@ -19,6 +19,7 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
@@ -26,7 +27,6 @@ if str(_REPO_ROOT) not in _sys.path:
 from unittest.mock import patch
 
 import boto3
-
 from src.chandra.graphs.nodes import observe_compliance
 
 from tests.test_nodes._env import (
@@ -45,10 +45,7 @@ def _print_findings(findings: list) -> None:
         return
     for f in findings:
         safe_title = f.title.encode("ascii", "replace").decode("ascii")
-        print(
-            f"    - [{f.severity:8s}] {f.detector_id:32s}  "
-            f"resource={f.resource_arn}"
-        )
+        print(f"    - [{f.severity:8s}] {f.detector_id:32s}  resource={f.resource_arn}")
         print(f"        title : {safe_title}")
 
 
@@ -64,9 +61,7 @@ def test_observecompliance() -> dict:
         # Seed an unencrypted EBS so COMP-008 fires.
         ec2 = boto3.client("ec2", region_name=real_region())
         try:
-            ec2.create_volume(
-                AvailabilityZone=f"{real_region()}a", Size=10, Encrypted=False
-            )
+            ec2.create_volume(AvailabilityZone=f"{real_region()}a", Size=10, Encrypted=False)
         except Exception as exc:
             # In real-env mode the operator may have a deny-by-default
             # EBS encryption policy; log and continue.
@@ -83,9 +78,7 @@ def test_observecompliance() -> dict:
 
     banner("observe_compliance -- output (state update)")
     print(f"  raw_findings keys : {list(result['raw_findings'].keys())}")
-    print(
-        f"  compliance findings: {len(result['raw_findings'].get('compliance', []))}"
-    )
+    print(f"  compliance findings: {len(result['raw_findings'].get('compliance', []))}")
     print(f"  errors            : {result['errors']!r}")
     print()
     _print_findings(result["raw_findings"].get("compliance", []))

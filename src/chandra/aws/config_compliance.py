@@ -1,4 +1,4 @@
-﻿"""AWS Config compliance scanner."""
+"""AWS Config compliance scanner."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from src.chandra.aws.compliance_models import ComplianceFinding
 
 def scan_config_compliance() -> list[ComplianceFinding]:
     """Scan AWS Config for non-compliant rules."""
-    
+
     client = boto3.client("config")
     findings: list[ComplianceFinding] = []
 
     try:
         response = client.describe_compliance_by_config_rule()
-        
+
         for rule in response.get("ComplianceByConfigRules", []):
             rule_name = rule.get("ConfigRuleName", "unknown")
             compliance_type = rule.get("Compliance", {}).get("ComplianceType", "UNKNOWN")
-            
+
             if compliance_type == "NON_COMPLIANT":
                 findings.append(
                     ComplianceFinding(

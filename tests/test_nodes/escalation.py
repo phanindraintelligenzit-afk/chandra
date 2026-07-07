@@ -21,12 +21,12 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
 import boto3
-
 from src.chandra.graphs.nodes import escalation_node
 
 from tests.test_nodes._env import (
@@ -56,9 +56,9 @@ def test_escalation() -> dict:
             # is delivered to the right "logical" topic; substitute the
             # moto-issued ARN (which contains the moto account id).
             topic_name = real_arn.rsplit(":", 1)[-1]
-            topic_arn = boto3.client("sns", region_name=region).create_topic(
-                Name=topic_name
-            )["TopicArn"]
+            topic_arn = boto3.client("sns", region_name=region).create_topic(Name=topic_name)[
+                "TopicArn"
+            ]
             print(f"  (mocked SNS topic: created {topic_arn!r})")
         else:
             topic_arn = real_arn
@@ -71,8 +71,7 @@ def test_escalation() -> dict:
             region=region,
             summary="S3 bucket 'leaky-bucket' is publicly readable.",
             recommended_action=(
-                "Enable S3 Block Public Access and run "
-                "put_bucket_acl(ACL='private')."
+                "Enable S3 Block Public Access and run put_bucket_acl(ACL='private')."
             ),
             sns_topic_arn=topic_arn,
         )
@@ -91,9 +90,7 @@ def test_escalation() -> dict:
     print(f"  message_id : {er.get('message_id')!r}")
     print(f"  error      : {er.get('error')!r}")
 
-    assert er["status"] in ["success", "skipped"], (
-        f"escalation failed: {er.get('error')!r}"
-    )
+    assert er["status"] in ["success", "skipped"], f"escalation failed: {er.get('error')!r}"
     if er["status"] == "success":
         assert er["message_id"] is not None
         print("\n  [ok] escalation published a message to SNS and returned the message_id")

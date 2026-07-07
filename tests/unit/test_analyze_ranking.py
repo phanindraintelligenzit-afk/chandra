@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from src.chandra.briefing import composer
 from src.chandra.briefing.schemas import Finding
 from src.chandra.graphs.action_nodes import analyze
 from src.chandra.graphs.state import ChandraState
 
 
-def _finding(
-    *, kra: str, severity: str, detector_id: str, arn_suffix: str = "x"
-) -> Finding:
+def _finding(*, kra: str, severity: str, detector_id: str, arn_suffix: str = "x") -> Finding:
     return Finding(
         kra=kra,  # type: ignore[arg-type]
         severity=severity,  # type: ignore[arg-type]
@@ -41,7 +38,12 @@ class TestAnalyzeWithLlmRank:
 
         # Mock ChatBedrockConverse to return ranked findings with rationales.
         mock_response = MagicMock()
-        mock_response.content = '{"ranked": [{"detector_id": "H1", "resource_arn": "arn:aws:test:::2", "rationale": "This issue is actually more urgent because it affects public access"}, {"detector_id": "C1", "resource_arn": "arn:aws:test:::1", "rationale": "Critical but already mitigated by WAF"}]}'
+        mock_response.content = (
+            '{"ranked": [{"detector_id": "H1", "resource_arn": "arn:aws:test:::2", '
+            '"rationale": "This issue is actually more urgent because it affects public '
+            'access"}, {"detector_id": "C1", "resource_arn": "arn:aws:test:::1", '
+            '"rationale": "Critical but already mitigated by WAF"}]}'
+        )
 
         with patch("langchain_aws.ChatBedrockConverse") as mock_bedrock:
             mock_instance = MagicMock()
@@ -122,7 +124,11 @@ class TestAnalyzeWithLlmRank:
 
         # Mock LLM to return security finding first (custom ranking)
         mock_response = MagicMock()
-        mock_response.content = '{"ranked": [{"detector_id": "SEC-1", "resource_arn": "arn:aws:test:::s1", "rationale": "Security takes precedence"}, {"detector_id": "COST-1", "resource_arn": "arn:aws:test:::c1", "rationale": "Cost can wait"}]}'
+        mock_response.content = (
+            '{"ranked": [{"detector_id": "SEC-1", "resource_arn": "arn:aws:test:::s1", '
+            '"rationale": "Security takes precedence"}, {"detector_id": "COST-1", '
+            '"resource_arn": "arn:aws:test:::c1", "rationale": "Cost can wait"}]}'
+        )
 
         with patch("langchain_aws.ChatBedrockConverse") as mock_bedrock:
             mock_instance = MagicMock()
@@ -152,7 +158,10 @@ class TestAnalyzeWithLlmRank:
 
         # LLM only returns one finding (dropping H1)
         mock_response = MagicMock()
-        mock_response.content = '{"ranked": [{"detector_id": "C1", "resource_arn": "arn:aws:test:::1", "rationale": "Critical issue"}]}'
+        mock_response.content = (
+            '{"ranked": [{"detector_id": "C1", "resource_arn": "arn:aws:test:::1", '
+            '"rationale": "Critical issue"}]}'
+        )
 
         with patch("langchain_aws.ChatBedrockConverse") as mock_bedrock:
             mock_instance = MagicMock()

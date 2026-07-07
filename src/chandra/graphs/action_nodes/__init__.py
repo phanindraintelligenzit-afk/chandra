@@ -20,16 +20,10 @@ Topology:
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any
-
-from langgraph.types import Send
-
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
-
 from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.aws.regions import active_regions
 from src.chandra.briefing.composer import (
@@ -38,7 +32,6 @@ from src.chandra.briefing.composer import (
     render_markdown,
     score_findings,
 )
-from src.chandra.observability import traced_node
 from src.chandra.briefing.schemas import (
     AnalyzedFinding,
     ApprovalDecision,
@@ -47,17 +40,15 @@ from src.chandra.briefing.schemas import (
     ProposedWrite,
 )
 from src.chandra.config import settings
-from src.chandra.db.models import Briefing, Finding as FindingRow, Run, serialize_finding_evidence
+from src.chandra.db.models import Briefing, Run, serialize_finding_evidence
+from src.chandra.db.models import Finding as FindingRow
 from src.chandra.db.session import session_scope
-from src.chandra.graphs.state import ChandraState
-from src.chandra.graphs.action_nodes.action_executor import action_executor_node
-from src.chandra.logging import get_logger
-from src.chandra.observability import traced_node
 from src.chandra.escalation.publisher import SNSPublisher
-from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.escalation.schemas import EscalationPayload, EscalationResult
+from src.chandra.graphs.action_nodes.action_executor import action_executor_node
+from src.chandra.graphs.state import ChandraState
+from src.chandra.logging import get_logger
 from src.chandra.tools import compliance, cost, performance, reliability, security
-from src.chandra.tools.base import DetectorContext
-
 from src.chandra.tools.base import DetectorContext, detector_guard, paginate
 
 logger = get_logger(__name__)
@@ -93,9 +84,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
 
     for af in analyzed:
         f = af.finding
-        risk: Literal["low", "high"] = (
-            "high" if f.severity in ESCALATE_SEVERITIES else "low"
-        )
+        risk: Literal["low", "high"] = "high" if f.severity in ESCALATE_SEVERITIES else "low"
         write = ProposedWrite(
             action=f"remediate_{f.detector_id}",
             target_arn=f.resource_arn,
@@ -264,9 +253,7 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
                             region=region,
                             name=alarm["AlarmName"],
                             state=alarm["StateValue"],
-                            observed_at=alarm.get(
-                                "StateUpdatedTimestamp", datetime.now(timezone.utc)
-                            ),
+                            observed_at=alarm.get("StateUpdatedTimestamp", datetime.now(UTC)),
                             raw={
                                 "namespace": alarm.get("Namespace", ""),
                                 "metric_name": alarm.get("MetricName", ""),
@@ -288,7 +275,7 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
                             region=region,
                             name=rule["Name"],
                             state=rule["State"],
-                            observed_at=datetime.now(timezone.utc),
+                            observed_at=datetime.now(UTC),
                             raw={
                                 "event_bus_name": rule.get("EventBusName", "default"),
                                 "schedule_expression": rule.get("ScheduleExpression", ""),
@@ -356,7 +343,7 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
     executive = compose_executive_summary(analyzed, scorecard)
     metadata = {
         "regions": state.get("regions", []),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "errors": state.get("errors", []),
     }
     briefing_md, briefing_json = render_markdown(
@@ -404,8 +391,7 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
     # instances — even with the module registered for msgpack. Normalise
     # back to ProposedWrite so the rest of the function is uniform.
     pending: list[ProposedWrite] = [
-        p if isinstance(p, ProposedWrite) else ProposedWrite.model_validate(p)
-        for p in pending_raw
+        p if isinstance(p, ProposedWrite) else ProposedWrite.model_validate(p) for p in pending_raw
     ]
 
     logger.info(
@@ -424,7 +410,7 @@ def approval_node(state: ChandraState) -> dict[str, Any]:
 
 def persist(state: ChandraState) -> dict[str, Any]:
     """Write run, findings and briefing rows. Idempotent on (run_id).
-    
+
     Converts all datetime objects in evidence_jsonb to ISO strings before saving
     to prevent 'datetime is not JSON serializable' errors.
     """
@@ -437,7 +423,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
     # Scorecard might have complex Pydantic types; simplify it
     def simplify_for_json(obj: Any) -> Any:
         """Recursively convert complex objects to JSON-serializable types."""
-        if hasattr(obj, 'model_dump'):
+        if hasattr(obj, "model_dump"):
             return simplify_for_json(obj.model_dump())
         elif isinstance(obj, datetime):
             return obj.isoformat()
@@ -451,7 +437,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
     scorecard = simplify_for_json(scorecard)
 
     # Errors are skipped for now
-    errors = []
+    errors: list[dict[str, Any]] = []
 
     flat: list[Finding] = []
     for kra_findings in raw.values():
@@ -466,14 +452,14 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 id=run_id,
                 account_id=account_id,
                 status="completed",
-                finished_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(UTC),
                 errors_json=errors,
             )
             sess.add(run)
         else:
             run.account_id = account_id
             run.status = "completed"
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             run.errors_json = errors
 
         # Replace findings for this run to keep persist idempotent.
@@ -481,7 +467,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
         for f in findings_list:
             # Serialize evidence_jsonb to remove datetime objects
             evidence_clean = serialize_finding_evidence(f.evidence)
-            
+
             sess.add(
                 FindingRow(
                     run_id=run_id,
@@ -497,9 +483,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 )
             )
 
-        existing_briefing = (
-            sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
-        )
+        existing_briefing = sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
         if existing_briefing is None:
             sess.add(
                 Briefing(
@@ -548,7 +532,7 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
             ).model_dump()
         }
 
-    region = state.get("region", "us-east-1")
+    region = str(state.get("region") or "us-east-1")
     publisher = SNSPublisher(topic_arn=topic_arn, region=region)
     pending: list[ProposedWrite] = state.get("pending_writes", []) or []
 
@@ -584,23 +568,17 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
         payload = EscalationPayload(
             finding_id=finding_id,
             resource_id=write.target_arn,
-            severity=sev,  # type: ignore[arg-type]
+            severity=sev,
             service=service,
             region=write.region or region,
             summary=write.summary or write.justification,
-            recommended_action=write.payload.get(
-                "recommendation", "Review and remediate"
-            ),
+            recommended_action=write.payload.get("recommendation", "Review and remediate"),
         )
         result = publisher.publish(payload)
         if result.status == "success":
-            published.append(
-                {"finding_id": finding_id, "message_id": result.message_id or ""}
-            )
+            published.append({"finding_id": finding_id, "message_id": result.message_id or ""})
         else:
-            failed.append(
-                {"finding_id": finding_id, "error": result.error or "unknown"}
-            )
+            failed.append({"finding_id": finding_id, "error": result.error or "unknown"})
 
     if published and not failed:
         status = "success"
@@ -626,8 +604,8 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
 
 
 __all__ = [
-    "action_executor_node",
     "_route_kra_workers",
+    "action_executor_node",
     "analyze",
     "approval_node",
     "compose_briefing",

@@ -15,10 +15,9 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
 os.environ.setdefault("AWS_SECURITY_TOKEN", "testing")
 
-from moto import mock_aws  # noqa: E402
-
-from src.chandra.aws.client_factory import AwsClientFactory  # noqa: E402
-from src.chandra.tools.base import DetectorContext  # noqa: E402
+from moto import mock_aws
+from src.chandra.aws.client_factory import AwsClientFactory
+from src.chandra.tools.base import DetectorContext
 
 
 @pytest.fixture

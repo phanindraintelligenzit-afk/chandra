@@ -17,7 +17,6 @@ from typing import Any
 import boto3
 from botocore.client import BaseClient
 from botocore.config import Config
-
 from src.chandra.config import settings
 
 # Module-level cache for assumed-role factories, keyed by (role_arn, session_name).
@@ -98,7 +97,7 @@ class AwsClientFactory:
         role_arn: str,
         session_name: str,
         duration_s: int = 3600,
-    ) -> "AwsClientFactory":
+    ) -> AwsClientFactory:
         """Return a factory whose clients operate under the given assumed role.
 
         Results are cached for the lifetime of the credentials minus a 60-second
@@ -109,7 +108,8 @@ class AwsClientFactory:
 
         cached = _ASSUME_ROLE_CACHE.get(cache_key)
         if cached and cached["expiry"] > now:
-            return cached["factory"]
+            factory: AwsClientFactory = cached["factory"]
+            return factory
 
         sts = self.client("sts")
         resp = sts.assume_role(

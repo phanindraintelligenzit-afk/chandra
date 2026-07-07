@@ -18,6 +18,7 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
@@ -25,7 +26,7 @@ if str(_REPO_ROOT) not in _sys.path:
 from src.chandra.briefing.schemas import AnalyzedFinding, Finding, Observation
 from src.chandra.graphs.nodes import compose_briefing
 
-from tests.test_nodes._env import bedrock_scope, banner, make_state, mode_banner
+from tests.test_nodes._env import banner, bedrock_scope, make_state, mode_banner
 
 
 def _finding(*, kra: str, severity: str, detector_id: str) -> Finding:

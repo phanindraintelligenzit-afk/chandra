@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,7 +36,7 @@ class Finding(BaseModel):
     resource_type: str = Field(min_length=1)
     region: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    evidence: dict = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
     recommendation: str = Field(min_length=1)
     detector_id: str = Field(min_length=1)
 
@@ -80,7 +80,7 @@ class BriefingPayload(BaseModel):
     executive_summary: list[str]
     top_findings: list[AnalyzedFinding]
     all_findings: list[Finding]
-    metadata: dict
+    metadata: dict[str, Any]
 
 
 class ProposedWrite(BaseModel):
@@ -91,7 +91,7 @@ class ProposedWrite(BaseModel):
     action: str
     target_arn: str
     region: str
-    payload: dict
+    payload: dict[str, Any]
     requested_by: str
     justification: str
     risk_level: Literal["low", "high"] = "high"
@@ -99,7 +99,7 @@ class ProposedWrite(BaseModel):
     # node can render one SNS message per write without reverse-lookup
     # of ``analyzed_findings``. Optional for backward compatibility
     # with fixtures / persisted rows written before these existed.
-    severity: Literal["low", "medium", "high", "critical"] | None = None
+    severity: Severity | None = None
     summary: str | None = None
 
 
@@ -116,9 +116,7 @@ class ActionResult(BaseModel):
     error: str | None = None
     audit_log: str | None = None
     dry_run: bool = False
-    executed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    executed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ApprovalDecision(BaseModel):
@@ -146,4 +144,4 @@ class Observation(BaseModel):
     name: str = Field(min_length=1)
     state: str = Field(min_length=1)
     observed_at: datetime
-    raw: dict = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)

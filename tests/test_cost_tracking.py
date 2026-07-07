@@ -1,4 +1,5 @@
-﻿from src.chandra.observability.pricing import calculate_cost
+from src.chandra.observability.pricing import calculate_cost
+
 
 def test_cost_calculation_input_only():
     cost = calculate_cost(
@@ -8,6 +9,7 @@ def test_cost_calculation_input_only():
     )
     assert cost == 3.0
 
+
 def test_cost_calculation_output_only():
     cost = calculate_cost(
         model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -16,6 +18,7 @@ def test_cost_calculation_output_only():
     )
     assert cost == 15.0
 
+
 def test_cost_calculation_combined():
     cost = calculate_cost(
         model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -23,6 +26,7 @@ def test_cost_calculation_combined():
         output_tokens=1_000_000,
     )
     assert cost == 18.0
+
 
 def test_cost_calculation_partial():
     cost = calculate_cost(

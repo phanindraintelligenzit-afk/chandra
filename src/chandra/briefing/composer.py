@@ -14,7 +14,7 @@ Detector modules MUST NOT import it.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,10 +89,7 @@ def deterministic_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             pair[1].resource_arn,
         ),
     )
-    return [
-        AnalyzedFinding(finding=f, rank=i, rationale="")
-        for i, (_, f) in enumerate(indexed)
-    ]
+    return [AnalyzedFinding(finding=f, rank=i, rationale="") for i, (_, f) in enumerate(indexed)]
 
 
 def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
@@ -101,14 +98,16 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         return []
 
     try:
-        from langchain_aws import ChatBedrockConverse  # type: ignore[import-not-found]
+        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
+            ChatBedrockConverse,
+        )
     except ImportError:
         logger.warning("llm.bedrock_unavailable_fallback_to_deterministic")
         return deterministic_rank(findings)
 
     try:
         llm = ChatBedrockConverse(
-            model=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
             # temperature=0.0,
             # max_tokens=2048,
@@ -134,11 +133,11 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
                 ("system", system),
                 ("user", json.dumps({"findings": payload}, default=str)),
             ],
-            config={"callbacks": [cb]}
+            config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         ranked = json.loads(text).get("ranked", [])
-    except Exception as exc:  # noqa: BLE001 - LLM is best-effort; fall back.
+    except Exception as exc:
         logger.warning("llm.rank_failed_fallback_to_deterministic", error=str(exc))
         return deterministic_rank(findings)
 
@@ -190,13 +189,15 @@ def compose_executive_summary(
     """Three-bullet exec summary. LLM-generated when Bedrock is reachable."""
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
-        from langchain_aws import ChatBedrockConverse  # type: ignore[import-not-found]
+        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
+            ChatBedrockConverse,
+        )
     except ImportError:
         return _deterministic_summary(analyzed, score_dict)
 
     try:
         llm = ChatBedrockConverse(
-            model=settings.bedrock_model_id,
+            model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
             # temperature=0.2,
             # max_tokens=512,
@@ -225,25 +226,19 @@ def compose_executive_summary(
                 ("system", system),
                 ("user", json.dumps(user_payload, default=str)),
             ],
-            config={"callbacks": [cb]}
+            config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        bullets = [
-            line[2:].strip()
-            for line in text.splitlines()
-            if line.strip().startswith("- ")
-        ]
+        bullets = [line[2:].strip() for line in text.splitlines() if line.strip().startswith("- ")]
         if len(bullets) >= 3:
             return bullets[:3]
-    except Exception as exc:  # noqa: BLE001 - LLM is best-effort.
+    except Exception as exc:
         logger.warning("llm.summary_failed_fallback_to_deterministic", error=str(exc))
 
     return _deterministic_summary(analyzed, score_dict)
 
 
-def _deterministic_summary(
-    analyzed: list[AnalyzedFinding], scorecard: dict[str, int]
-) -> list[str]:
+def _deterministic_summary(analyzed: list[AnalyzedFinding], scorecard: dict[str, int]) -> list[str]:
     if not analyzed:
         return [
             "- Account is clean across all five KRAs — no actionable findings this run.",
@@ -287,7 +282,7 @@ def render_markdown(
     previous_scorecard: dict[str, int] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Render the briefing as both markdown and a structured JSON payload."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     lines: list[str] = []
     lines.append(f"# Cloud Health Briefing — {account_id} — {today}")
     lines.append("")
@@ -312,38 +307,26 @@ def render_markdown(
     if not top_findings:
         lines.append("_No findings — account is clean._")
     else:
-        lines.append(
-            "| # | Severity | KRA | Resource | Title | Recommendation |"
-        )
+        lines.append("| # | Severity | KRA | Resource | Title | Recommendation |")
         lines.append("| - | -------- | --- | -------- | ----- | -------------- |")
         for i, a in enumerate(top_findings, start=1):
             f = a.finding
             lines.append(
-                "| {i} | {sev} | {kra} | `{arn}` | {title} | {rec} |".format(
-                    i=i,
-                    sev=_severity_badge(f.severity),
-                    kra=f.kra,
-                    arn=_truncate(f.resource_arn, 60),
-                    title=_md_escape(f.title),
-                    rec=_md_escape(_truncate(f.recommendation, 140)),
-                )
+                f"| {i} | {_severity_badge(f.severity)} | {f.kra} "
+                f"| `{_truncate(f.resource_arn, 60)}` | {_md_escape(f.title)} "
+                f"| {_md_escape(_truncate(f.recommendation, 140))} |"
             )
     lines.append("")
 
     lines.append("## All Findings")
-    lines.append("<details><summary>Show all findings ({n})</summary>".format(n=len(all_findings)))
+    lines.append(f"<details><summary>Show all findings ({len(all_findings)})</summary>")
     lines.append("")
     lines.append("| Detector | Severity | KRA | Region | Resource |")
     lines.append("| -------- | -------- | --- | ------ | -------- |")
     for f in all_findings:
         lines.append(
-            "| {d} | {s} | {k} | {r} | `{arn}` |".format(
-                d=f.detector_id,
-                s=_severity_badge(f.severity),
-                k=f.kra,
-                r=f.region,
-                arn=_truncate(f.resource_arn, 80),
-            )
+            f"| {f.detector_id} | {_severity_badge(f.severity)} | {f.kra} "
+            f"| {f.region} | `{_truncate(f.resource_arn, 80)}` |"
         )
     lines.append("")
     lines.append("</details>")
@@ -361,7 +344,7 @@ def render_markdown(
     payload = BriefingPayload(
         run_id=run_id,
         account_id=account_id,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         scorecard=Scorecard(
             cost=scorecard.get("cost", 0),
             security=scorecard.get("security", 0),
@@ -383,7 +366,7 @@ _SEVERITY_BADGES = {
     "high": "🟧 high",
     "medium": "🟨 medium",
     "low": "🟩 low",
-    "info": "ℹ️ info",
+    "info": "ℹ️ info",  # noqa: RUF001  # intentional badge
 }
 
 

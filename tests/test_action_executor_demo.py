@@ -47,10 +47,10 @@ print("=" * 70)
 print("SUMMARY")
 print("=" * 70)
 total_actions = len(actions_taken)
-total_cost_saved = sum(a['cost_saved'] for a in actions_taken)
+total_cost_saved = sum(a["cost_saved"] for a in actions_taken)
 print(f"Total Actions Executed: {total_actions}")
 print(f"Total Cost Saved: ${total_cost_saved:.2f}")
-print(f"Success Rate: 100%")
+print("Success Rate: 100%")
 print("=" * 70)
 print()
 
@@ -64,7 +64,7 @@ json_output = {
         "total_cost_saved": total_cost_saved,
         "success_rate": "100%",
         "timestamp": "2026-05-30T10:15:00Z",
-    }
+    },
 }
 print(json.dumps(json_output, indent=2))
 print()

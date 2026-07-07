@@ -1,10 +1,7 @@
-﻿"""Organization-level summary aggregation."""
+"""Organization-level summary aggregation."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from src.chandra.briefing.schemas import Scorecard
 from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -45,28 +42,16 @@ def aggregate_org_scorecard(
     org_scorecard: dict[str, int] = {}
 
     for kra in kras:
-        scores = [
-            sc.get(kra, 0)
-            for sc in account_scorecards.values()
-        ]
-        org_scorecard[kra] = (
-            sum(scores) // len(scores)
-            if scores
-            else 0
-        )
+        scores = [sc.get(kra, 0) for sc in account_scorecards.values()]
+        org_scorecard[kra] = sum(scores) // len(scores) if scores else 0
 
-    overall = (
-        sum(org_scorecard.values())
-        // len(kras)
-    )
+    overall = sum(org_scorecard.values()) // len(kras)
     org_scorecard["overall"] = overall
 
     logger.info(
         "org_summary.aggregate_scorecard",
         org_scorecard=org_scorecard,
-        account_count=len(
-            account_scorecards
-        ),
+        account_count=len(account_scorecards),
     )
 
     return org_scorecard
@@ -92,16 +77,10 @@ def build_org_briefing(
     lines.append("")
 
     lines.append("## Organization Scorecard")
-    lines.append(
-        "| KRA | Score |"
-    )
-    lines.append(
-        "| --- | ----- |"
-    )
+    lines.append("| KRA | Score |")
+    lines.append("| --- | ----- |")
     for kra, score in org_scorecard.items():
-        lines.append(
-            f"| {kra} | {score} |"
-        )
+        lines.append(f"| {kra} | {score} |")
     lines.append("")
 
     lines.append("## Per-Account Briefings")
@@ -110,9 +89,7 @@ def build_org_briefing(
         account_id,
         briefing,
     ) in account_briefings.items():
-        lines.append(
-            f"### Account {account_id}"
-        )
+        lines.append(f"### Account {account_id}")
         lines.append("")
         lines.append(briefing)
         lines.append("")

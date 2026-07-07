@@ -9,9 +9,7 @@ from src.chandra.tools.base import DetectorContext
 
 
 class TestRdsMultiAz:
-    def test_prod_single_az_rds_is_flagged(
-        self, ctx: DetectorContext, rds: Any
-    ) -> None:
+    def test_prod_single_az_rds_is_flagged(self, ctx: DetectorContext, rds: Any) -> None:
         rds.create_db_instance(
             DBInstanceIdentifier="prod-db",
             DBInstanceClass="db.t3.micro",
@@ -27,9 +25,7 @@ class TestRdsMultiAz:
         assert findings[0].detector_id == "REL-001-rds-single-az"
         assert findings[0].severity == "high"
 
-    def test_prod_multi_az_rds_is_not_flagged(
-        self, ctx: DetectorContext, rds: Any
-    ) -> None:
+    def test_prod_multi_az_rds_is_not_flagged(self, ctx: DetectorContext, rds: Any) -> None:
         rds.create_db_instance(
             DBInstanceIdentifier="prod-multi",
             DBInstanceClass="db.t3.micro",
@@ -43,9 +39,7 @@ class TestRdsMultiAz:
         findings = reliability.check_rds_multi_az(ctx)
         assert findings == []
 
-    def test_dev_single_az_rds_is_ignored(
-        self, ctx: DetectorContext, rds: Any
-    ) -> None:
+    def test_dev_single_az_rds_is_ignored(self, ctx: DetectorContext, rds: Any) -> None:
         rds.create_db_instance(
             DBInstanceIdentifier="dev-db",
             DBInstanceClass="db.t3.micro",
@@ -89,18 +83,14 @@ class TestS3Versioning:
         findings = reliability.check_s3_versioning(ctx)
         assert all("critical-versioned" not in f.resource_arn for f in findings)
 
-    def test_non_critical_bucket_is_ignored(
-        self, ctx: DetectorContext, s3: Any
-    ) -> None:
+    def test_non_critical_bucket_is_ignored(self, ctx: DetectorContext, s3: Any) -> None:
         s3.create_bucket(Bucket="ordinary")
         findings = reliability.check_s3_versioning(ctx)
         assert all("ordinary" not in f.resource_arn for f in findings)
 
 
 class TestBackupPlans:
-    def test_region_without_backup_plan_is_flagged(
-        self, ctx: DetectorContext
-    ) -> None:
+    def test_region_without_backup_plan_is_flagged(self, ctx: DetectorContext) -> None:
         findings = reliability.check_backup_plans(ctx)
         assert any(f.detector_id == "REL-004-no-backup-plan" for f in findings)
 
@@ -114,12 +104,8 @@ class TestDlm:
         ami_id = images[0]["ImageId"]
         run = ec2.run_instances(ImageId=ami_id, MinCount=1, MaxCount=1)
         instance_id = run["Instances"][0]["InstanceId"]
-        vol = ec2.create_volume(
-            AvailabilityZone="us-east-1a", Size=10, VolumeType="gp3"
-        )
-        ec2.attach_volume(
-            VolumeId=vol["VolumeId"], InstanceId=instance_id, Device="/dev/sdh"
-        )
+        vol = ec2.create_volume(AvailabilityZone="us-east-1a", Size=10, VolumeType="gp3")
+        ec2.attach_volume(VolumeId=vol["VolumeId"], InstanceId=instance_id, Device="/dev/sdh")
 
         findings = reliability.check_ebs_snapshot_policy(ctx)
         assert any(f.detector_id == "REL-003-no-dlm" for f in findings)

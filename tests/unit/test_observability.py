@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
-import asyncio
 import pytest
 import structlog.contextvars
 from moto import mock_aws
-
 from src.chandra.observability import (
     configure_observability,
     task_context,

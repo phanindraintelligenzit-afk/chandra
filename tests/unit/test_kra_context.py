@@ -35,6 +35,7 @@ class TestKRAContext:
     def test_analyzer_includes_kra_context_in_system_message(self) -> None:
         """Analyzer prompt includes reference to KRA context above."""
         from pathlib import Path
+
         prompts_dir = Path(__file__).resolve().parent.parent.parent / "src" / "chandra" / "prompts"
         analyzer = (prompts_dir / "analyzer.md").read_text(encoding="utf-8")
         assert "KRA context" in analyzer
@@ -43,6 +44,7 @@ class TestKRAContext:
     def test_briefer_includes_kra_context_in_system_message(self) -> None:
         """Briefer prompt includes reference to KRA context above."""
         from pathlib import Path
+
         prompts_dir = Path(__file__).resolve().parent.parent.parent / "src" / "chandra" / "prompts"
         briefer = (prompts_dir / "briefer.md").read_text(encoding="utf-8")
         assert "KRA context" in briefer

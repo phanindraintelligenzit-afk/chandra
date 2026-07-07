@@ -24,9 +24,10 @@ loaded from .env by python-dotenv and read back via os.environ.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # --- 1. Load the real .env into os.environ ---------------------------
@@ -93,9 +94,7 @@ def mock_aws() -> Iterator[None]:
 def mock_bedrock(ranked_payload: str | None = None) -> Iterator[MagicMock]:
     """Patch ``langchain_aws.ChatBedrockConverse`` so no real LLM call happens."""
     if ranked_payload is None:
-        ranked_payload = (
-            '{"ranked": [], "executive_summary": "Synthetic briefing."}'
-        )
+        ranked_payload = '{"ranked": [], "executive_summary": "Synthetic briefing."}'
 
     mock_response = MagicMock()
     mock_response.content = ranked_payload

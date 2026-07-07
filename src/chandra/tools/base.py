@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
-
 from src.chandra.aws.client_factory import AwsClientFactory, get_default_factory
 from src.chandra.briefing.schemas import Finding
 from src.chandra.logging import get_logger

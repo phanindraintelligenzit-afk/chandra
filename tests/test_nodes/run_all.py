@@ -50,13 +50,11 @@ NODE_TESTS: list[tuple[str, str]] = [
 def _run_one(module_name: str, fn_name: str) -> tuple[bool, str]:
     """Import a test module and call its test function. Return (ok, message)."""
     try:
-        module: ModuleType = importlib.import_module(
-            f"tests.test_nodes.{module_name}"
-        )
+        module: ModuleType = importlib.import_module(f"tests.test_nodes.{module_name}")
         fn = getattr(module, fn_name)
         fn()
         return True, "ok"
-    except Exception as exc:  # noqa: BLE001 -- this is a top-level driver.
+    except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
 
 

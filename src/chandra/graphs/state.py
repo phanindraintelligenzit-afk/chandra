@@ -36,9 +36,7 @@ def merge_inventory(
     right: dict[str, list[dict[str, Any]]] | None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Reducer: deep-merge resource_type -> [resource] inventory dicts."""
-    out: dict[str, list[dict[str, Any]]] = {
-        k: list(v) for k, v in (left or {}).items()
-    }
+    out: dict[str, list[dict[str, Any]]] = {k: list(v) for k, v in (left or {}).items()}
     for rtype, items in (right or {}).items():
         out.setdefault(rtype, []).extend(items)
     return out
@@ -46,7 +44,8 @@ def merge_inventory(
 
 class ChandraState(TypedDict, total=False):
     """Full graph state. ``total=False`` so partial node returns are legal."""
-    assume_role_arn: str | None = None
+
+    assume_role_arn: str | None
 
     run_id: str
     account_id: str

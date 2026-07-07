@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-
 from src.chandra.config import settings
 from src.chandra.graphs.action_nodes import (
-    action_executor_node,
     _route_kra_workers,
+    action_executor_node,
     analyze,
     approval_node,
     compose_briefing,
-    escalation_node,
-    fanout_observers,
     decision_router,
+    escalation_node,
     ingest_observations,
     kra_supervisor,
     observe_compliance,
@@ -52,7 +50,9 @@ def _build_checkpointer() -> Any:
     fallback is logged at WARNING so it never silently regresses.
     """
     try:
-        from langgraph.checkpoint.postgres import PostgresSaver
+        from langgraph.checkpoint.postgres import (  # noqa: PLC0415  # lazy: optional dep
+            PostgresSaver,
+        )
     except ImportError:
         logger.warning("checkpointer.postgres_unavailable_fallback_to_memory")
         return MemorySaver()
@@ -60,15 +60,21 @@ def _build_checkpointer() -> Any:
     try:
         # Convert SQLAlchemy URL format to psycopg native format
         # postgresql+psycopg://... → postgresql://...
-        from psycopg_pool import ConnectionPool
-        import psycopg
+        import psycopg  # noqa: PLC0415  # lazy: optional dep
+        from psycopg.rows import dict_row  # noqa: PLC0415  # lazy: optional dep
+        from psycopg_pool import (  # noqa: PLC0415  # lazy: optional dep
+            ConnectionPool,
+        )
+
         conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
-        
-        with psycopg.connect(conn_string, autocommit=True) as conn:
+
+        with psycopg.connect(conn_string, autocommit=True, row_factory=dict_row) as conn:
             PostgresSaver(conn).setup()
-            
-        pool = ConnectionPool(conn_string, max_size=10)
-        checkpointer = PostgresSaver(pool)
+
+        # kwargs row_factory yields dict rows at runtime; ConnectionPool's
+        # type parameter cannot express that, hence the cast.
+        pool = ConnectionPool(conn_string, max_size=10, kwargs={"row_factory": dict_row})
+        checkpointer = PostgresSaver(cast(Any, pool))
         return checkpointer
     except Exception as exc:
         logger.warning(

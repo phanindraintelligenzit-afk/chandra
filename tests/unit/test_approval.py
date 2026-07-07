@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from src.chandra.briefing.schemas import ApprovalDecision, ProposedWrite
 from src.chandra.graphs.action_nodes import approval_node
 from src.chandra.graphs.state import ChandraState
@@ -44,12 +43,22 @@ def test_approval_node_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     # Mock interrupt to avoid needing a runnable context
-    mock_interrupt = Mock(return_value=[{"decision": "approve", "reviewer": "admin", "reason": "OK", "decided_at": datetime.now(timezone.utc).isoformat()}])
-    monkeypatch.setattr("src.chandra.graphs.nodes.interrupt", mock_interrupt)
+    mock_interrupt = Mock(
+        return_value=[
+            {
+                "decision": "approve",
+                "reviewer": "admin",
+                "reason": "OK",
+                "decided_at": datetime.now(UTC).isoformat(),
+            }
+        ]
+    )
+    monkeypatch.setattr("src.chandra.graphs.action_nodes.interrupt", mock_interrupt)
 
     result = approval_node(state)
 
     # Verify that interrupt was called with the pending writes
+    assert result["approvals"][0].decision == "approve"
     mock_interrupt.assert_called_once()
     call_args = mock_interrupt.call_args[0][0]
     assert "pending_writes" in call_args
@@ -59,7 +68,7 @@ def test_approval_node_routing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_approval_decision_creation() -> None:
     """Test creating approval decisions."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     decision = ApprovalDecision(
         decision="approve",
         reviewer="admin@example.com",
@@ -90,7 +99,7 @@ def test_proposed_write_validation() -> None:
 
 def test_approval_decision_reject() -> None:
     """Test creating a rejection decision."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     decision = ApprovalDecision(
         decision="reject",
         reviewer="reviewer@example.com",

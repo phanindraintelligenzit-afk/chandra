@@ -10,9 +10,7 @@ from src.chandra.briefing import composer
 from src.chandra.briefing.schemas import Finding, Scorecard
 
 
-def _finding(
-    *, kra: str, severity: str, detector_id: str, arn_suffix: str = "x"
-) -> Finding:
+def _finding(*, kra: str, severity: str, detector_id: str, arn_suffix: str = "x") -> Finding:
     return Finding(
         kra=kra,  # type: ignore[arg-type]
         severity=severity,  # type: ignore[arg-type]
@@ -45,8 +43,9 @@ class TestScorecard:
     def test_score_floors_at_zero(self) -> None:
         raw = {
             "security": [
-                _finding(kra="security", severity="critical", detector_id=f"s{i}",
-                         arn_suffix=str(i))
+                _finding(
+                    kra="security", severity="critical", detector_id=f"s{i}", arn_suffix=str(i)
+                )
                 for i in range(50)
             ]
         }
@@ -77,7 +76,11 @@ class TestDeterministicRank:
 class TestRender:
     def test_markdown_contains_required_sections(self) -> None:
         scorecard = Scorecard(
-            cost=80, security=70, compliance=60, performance=90, reliability=85,
+            cost=80,
+            security=70,
+            compliance=60,
+            performance=90,
+            reliability=85,
             overall=77,
         )
         findings = [_finding(kra="security", severity="critical", detector_id="C1")]
@@ -102,7 +105,11 @@ class TestRender:
 
     def test_clean_account_renders_without_top_table(self) -> None:
         scorecard = Scorecard(
-            cost=100, security=100, compliance=100, performance=100, reliability=100,
+            cost=100,
+            security=100,
+            compliance=100,
+            performance=100,
+            reliability=100,
             overall=100,
         )
         md, _ = composer.render_markdown(
@@ -127,7 +134,13 @@ class TestExecutiveSummary:
         analyzed = composer.deterministic_rank(findings)
         bullets = composer._deterministic_summary(
             analyzed,
-            {"cost": 100, "security": 50, "compliance": 90, "performance": 100,
-             "reliability": 100, "overall": 88},
+            {
+                "cost": 100,
+                "security": 50,
+                "compliance": 90,
+                "performance": 100,
+                "reliability": 100,
+                "overall": 88,
+            },
         )
         assert "security" in bullets[0]

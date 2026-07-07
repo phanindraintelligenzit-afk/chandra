@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
 from src.chandra.tools import cost
 from src.chandra.tools.base import DetectorContext
 
@@ -18,9 +17,7 @@ def ami_id(ec2: Any) -> str:
 
 
 class TestUnattachedEbs:
-    def test_available_volume_is_flagged(
-        self, ctx: DetectorContext, ec2: Any
-    ) -> None:
+    def test_available_volume_is_flagged(self, ctx: DetectorContext, ec2: Any) -> None:
         vol = ec2.create_volume(AvailabilityZone="us-east-1a", Size=10, VolumeType="gp3")
         findings = cost.find_unattached_ebs(ctx)
         assert len(findings) == 1
@@ -39,9 +36,7 @@ class TestUnattachedEbs:
 
 
 class TestUnusedEips:
-    def test_unassociated_eip_is_flagged(
-        self, ctx: DetectorContext, ec2: Any
-    ) -> None:
+    def test_unassociated_eip_is_flagged(self, ctx: DetectorContext, ec2: Any) -> None:
         ec2.allocate_address(Domain="vpc")
         findings = cost.find_unused_eips(ctx)
         assert len(findings) == 1
@@ -107,15 +102,15 @@ class TestIdleEc2:
             return {
                 "Label": "CPUUtilization",
                 "Datapoints": [
-                    {"Average": 1.2, "Timestamp": datetime.now(timezone.utc)},
-                    {"Average": 0.8, "Timestamp": datetime.now(timezone.utc)},
+                    {"Average": 1.2, "Timestamp": datetime.now(UTC)},
+                    {"Average": 0.8, "Timestamp": datetime.now(UTC)},
                 ],
             }
 
         monkeypatch.setattr(cw, "get_metric_statistics", _fake_stats)
 
         # Move "now" forward 30 days so LaunchTime < start window.
-        future = datetime.now(timezone.utc) + timedelta(days=30)
+        future = datetime.now(UTC) + timedelta(days=30)
 
         class _FakeDateTime(datetime):
             @classmethod
@@ -141,13 +136,13 @@ class TestIdleEc2:
             return {
                 "Label": "CPUUtilization",
                 "Datapoints": [
-                    {"Average": 65.0, "Timestamp": datetime.now(timezone.utc)},
+                    {"Average": 65.0, "Timestamp": datetime.now(UTC)},
                 ],
             }
 
         monkeypatch.setattr(cw, "get_metric_statistics", _busy_stats)
 
-        future = datetime.now(timezone.utc) + timedelta(days=30)
+        future = datetime.now(UTC) + timedelta(days=30)
 
         class _FakeDateTime(datetime):
             @classmethod

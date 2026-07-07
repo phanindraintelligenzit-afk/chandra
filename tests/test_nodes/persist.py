@@ -22,21 +22,20 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
+# Resolve which engine to use: real POSTGRES_URL when in real mode,
+# in-memory SQLite when in MOCK_MODE or when no URL is configured.
+
+import src.chandra.db.session as _session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
-
-import src.chandra.db.session as _session
 from src.chandra.briefing.schemas import Finding
 from src.chandra.db.models import Base
-
-# Resolve which engine to use: real POSTGRES_URL when in real mode,
-# in-memory SQLite when in MOCK_MODE or when no URL is configured.
-import os
 
 from tests.test_nodes._env import MOCK_MODE, banner, make_state, mode_banner, real_postgres_url
 
@@ -45,7 +44,7 @@ if MOCK_MODE or not real_postgres_url():
     engine_label = "sqlite:///:memory:  (mock / no POSTGRES_URL set)"
 else:
     _test_engine = create_engine(real_postgres_url(), future=True)
-    engine_label = f"POSTGRES_URL  (real, from .env)"
+    engine_label = "POSTGRES_URL  (real, from .env)"
 
 _session._engine = _test_engine  # type: ignore[attr-defined]
 _session._SessionLocal = sessionmaker(  # type: ignore[attr-defined]
@@ -56,8 +55,9 @@ _session._SessionLocal = sessionmaker(  # type: ignore[attr-defined]
 if "sqlite" in engine_label:
     Base.metadata.create_all(_test_engine)
 
-from src.chandra.db.models import Briefing, Finding as FindingRow, Run  # noqa: E402
-from src.chandra.graphs.nodes import persist  # noqa: E402
+from src.chandra.db.models import Briefing, Run
+from src.chandra.db.models import Finding as FindingRow
+from src.chandra.graphs.nodes import persist
 
 
 def _finding(*, kra: str, severity: str, detector_id: str) -> Finding:
@@ -123,8 +123,7 @@ def test_persist() -> None:
         print(f"  findings    : {len(findings)}")
         for f in findings:
             print(
-                f"    - {f.kra:10s} {f.severity:8s} {f.detector_id:8s}"
-                f"  resource={f.resource_arn}"
+                f"    - {f.kra:10s} {f.severity:8s} {f.detector_id:8s}  resource={f.resource_arn}"
             )
 
         print(f"  briefings   : {len(briefings)}")
