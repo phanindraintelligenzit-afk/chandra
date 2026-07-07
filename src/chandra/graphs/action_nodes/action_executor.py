@@ -143,6 +143,17 @@ _HANDLERS: dict[str, _Handler] = {
 }
 
 
+def registered_problem_type(detector_id: str) -> str | None:
+    """Public lookup: the handler problem_type for a detector id, or ``None``.
+
+    Lets other packages (e.g. the Digital Worker execution node) check
+    whether automated remediation exists without reaching into the
+    private ``_HANDLERS`` registry.
+    """
+    handler = _HANDLERS.get(detector_id)
+    return handler.problem_type if handler else None
+
+
 # ---------------------------------------------------------------------------
 # Low-level single-action executor (unchanged contract)
 # ---------------------------------------------------------------------------

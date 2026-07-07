@@ -37,6 +37,8 @@ from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from tools.aws_cloud_tools.metrics_fetcher import CloudWatchMetricsFetcher
 from tools.aws_cloud_tools.tool_findings import run_all_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
+from src.chandra.digital_worker.graph import build_digital_worker_graph
+from src.chandra.digital_worker.intake import SUPPORTED_SOURCES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,6 +158,16 @@ try:
 except Exception as _e:
     logger.error("Failed to initialize copilot agent: %s", _e)
     _copilot_agent = None
+
+# Digital Worker request workflow (omnichannel intake). Built once so the
+# in-memory checkpointer persists across requests — approval resumes are
+# keyed by thread_id == job_id.
+try:
+    _digital_worker = build_digital_worker_graph()
+    logger.info("Digital Worker graph initialized successfully")
+except Exception as _e:
+    logger.error("Failed to initialize Digital Worker graph: %s", _e)
+    _digital_worker = None
 
 
 class KRAInput(BaseModel):
@@ -977,6 +989,224 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         except Exception:
             pass
 
+
+
+# ── Digital Worker: omnichannel request intake ────────────────────────────────
+# Requests can arrive from Jira, Slack, Teams, email, monitoring systems
+# (CloudWatch / Azure Monitor / GCP), generic webhooks, or this REST API.
+# Every source funnels into the same LangGraph workflow:
+#   understand → classify → identify platform → collect context → RCA →
+#   plan (memory ▸ LLM ▸ deterministic) → risk → decision →
+#   execute | guidance → validate → update Jira → notify → audit → persist
+# Long runs use the existing async job pattern (poll /jobs/status/{job_id}).
+
+
+class CloudRequestSubmission(BaseModel):
+    source: str = Field(default="rest_api", description=f"One of: {', '.join(SUPPORTED_SOURCES)}")
+    payload: Dict[str, Any] = Field(
+        description="Channel-native payload; for rest_api use {title, description, priority, requester}."
+    )
+    dry_run: bool = Field(
+        default=True,
+        description="When False, approved automations perform real mutating AWS calls.",
+    )
+
+
+class ApprovalSubmission(BaseModel):
+    approved: bool = Field(description="True to approve automated execution, False to reject.")
+    approver: Optional[str] = Field(default=None, description="Who decided.")
+    comment: str = Field(default="", description="Optional decision rationale.")
+
+
+def _dw_thread_config(job_id: str) -> Dict[str, Any]:
+    return {"configurable": {"thread_id": job_id}}
+
+
+def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float) -> None:
+    """Translate terminal graph state into the shared job-store shape."""
+    import time
+    with _job_store_lock:
+        if _job_store[job_id].get("status") == "stopped":
+            return
+        _job_store[job_id]["status"] = "completed"
+        _job_store[job_id]["progress"] = 100
+        _job_store[job_id]["result"] = {
+            "status": final_state.get("status", "completed"),
+            "output": final_state.get("result", {}),
+        }
+        _job_store[job_id]["completed_at"] = time.time()
+        _job_store[job_id]["message"] = (
+            f"Workflow {final_state.get('status', 'completed')} in {time.time() - start_time:.1f}s"
+        )
+
+
+def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) -> None:
+    """Background worker for /requests and /webhooks/{source}."""
+    import time
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        if _digital_worker is None:
+            raise RuntimeError("Digital Worker graph is not initialized")
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = f"Processing {submission.source} request..."
+
+        final_state = _digital_worker.invoke(
+            {
+                "source": submission.source,
+                "payload": submission.payload,
+                "dry_run": submission.dry_run,
+            },
+            config=_dw_thread_config(job_id),
+        )
+
+        # interrupt_before=["approval_gate"] pauses the run when human
+        # approval is required. Surface that state instead of completing.
+        snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+        if snapshot.next and "approval_gate" in snapshot.next:
+            values = snapshot.values
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "awaiting_approval"
+                _job_store[job_id]["progress"] = 70
+                _job_store[job_id]["message"] = "Awaiting human approval"
+                _job_store[job_id]["result"] = {
+                    "status": "awaiting_approval",
+                    "approval_request": {
+                        "request_id": values["request"].request_id,
+                        "title": values["request"].title,
+                        "plan": values["plan"].model_dump(mode="json"),
+                        "risk": values["risk"].model_dump(mode="json"),
+                        "reason": values["decision"].reason,
+                        "resume_url": f"/requests/{job_id}/approve",
+                    },
+                }
+            logger.info("DIGITAL WORKER JOB [%s] awaiting approval", job_id)
+            return
+
+        _dw_finalize_job(job_id, final_state, start_time)
+        logger.info("DIGITAL WORKER JOB [%s] completed in %.1fs", job_id, time.time() - start_time)
+
+    except Exception as exc:
+        logger.exception("DIGITAL WORKER JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
+
+def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> None:
+    """Background worker for /requests/{job_id}/approve — resumes the interrupt."""
+    import time
+    from langgraph.types import Command
+
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        if _digital_worker is None:
+            raise RuntimeError("Digital Worker graph is not initialized")
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["progress"] = 80
+            _job_store[job_id]["message"] = "Resuming after approval decision..."
+
+        final_state = _digital_worker.invoke(
+            Command(resume=approval.model_dump()),
+            config=_dw_thread_config(job_id),
+        )
+        _dw_finalize_job(job_id, final_state, start_time)
+        logger.info(
+            "DIGITAL WORKER JOB [%s] resumed (approved=%s) and completed",
+            job_id, approval.approved,
+        )
+    except Exception as exc:
+        logger.exception("DIGITAL WORKER JOB [%s] resume failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
+
+def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONResponse:
+    if submission.source not in SUPPORTED_SOURCES:
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "message": f"Unsupported source '{submission.source}'. Expected one of: {', '.join(SUPPORTED_SOURCES)}",
+        })
+    if _digital_worker is None:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "message": "Digital Worker graph is not initialized",
+        })
+    job_id = str(uuid.uuid4())
+    logger.info("Digital Worker request submitted → job_id=%s source=%s", job_id, submission.source)
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": f"Queued: {submission.source} request workflow",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_digital_worker_task, job_id, submission)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Request submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}",
+    })
+
+
+@app.post("/requests")
+def submit_cloud_request(submission: CloudRequestSubmission):
+    """Submit a cloud operations request via the REST API channel.
+
+    Example request:
+    {
+        "source": "rest_api",
+        "payload": {
+            "title": "S3 bucket 'acme-logs' is public",
+            "description": "Security review flagged public access on the logs bucket.",
+            "priority": "P2",
+            "resource_id": "acme-logs"
+        },
+        "dry_run": true
+    }
+    """
+    return _submit_digital_worker_job(submission)
+
+
+@app.post("/webhooks/{source}")
+def receive_webhook(source: str, payload: Dict[str, Any]):
+    """Omnichannel webhook intake: jira | slack | teams | email | monitoring |
+    cloudwatch | azure_monitor | gcp_monitoring | webhook."""
+    return _submit_digital_worker_job(
+        CloudRequestSubmission(source=source, payload=payload, dry_run=True)
+    )
+
+
+@app.post("/requests/{job_id}/approve")
+def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
+    """Approve or reject a workflow paused at the human approval gate."""
+    with _job_store_lock:
+        job = _job_store.get(job_id)
+        if job is None:
+            return JSONResponse(status_code=404, content={"error": "Job not found"})
+        if job.get("status") != "awaiting_approval":
+            return JSONResponse(status_code=409, content={
+                "error": f"Job is '{job.get('status')}', not awaiting_approval",
+            })
+    _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Approval decision submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}",
+    })
 
 
 if __name__ == "__main__":

@@ -266,6 +266,67 @@ def _deterministic_summary(analyzed: list[AnalyzedFinding], scorecard: dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Digital Worker — root cause + resolution planning
+# ---------------------------------------------------------------------------
+
+
+def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """LLM root-cause analysis + resolution steps for a Digital Worker request.
+
+    ``payload`` carries the normalized request, its classification and the
+    collected context (plain dicts — this module stays decoupled from the
+    digital_worker package). Returns the parsed analysis dict, or ``None``
+    when Bedrock is unavailable or returns something unusable; the caller
+    (``digital_worker.planner``) then falls back to its deterministic
+    playbooks. This function is the Digital Worker's only LLM touchpoint,
+    preserving the composer-only Bedrock invariant.
+
+    Expected response shape::
+
+        {
+          "root_cause": {"summary": str, "probable_causes": [str],
+                          "evidence": [str], "confidence": float},
+          "steps": [{"order": int, "action": str, "detail": str,
+                     "command": str | null, "expected_outcome": str | null}],
+          "rollback_steps": [ ...same shape... ],
+          "notes": str
+        }
+    """
+    try:
+        # Lazy import, matching llm_rank / compose_executive_summary: the
+        # composer must degrade to deterministic output when Bedrock's SDK
+        # is absent from the runtime.
+        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
+    except ImportError:
+        logger.warning("llm.bedrock_unavailable_fallback_to_deterministic")
+        return None
+
+    try:
+        llm = ChatBedrockConverse(
+            model_id=settings.bedrock_model_id,
+            region_name=settings.aws_default_region,
+        )
+        prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
+        cb = UsageCapture()
+        response = llm.invoke(
+            [
+                ("system", prompt),
+                ("user", json.dumps(payload, default=str)),
+            ],
+            config={"callbacks": [cb]},
+        )
+        text = response.content if isinstance(response.content, str) else str(response.content)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict) or "steps" not in parsed:
+            logger.warning("llm.request_analysis_malformed_fallback_to_deterministic")
+            return None
+        return parsed
+    except Exception as exc:
+        logger.warning("llm.request_analysis_failed_fallback_to_deterministic", error=str(exc))
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Markdown / JSON render
 # ---------------------------------------------------------------------------
 

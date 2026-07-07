@@ -140,6 +140,62 @@ class Briefing(Base):
     run: Mapped[Run] = relationship(back_populates="briefing")
 
 
+class CloudRequestRecord(Base):
+    """Audit record for one Digital Worker request workflow (any channel)."""
+
+    __tablename__ = "cloud_requests"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False).with_variant(String(36), "sqlite"),
+        primary_key=True,
+        default=_uuid,
+    )
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    external_id: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    priority: Mapped[str] = mapped_column(String(4), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="completed")
+    result_jsonb: Mapped[dict[str, Any]] = mapped_column("result_jsonb", nullable=False)
+    audit_jsonb: Mapped[list[Any]] = mapped_column("audit_jsonb", nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
+class ResolutionMemoryRecord(Base):
+    """Past-history execution steps cache (Proposedflow 'System Memory').
+
+    Keyed by a stable fingerprint of the classified request so recurring
+    problems reuse previously generated steps instead of a fresh LLM call.
+    """
+
+    __tablename__ = "resolution_memory"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False).with_variant(String(36), "sqlite"),
+        primary_key=True,
+        default=_uuid,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_jsonb: Mapped[dict[str, Any]] = mapped_column("plan_jsonb", nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class EvalRun(Base):
     __tablename__ = "eval_runs"
 
