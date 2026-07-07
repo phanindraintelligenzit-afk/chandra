@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,9 +116,7 @@ class ActionResult(BaseModel):
     error: str | None = None
     audit_log: str | None = None
     dry_run: bool = False
-    executed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    executed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ApprovalDecision(BaseModel):

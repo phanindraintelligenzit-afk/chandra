@@ -14,12 +14,12 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
 from langgraph.types import Send
-
 from src.chandra.graphs.nodes import _route_kra_workers, kra_supervisor
 
 from tests.test_nodes._env import banner, make_state, mode_banner

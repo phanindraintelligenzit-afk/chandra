@@ -39,7 +39,7 @@ def _uuid() -> str:
 
 class DateTimeEncoder(json.JSONEncoder):
     """Custom JSON encoder that converts datetime objects to ISO format strings."""
-    
+
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()  # Convert datetime to ISO 8601 string
@@ -53,7 +53,7 @@ def serialize_finding_evidence(evidence_dict: dict) -> dict:
     """
     if not evidence_dict:
         return evidence_dict
-    
+
     # Use custom encoder to convert to JSON string, then back to dict
     # This ensures all datetime objects are converted to strings
     json_str = json.dumps(evidence_dict, cls=DateTimeEncoder)
@@ -77,13 +77,13 @@ class Run(Base):
     errors_json: Mapped[list | None] = mapped_column("errors_json")
     bedrock_cost_usd: Mapped[float] = mapped_column(server_default=text("0.0"), default=0.0)
 
-    findings: Mapped[list["Finding"]] = relationship(
+    findings: Mapped[list[Finding]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
-    briefing: Mapped["Briefing | None"] = relationship(
+    briefing: Mapped[Briefing | None] = relationship(
         back_populates="run", cascade="all, delete-orphan", uselist=False
     )
-    eval_run: Mapped["EvalRun | None"] = relationship(
+    eval_run: Mapped[EvalRun | None] = relationship(
         back_populates="run", cascade="all, delete-orphan", uselist=False
     )
 

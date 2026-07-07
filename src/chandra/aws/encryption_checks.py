@@ -1,4 +1,4 @@
-﻿"""S3, EBS, RDS encryption checkers."""
+"""S3, EBS, RDS encryption checkers."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ from src.chandra.aws.compliance_models import ComplianceFinding
 
 def scan_s3_encryption() -> list[ComplianceFinding]:
     """Scan S3 buckets for encryption."""
-    
+
     client = boto3.client("s3")
     findings: list[ComplianceFinding] = []
 
     try:
         response = client.list_buckets()
-        
+
         for bucket in response.get("Buckets", []):
             bucket_name = bucket.get("Name", "unknown")
-            
+
             try:
                 encryption = client.get_bucket_encryption(Bucket=bucket_name)
                 if not encryption or "ServerSideEncryptionConfiguration" not in encryption:
@@ -53,13 +53,13 @@ def scan_s3_encryption() -> list[ComplianceFinding]:
 
 def scan_ebs_encryption() -> list[ComplianceFinding]:
     """Scan EBS encryption by default."""
-    
+
     client = boto3.client("ec2")
     findings: list[ComplianceFinding] = []
 
     try:
         response = client.get_ebs_encryption_by_default()
-        
+
         if not response.get("EbsEncryptionByDefault", True):
             findings.append(
                 ComplianceFinding(

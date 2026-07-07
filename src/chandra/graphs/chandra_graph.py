@@ -6,17 +6,15 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-
 from src.chandra.config import settings
 from src.chandra.graphs.action_nodes import (
-    action_executor_node,
     _route_kra_workers,
+    action_executor_node,
     analyze,
     approval_node,
     compose_briefing,
-    escalation_node,
-    fanout_observers,
     decision_router,
+    escalation_node,
     ingest_observations,
     kra_supervisor,
     observe_compliance,
@@ -60,13 +58,14 @@ def _build_checkpointer() -> Any:
     try:
         # Convert SQLAlchemy URL format to psycopg native format
         # postgresql+psycopg://... → postgresql://...
-        from psycopg_pool import ConnectionPool
         import psycopg
+        from psycopg_pool import ConnectionPool
+
         conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
-        
+
         with psycopg.connect(conn_string, autocommit=True) as conn:
             PostgresSaver(conn).setup()
-            
+
         pool = ConnectionPool(conn_string, max_size=10)
         checkpointer = PostgresSaver(pool)
         return checkpointer

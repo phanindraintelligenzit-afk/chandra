@@ -1,7 +1,7 @@
-﻿"""Tests for AWS Organizations support."""
+"""Tests for AWS Organizations support."""
 
-from src.chandra.aws.organizations import Account
 import pytest
+from src.chandra.aws.organizations import Account
 
 
 def test_account_dataclass_creation():

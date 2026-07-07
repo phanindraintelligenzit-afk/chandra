@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.chandra.briefing.schemas import Finding
@@ -30,13 +30,14 @@ OVERSIZED_CPU = 30.0
 LOOKBACK_DAYS = 14
 
 # PERF-004 / PERF-005 thresholds
-XRAY_ERROR_RATE_THRESHOLD = 5.0   # percent — combined error + fault rate
-XRAY_LATENCY_P99_MS = 2000.0      # milliseconds — p99 threshold
+XRAY_ERROR_RATE_THRESHOLD = 5.0  # percent — combined error + fault rate
+XRAY_LATENCY_P99_MS = 2000.0  # milliseconds — p99 threshold
 
 
 # ---------------------------------------------------------------------------
 # PERF-001  Production EC2 not in ASG
 # ---------------------------------------------------------------------------
+
 
 def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
     """Flag prod-tagged EC2 instances that are not members of any ASG."""
@@ -67,10 +68,7 @@ def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
                         instance_id = inst["InstanceId"]
                         if instance_id in asg_instance_ids:
                             continue
-                        arn = (
-                            f"arn:aws:ec2:{region}:{ctx.account_id}:"
-                            f"instance/{instance_id}"
-                        )
+                        arn = f"arn:aws:ec2:{region}:{ctx.account_id}:instance/{instance_id}"
                         findings.append(
                             Finding(
                                 kra="performance",
@@ -103,11 +101,12 @@ def check_autoscaling_coverage(ctx: DetectorContext) -> list[Finding]:
 # PERF-002  Underutilized RDS
 # ---------------------------------------------------------------------------
 
+
 def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
     """Flag RDS instances with sustained low CPU AND low connection count."""
     detector_id = "PERF-002-rds-idle"
     findings: list[Finding] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = now - timedelta(days=LOOKBACK_DAYS)
 
     for region in ctx.regions:
@@ -122,9 +121,7 @@ def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
         for db in dbs:
             identifier = db["DBInstanceIdentifier"]
             arn = db["DBInstanceArn"]
-            with detector_guard(
-                ctx, detector_id=detector_id, region=region, resource_arn=arn
-            ):
+            with detector_guard(ctx, detector_id=detector_id, region=region, resource_arn=arn):
                 cpu = cw.get_metric_statistics(
                     Namespace="AWS/RDS",
                     MetricName="CPUUtilization",
@@ -183,11 +180,12 @@ def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
 # PERF-003  Oversized EC2
 # ---------------------------------------------------------------------------
 
+
 def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
     """Flag EC2 instances with sustained CPU below 30% — >70% headroom."""
     detector_id = "PERF-003-oversized-ec2"
     findings: list[Finding] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = now - timedelta(days=LOOKBACK_DAYS)
 
     for region in ctx.regions:
@@ -207,9 +205,7 @@ def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
         for inst in instances:
             instance_id = inst["InstanceId"]
             arn = f"arn:aws:ec2:{region}:{ctx.account_id}:instance/{instance_id}"
-            with detector_guard(
-                ctx, detector_id=detector_id, region=region, resource_arn=arn
-            ):
+            with detector_guard(ctx, detector_id=detector_id, region=region, resource_arn=arn):
                 metric = cw.get_metric_statistics(
                     Namespace="AWS/EC2",
                     MetricName="CPUUtilization",
@@ -260,6 +256,7 @@ def find_oversized_ec2(ctx: DetectorContext) -> list[Finding]:
 # PERF-004  X-Ray — high error / fault rate
 # ---------------------------------------------------------------------------
 
+
 def find_xray_high_error_rate(ctx: DetectorContext) -> list[Finding]:
     """Flag X-Ray services with a combined error+fault rate above 5%.
 
@@ -271,7 +268,7 @@ def find_xray_high_error_rate(ctx: DetectorContext) -> list[Finding]:
     """
     detector_id = "PERF-004-xray-error-rate"
     findings: list[Finding] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window_start = now - timedelta(hours=1)
 
     for region in ctx.regions:
@@ -305,10 +302,7 @@ def find_xray_high_error_rate(ctx: DetectorContext) -> list[Finding]:
                 continue
 
             service_name = node.get("Name", "unknown")
-            arn = (
-                f"arn:aws:xray:{region}:{ctx.account_id}:"
-                f"service/{service_name}"
-            )
+            arn = f"arn:aws:xray:{region}:{ctx.account_id}:service/{service_name}"
             severity = "high" if rate >= 20.0 else "medium"
 
             findings.append(
@@ -350,6 +344,7 @@ def find_xray_high_error_rate(ctx: DetectorContext) -> list[Finding]:
 # PERF-005  X-Ray — high p99 latency
 # ---------------------------------------------------------------------------
 
+
 def find_xray_high_latency(ctx: DetectorContext) -> list[Finding]:
     """Flag X-Ray services with a p99 response latency above 2 seconds.
 
@@ -360,7 +355,7 @@ def find_xray_high_latency(ctx: DetectorContext) -> list[Finding]:
     """
     detector_id = "PERF-005-xray-latency"
     findings: list[Finding] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window_start = now - timedelta(hours=1)
 
     for region in ctx.regions:
@@ -405,10 +400,7 @@ def find_xray_high_latency(ctx: DetectorContext) -> list[Finding]:
                 continue
 
             service_name = node.get("Name", "unknown")
-            arn = (
-                f"arn:aws:xray:{region}:{ctx.account_id}:"
-                f"service/{service_name}"
-            )
+            arn = f"arn:aws:xray:{region}:{ctx.account_id}:service/{service_name}"
             severity = "high" if p99_ms >= 5000 else "medium"
 
             findings.append(
@@ -450,6 +442,7 @@ def find_xray_high_latency(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # PERF-006  Compute Optimizer — over-provisioned EC2
 # ---------------------------------------------------------------------------
+
 
 def find_compute_optimizer_ec2(ctx: DetectorContext) -> list[Finding]:
     """Surface Compute Optimizer EC2 recommendations where finding is OVER_PROVISIONED.
@@ -549,6 +542,7 @@ def find_compute_optimizer_ec2(ctx: DetectorContext) -> list[Finding]:
 # PERF-007  Compute Optimizer — over-provisioned Lambda
 # ---------------------------------------------------------------------------
 
+
 def find_compute_optimizer_lambda(ctx: DetectorContext) -> list[Finding]:
     """Surface Compute Optimizer Lambda memory recommendations where finding is OVER_PROVISIONED.
 
@@ -568,9 +562,7 @@ def find_compute_optimizer_lambda(ctx: DetectorContext) -> list[Finding]:
             kwargs: dict[str, Any] = {}
             while True:
                 resp = co.get_lambda_function_recommendations(**kwargs)
-                recommendations.extend(
-                    resp.get("lambdaFunctionRecommendations", [])
-                )
+                recommendations.extend(resp.get("lambdaFunctionRecommendations", []))
                 next_token = resp.get("NextToken")
                 if not next_token:
                     break
@@ -649,13 +641,13 @@ def find_compute_optimizer_lambda(ctx: DetectorContext) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 ALL_DETECTORS = (
-    check_autoscaling_coverage,      # PERF-001
-    find_underutilized_rds,          # PERF-002
-    find_oversized_ec2,              # PERF-003
-    find_xray_high_error_rate,       # PERF-004
-    find_xray_high_latency,          # PERF-005
-    find_compute_optimizer_ec2,      # PERF-006
-    find_compute_optimizer_lambda,   # PERF-007
+    check_autoscaling_coverage,  # PERF-001
+    find_underutilized_rds,  # PERF-002
+    find_oversized_ec2,  # PERF-003
+    find_xray_high_error_rate,  # PERF-004
+    find_xray_high_latency,  # PERF-005
+    find_compute_optimizer_ec2,  # PERF-006
+    find_compute_optimizer_lambda,  # PERF-007
 )
 
 

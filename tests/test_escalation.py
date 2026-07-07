@@ -1,5 +1,5 @@
-from src.chandra.escalation.schemas import EscalationPayload
 from src.chandra.escalation.formatter import format_escalation_message
+from src.chandra.escalation.schemas import EscalationPayload
 
 
 def test_payload_formatting():

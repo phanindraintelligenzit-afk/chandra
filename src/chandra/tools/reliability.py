@@ -164,10 +164,7 @@ def check_ebs_snapshot_policy(ctx: DetectorContext) -> list[Finding]:
                     resource_arn=f"arn:aws:dlm:{region}:{ctx.account_id}:policy/*",
                     resource_type="AWS::DLM::LifecyclePolicy",
                     region=region,
-                    title=(
-                        f"Region {region} has in-use EBS volumes but no DLM "
-                        "lifecycle policy"
-                    ),
+                    title=(f"Region {region} has in-use EBS volumes but no DLM lifecycle policy"),
                     evidence=evidence,
                     recommendation=(
                         "Create a DLM policy targeting volumes by tag (e.g. "

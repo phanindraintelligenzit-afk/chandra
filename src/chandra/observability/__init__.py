@@ -1,11 +1,12 @@
-import sys
 import asyncio
 import functools
 import inspect
 import logging
+import sys
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any, Callable
+from typing import Any
 
 import structlog.contextvars
 
@@ -35,28 +36,22 @@ def traced_node(
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
                     logger.info(f"Input received for node ({node_name}):\n{state_in}")
-                    
+
                     if timeout_s:
-                        result = await asyncio.wait_for(
-                            func(*args, **kwargs), timeout=timeout_s
-                        )
+                        result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout_s)
                     else:
                         result = await func(*args, **kwargs)
-                        
+
                     logger.info(f"Output for node ({node_name}):\n{result}")
                     logger.info("node.completed", extra={"node": node_name})
-                    _emit_metric(
-                        "NodeLatency", 1.0, "Count", {"node": node_name}
-                    )
+                    _emit_metric("NodeLatency", 1.0, "Count", {"node": node_name})
                     return result
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.error("node.timeout", extra={"node": node_name, "timeout_s": timeout_s})
                     raise
                 except Exception as exc:
                     logger.error("node.error", extra={"node": node_name, "error": str(exc)})
-                    _emit_metric(
-                        "NodeErrors", 1.0, "Count", {"node": node_name}
-                    )
+                    _emit_metric("NodeErrors", 1.0, "Count", {"node": node_name})
                     raise
 
             return async_wrapper
@@ -70,23 +65,21 @@ def traced_node(
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
                     logger.info(f"Input received for node ({node_name}):\n{state_in}")
-                    
+
                     result = func(*args, **kwargs)
-                    
+
                     logger.info(f"Output for node ({node_name}):\n{result}")
                     logger.info("node.completed", extra={"node": node_name})
-                    _emit_metric(
-                        "NodeLatency", 1.0, "Count", {"node": node_name}
-                    )
+                    _emit_metric("NodeLatency", 1.0, "Count", {"node": node_name})
                     return result
                 except TimeoutError:
-                    logger.error("node.timeout", extra={"node": node_name, "timeout_s": effective_timeout})
+                    logger.error(
+                        "node.timeout", extra={"node": node_name, "timeout_s": effective_timeout}
+                    )
                     raise
                 except Exception as exc:
                     logger.error("node.error", extra={"node": node_name, "error": str(exc)})
-                    _emit_metric(
-                        "NodeErrors", 1.0, "Count", {"node": node_name}
-                    )
+                    _emit_metric("NodeErrors", 1.0, "Count", {"node": node_name})
                     raise
 
             return sync_wrapper
@@ -131,11 +124,10 @@ def _emit_metric(
     def _put() -> None:
         try:
             from src.chandra.aws.client_factory import get_default_factory
+
             cw = get_default_factory().client("cloudwatch")
             dim_list = (
-                [{"Name": k, "Value": v} for k, v in dimensions.items()]
-                if dimensions
-                else []
+                [{"Name": k, "Value": v} for k, v in dimensions.items()] if dimensions else []
             )
             cw.put_metric_data(
                 Namespace="Chandra",

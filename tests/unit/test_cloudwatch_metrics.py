@@ -1,9 +1,9 @@
-﻿import time
-import threading
+import time
+
 import pytest
 from moto import mock_aws
 from src.chandra.aws.client_factory import get_default_factory
-from src.chandra.observability import _emit_metric, traced_node
+from src.chandra.observability import traced_node
 
 
 @pytest.fixture
@@ -30,8 +30,7 @@ def test_emit_metric_async(mock_cw):
     assert len(res["Metrics"]) == 1
     assert res["Metrics"][0]["MetricName"] == "TestAsyncMetric"
     assert any(
-        d["Name"] == "dim1" and d["Value"] == "val1"
-        for d in res["Metrics"][0]["Dimensions"]
+        d["Name"] == "dim1" and d["Value"] == "val1" for d in res["Metrics"][0]["Dimensions"]
     )
 
 
@@ -47,7 +46,8 @@ def test_traced_node_emits_latency(mock_cw):
     cw = get_default_factory().client("cloudwatch")
     res = cw.list_metrics(Namespace="Chandra", MetricName="NodeLatency")
     metrics = [
-        m for m in res.get("Metrics", [])
+        m
+        for m in res.get("Metrics", [])
         if any(
             d["Name"] == "node" and d["Value"] == "test_latency_node"
             for d in m.get("Dimensions", [])
@@ -69,10 +69,10 @@ def test_traced_node_emits_error(mock_cw):
     cw = get_default_factory().client("cloudwatch")
     res = cw.list_metrics(Namespace="Chandra", MetricName="NodeErrors")
     metrics = [
-        m for m in res.get("Metrics", [])
+        m
+        for m in res.get("Metrics", [])
         if any(
-            d["Name"] == "node" and d["Value"] == "test_error_node"
-            for d in m.get("Dimensions", [])
+            d["Name"] == "node" and d["Value"] == "test_error_node" for d in m.get("Dimensions", [])
         )
     ]
     assert len(metrics) > 0
@@ -91,7 +91,8 @@ async def test_traced_node_emits_latency_async(mock_cw):
     cw = get_default_factory().client("cloudwatch")
     res = cw.list_metrics(Namespace="Chandra", MetricName="NodeLatency")
     metrics = [
-        m for m in res.get("Metrics", [])
+        m
+        for m in res.get("Metrics", [])
         if any(
             d["Name"] == "node" and d["Value"] == "test_async_latency_node"
             for d in m.get("Dimensions", [])

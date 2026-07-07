@@ -20,12 +20,13 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
-from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from datetime import UTC, datetime
+from unittest.mock import patch
 
 from src.chandra.briefing.schemas import ProposedWrite
 from src.chandra.graphs.nodes import approval_node
@@ -68,7 +69,7 @@ def test_approvalnode() -> None:
         "decision": "approve",
         "reviewer": "alice@example.com",
         "reason": "Looks safe",
-        "decided_at": datetime.now(timezone.utc).isoformat(),
+        "decided_at": datetime.now(UTC).isoformat(),
     }
     with patch("src.chandra.graphs.nodes.interrupt") as mock_interrupt:
         mock_interrupt.return_value = [decision_payload]
@@ -77,10 +78,7 @@ def test_approvalnode() -> None:
     banner("approval_node -- output (state update)")
     print(f"  approvals count : {len(result['approvals'])}")
     for a in result["approvals"]:
-        print(
-            f"    - decision={a.decision:8s} reviewer={a.reviewer:24s}"
-            f"  reason={a.reason!r}"
-        )
+        print(f"    - decision={a.decision:8s} reviewer={a.reviewer:24s}  reason={a.reason!r}")
 
     mock_interrupt.assert_called_once()
     call_arg = mock_interrupt.call_args[0][0]

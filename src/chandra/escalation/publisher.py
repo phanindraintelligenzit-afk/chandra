@@ -1,11 +1,11 @@
 import json
 
 from src.chandra.aws.client_factory import get_default_factory
+from src.chandra.escalation.formatter import format_escalation_message
 from src.chandra.escalation.schemas import (
     EscalationPayload,
     EscalationResult,
 )
-from src.chandra.escalation.formatter import format_escalation_message
 
 
 class SNSPublisher:
@@ -18,7 +18,7 @@ class SNSPublisher:
         try:
             # Base dictionary
             raw_message = format_escalation_message(payload)
-            
+
             # Wrap in AWS Chatbot Custom Notification format so Slack doesn't drop it
             chatbot_message = {
                 "version": "1.0",
@@ -26,10 +26,8 @@ class SNSPublisher:
                 "content": {
                     "title": f":rotating_light: [{payload.severity.upper()}] Escalation: {payload.finding_id}",
                     "description": f"{payload.summary}\n\n*Resource:* `{payload.resource_id}`\n*Service:* {payload.service} ({payload.region})",
-                    "nextSteps": [
-                        payload.recommended_action
-                    ]
-                }
+                    "nextSteps": [payload.recommended_action],
+                },
             }
 
             response = self.client.publish(
@@ -46,6 +44,7 @@ class SNSPublisher:
         except Exception as e:
             try:
                 import botocore.exceptions
+
                 if isinstance(e, botocore.exceptions.ClientError):
                     if e.response["Error"]["Code"] == "NotFound":
                         return EscalationResult(

@@ -14,8 +14,6 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from botocore.exceptions import ClientError
-
 from src.chandra.briefing.schemas import ProposedWrite
 from src.chandra.graphs.action_nodes import action_executor_node
 from src.chandra.graphs.action_nodes.action_executor import (
@@ -24,7 +22,6 @@ from src.chandra.graphs.action_nodes.action_executor import (
     _sg_id_from_arn,
 )
 from src.chandra.graphs.state import ChandraState
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -150,9 +147,7 @@ def test_sec_002_open_sg_dispatches_through_registry(ec2: object) -> None:
     # moto: create a VPC + SG so revoke_security_group_ingress has a target.
     vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
     vpc_id = vpc["Vpc"]["VpcId"]
-    sg = ec2.create_security_group(
-        GroupName="sg-test", Description="test", VpcId=vpc_id
-    )
+    sg = ec2.create_security_group(GroupName="sg-test", Description="test", VpcId=vpc_id)
     sg_id = sg["GroupId"]
     sg_arn = f"arn:aws:ec2:us-east-1:123:security-group/{sg_id}"
 
@@ -224,10 +219,7 @@ class TestArnParsers:
             _s3_bucket_from_arn("arn:aws:s3")
 
     def test_sg_id(self) -> None:
-        assert (
-            _sg_id_from_arn("arn:aws:ec2:us-east-1:123:security-group/sg-abc123")
-            == "sg-abc123"
-        )
+        assert _sg_id_from_arn("arn:aws:ec2:us-east-1:123:security-group/sg-abc123") == "sg-abc123"
 
     def test_sg_id_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid security-group ARN"):

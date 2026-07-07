@@ -1,6 +1,7 @@
 import json
-from src.chandra.observability.pricing import calculate_cost
+
 from src.chandra.observability.callbacks import UsageCapture
+from src.chandra.observability.pricing import calculate_cost
 
 print("=" * 70)
 print("SIMULATING BEDROCK LLM CALL WITH TOKEN USAGE")
@@ -72,8 +73,8 @@ json_output = {
         "input_cost_usd": round(input_cost, 6),
         "output_cost_usd": round(output_cost, 6),
         "total_cost_usd": round(cb.total_cost, 6),
-        "currency": "USD"
-    }
+        "currency": "USD",
+    },
 }
 print(json.dumps(json_output, indent=2))
 print()

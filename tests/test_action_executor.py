@@ -8,8 +8,6 @@ illustrative legacy values. The real ``decision_router`` produces
 exercise the LangGraph node and the detector-id -> handler registry.
 """
 
-import pytest
-
 from src.chandra.graphs.action_nodes.action_executor import ActionExecutor
 
 
@@ -21,7 +19,7 @@ def test_dry_run_mode():
         "action_type": "remediate_s3",
         "resource_id": "test-bucket",
         "region": "us-east-1",
-        "problem_type": "public_s3"
+        "problem_type": "public_s3",
     }
 
     result = executor.run(state)
@@ -45,7 +43,7 @@ def test_unknown_problem_type():
         "action_type": "unknown",
         "resource_id": "test-resource",
         "region": "us-east-1",
-        "problem_type": "unknown_problem"
+        "problem_type": "unknown_problem",
     }
 
     result = executor.run(state)

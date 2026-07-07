@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from src.chandra.briefing import composer
 from src.chandra.briefing.schemas import Finding
 from src.chandra.graphs.action_nodes import analyze
 from src.chandra.graphs.state import ChandraState
 
 
-def _finding(
-    *, kra: str, severity: str, detector_id: str, arn_suffix: str = "x"
-) -> Finding:
+def _finding(*, kra: str, severity: str, detector_id: str, arn_suffix: str = "x") -> Finding:
     return Finding(
         kra=kra,  # type: ignore[arg-type]
         severity=severity,  # type: ignore[arg-type]

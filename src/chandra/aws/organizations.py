@@ -1,9 +1,9 @@
-﻿"""AWS Organizations support for multi-account fan-out."""
+"""AWS Organizations support for multi-account fan-out."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 import boto3
 from src.chandra.logging import get_logger
@@ -39,9 +39,7 @@ def list_accounts_in_ou(ou_id: str) -> Iterator[Account]:
     logger.info("organizations.list_accounts_in_ou", ou_id=ou_id)
 
     for page in paginator.paginate(ParentId=ou_id):
-
         for account in page["Accounts"]:
-
             if account["Status"] != "ACTIVE":
                 logger.info(
                     "organizations.skip_inactive_account",

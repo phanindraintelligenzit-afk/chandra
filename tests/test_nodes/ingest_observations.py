@@ -18,12 +18,12 @@ from __future__ import annotations
 #     (uv run tests/test_nodes/x.py). ---
 import sys as _sys
 from pathlib import Path as _Path
+
 _REPO_ROOT = _Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
 import boto3
-
 from src.chandra.graphs.nodes import ingest_observations
 
 from tests.test_nodes._env import aws_scope, banner, make_state, mode_banner, real_region
@@ -58,18 +58,22 @@ def test_ingestobservations() -> dict:
             )
             try:
                 import botocore.exceptions
+
                 cloudwatch.set_alarm_state(
                     AlarmName=name, StateValue="ALARM", StateReason="test seed"
                 )
             except botocore.exceptions.ClientError as e:
                 if e.response["Error"]["Code"] == "AccessDenied":
                     msg = e.response["Error"].get("Message", "")
-                    print(f"    - Warning: AccessDenied setting alarm state for {name}, ignoring... Details: {msg}")
+                    print(
+                        f"    - Warning: AccessDenied setting alarm state for {name}, ignoring... Details: {msg}"
+                    )
                 else:
                     raise
         for name in ("ec2-state-change", "ebs-snapshot-tagger"):
             try:
                 import botocore.exceptions
+
                 events.put_rule(
                     Name=name,
                     State="ENABLED",
@@ -79,7 +83,9 @@ def test_ingestobservations() -> dict:
             except botocore.exceptions.ClientError as e:
                 if e.response["Error"]["Code"] in ("AccessDenied", "AccessDeniedException"):
                     msg = e.response["Error"].get("Message", "")
-                    print(f"    - Warning: AccessDenied putting rule {name}, ignoring... Details: {msg}")
+                    print(
+                        f"    - Warning: AccessDenied putting rule {name}, ignoring... Details: {msg}"
+                    )
                 else:
                     raise
 
@@ -97,6 +103,7 @@ def test_ingestobservations() -> dict:
         )
 
     from tests.test_nodes._env import MOCK_MODE
+
     if MOCK_MODE:
         assert len(observations) == 4
         assert {o.source for o in observations} == {
@@ -105,7 +112,7 @@ def test_ingestobservations() -> dict:
         }
     else:
         assert len(observations) >= 0
-        
+
     assert result["errors"] == []
     print("\n  [ok] ingest_observations emitted observations with no errors")
     print("        (note: in REAL mode you may want to delete these seeded resources)")

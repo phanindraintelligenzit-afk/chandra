@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-
 from src.chandra.tools import performance
 from src.chandra.tools.base import DetectorContext
 
@@ -74,7 +73,7 @@ class TestRdsUnderutilized:
             return {
                 "Label": metric_name,
                 "Datapoints": [
-                    {"Average": value, "Timestamp": datetime.now(timezone.utc)},
+                    {"Average": value, "Timestamp": datetime.now(UTC)},
                 ],
             }
 
@@ -99,7 +98,7 @@ class TestOversizedEc2:
             return {
                 "Label": "CPUUtilization",
                 "Datapoints": [
-                    {"Maximum": 12.0, "Timestamp": datetime.now(timezone.utc)},
+                    {"Maximum": 12.0, "Timestamp": datetime.now(UTC)},
                 ],
             }
 

@@ -14,6 +14,7 @@ BREAKING: the old action_executor_node returned {"action_result": <dict>,
 "action_executed": bool}. It now returns {"action_results": list[ActionResult]}.
 Nothing in the codebase reads the old keys.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -237,9 +238,7 @@ class ActionExecutor:
 
         except Exception as e:
             message = f"Failed to execute {action_type}: {e!s}"
-            audit_entry = (
-                f"[{timestamp}] FAILED: {action_type} on {resource_id}. Error: {e!s}"
-            )
+            audit_entry = f"[{timestamp}] FAILED: {action_type} on {resource_id}. Error: {e!s}"
             logger.error(message)
 
             return {
@@ -256,11 +255,11 @@ class ActionExecutor:
         self.s3_client.put_public_access_block(
             Bucket=bucket_name,
             PublicAccessBlockConfiguration={
-                'BlockPublicAcls': True,
-                'IgnorePublicAcls': True,
-                'BlockPublicPolicy': True,
-                'RestrictPublicBuckets': True
-            }
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
+            },
         )
 
     def _fix_open_sg(self, sg_id: str, region: str) -> None:
@@ -268,10 +267,12 @@ class ActionExecutor:
         logger.info(f"Fixing security group: {sg_id}")
         self.ec2_client.revoke_security_group_ingress(
             GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": "-1",
-                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
-            }],
+            IpPermissions=[
+                {
+                    "IpProtocol": "-1",
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                }
+            ],
         )
 
     def _disable_iam_key(self, key_id: str, region: str) -> None:
@@ -403,12 +404,14 @@ def action_executor_node(state: ChandraState) -> dict[str, Any]:
 
         try:
             executor = ActionExecutor(dry_run=dry_run, region=write.region)
-            outcome = executor.run({
-                "action_type": write.action,
-                "resource_id": resource_id,
-                "region": write.region,
-                "problem_type": handler.problem_type,
-            })
+            outcome = executor.run(
+                {
+                    "action_type": write.action,
+                    "resource_id": resource_id,
+                    "region": write.region,
+                    "problem_type": handler.problem_type,
+                }
+            )
         except Exception as exc:
             results.append(
                 ActionResult(

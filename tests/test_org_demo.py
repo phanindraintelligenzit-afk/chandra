@@ -1,4 +1,5 @@
-﻿import json
+import json
+
 from src.chandra.aws.organizations import Account
 from src.chandra.briefing.org_summary import (
     aggregate_org_scorecard,
@@ -110,9 +111,7 @@ account_briefings = {
     "555555555555": "Analytics: 1 critical, 10 high, 22 medium findings. Cost: $876.50",
 }
 
-org_scorecard = aggregate_org_scorecard(
-    account_scorecards
-)
+org_scorecard = aggregate_org_scorecard(account_scorecards)
 
 org_briefing = build_org_briefing(
     account_briefings,

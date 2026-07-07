@@ -15,9 +15,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
-
 from src.chandra.config import settings
-from src.chandra.db.models import Briefing, EvalRun, Finding as FindingRow, Run
+from src.chandra.db.models import Briefing, EvalRun, Run
+from src.chandra.db.models import Finding as FindingRow
 from src.chandra.db.session import session_scope
 
 st.set_page_config(
@@ -53,9 +53,7 @@ def list_runs(limit: int = 100) -> pd.DataFrame:
 @st.cache_data(ttl=30)
 def load_briefing(run_id: str) -> dict[str, Any] | None:
     with session_scope() as sess:
-        briefing = (
-            sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
-        )
+        briefing = sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
         if briefing is None:
             return None
         return {
@@ -210,9 +208,7 @@ with tab_findings:
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
-            kra_filter = st.multiselect(
-                "KRA", sorted(findings_df["kra"].unique()), default=[]
-            )
+            kra_filter = st.multiselect("KRA", sorted(findings_df["kra"].unique()), default=[])
         with c2:
             severity_filter = st.multiselect(
                 "Severity",
@@ -242,9 +238,7 @@ with tab_findings:
         st.divider()
         st.subheader("Evidence drill-down")
         for _, row in filtered.iterrows():
-            with st.expander(
-                f"[{row['severity'].upper()}] {row['detector_id']} — {row['title']}"
-            ):
+            with st.expander(f"[{row['severity'].upper()}] {row['detector_id']} — {row['title']}"):
                 st.markdown(f"**Resource:** `{row['resource_arn']}`")
                 st.markdown(f"**Region:** {row['region']}")
                 st.markdown("**Recommendation:**")

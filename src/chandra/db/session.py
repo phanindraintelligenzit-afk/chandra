@@ -7,7 +7,6 @@ from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
-
 from src.chandra.config import settings
 
 _engine: Engine | None = None

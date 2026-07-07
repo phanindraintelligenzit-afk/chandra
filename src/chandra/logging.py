@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
-import json
-import structlog
 
+import structlog
 from src.chandra.config import settings
 
 _configured = False
@@ -51,13 +51,14 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     configure_logging()
     return structlog.get_logger(name)  # type: ignore[no-any-return]
 
+
 def audit_log(agent, action, output):
- 
+
     log = {
         "timestamp": datetime.utcnow().isoformat(),
         "agent_id": agent,
         "action": action,
-        "output": output
+        "output": output,
     }
 
     logger.info(json.dumps(log))

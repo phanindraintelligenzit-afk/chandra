@@ -1,4 +1,4 @@
-﻿"""CloudTrail audit scanner."""
+"""CloudTrail audit scanner."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from src.chandra.aws.compliance_models import ComplianceFinding
 
 def scan_cloudtrail() -> list[ComplianceFinding]:
     """Scan CloudTrail for disabled logging."""
-    
+
     client = boto3.client("cloudtrail")
     findings: list[ComplianceFinding] = []
 
     try:
         response = client.describe_trails()
-        
+
         for trail in response.get("trailList", []):
             trail_name = trail.get("Name", "unknown")
             is_logging = trail.get("IsLogging", True)
-            
+
             if not is_logging:
                 findings.append(
                     ComplianceFinding(

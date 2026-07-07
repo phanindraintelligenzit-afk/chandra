@@ -25,11 +25,10 @@ LG-07: _route_kra_workers now passes a slim projection
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langgraph.types import Send, interrupt
-
 from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.aws.regions import active_regions
 from src.chandra.briefing.composer import (
@@ -45,12 +44,13 @@ from src.chandra.briefing.schemas import (
     Observation,
     ProposedWrite,
 )
-from src.chandra.db.models import Briefing, Finding as FindingRow, Run
+from src.chandra.db.models import Briefing, Run
+from src.chandra.db.models import Finding as FindingRow
 from src.chandra.db.session import session_scope
 from src.chandra.escalation.publisher import SNSPublisher
 from src.chandra.escalation.schemas import EscalationPayload
-from src.chandra.graphs.state import ChandraState
 from src.chandra.graphs.action_nodes.action_executor import action_executor_node  # noqa: F401
+from src.chandra.graphs.state import ChandraState
 from src.chandra.logging import get_logger
 from src.chandra.observability import traced_node
 from src.chandra.tools import compliance, cost, performance, reliability, security
@@ -221,16 +221,12 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
                             region=region,
                             name=alarm["AlarmName"],
                             state=alarm["StateValue"],
-                            observed_at=alarm.get(
-                                "StateUpdatedTimestamp", datetime.now(timezone.utc)
-                            ),
+                            observed_at=alarm.get("StateUpdatedTimestamp", datetime.now(UTC)),
                             raw={
                                 "namespace": alarm.get("Namespace", ""),
                                 "metric_name": alarm.get("MetricName", ""),
                                 "threshold": alarm.get("Threshold"),
-                                "comparison_operator": alarm.get(
-                                    "ComparisonOperator", ""
-                                ),
+                                "comparison_operator": alarm.get("ComparisonOperator", ""),
                             },
                         )
                     )
@@ -246,12 +242,10 @@ def ingest_observations(state: ChandraState) -> dict[str, Any]:
                             region=region,
                             name=rule["Name"],
                             state=rule["State"],
-                            observed_at=datetime.now(timezone.utc),
+                            observed_at=datetime.now(UTC),
                             raw={
                                 "event_bus_name": rule.get("EventBusName", "default"),
-                                "schedule_expression": rule.get(
-                                    "ScheduleExpression", ""
-                                ),
+                                "schedule_expression": rule.get("ScheduleExpression", ""),
                                 "event_pattern": rule.get("EventPattern", ""),
                                 "description": rule.get("Description", ""),
                             },
@@ -285,9 +279,7 @@ def decision_router(state: ChandraState) -> dict[str, Any]:
 
     for af in analyzed:
         f = af.finding
-        risk: Literal["low", "high"] = (
-            "high" if f.severity in ESCALATE_SEVERITIES else "low"
-        )
+        risk: Literal["low", "high"] = "high" if f.severity in ESCALATE_SEVERITIES else "low"
         write = ProposedWrite(
             action=f"remediate_{f.detector_id}",
             target_arn=f.resource_arn,
@@ -361,7 +353,7 @@ def compose_briefing(state: ChandraState) -> dict[str, Any]:
     executive = compose_executive_summary(analyzed, scorecard)
     metadata = {
         "regions": state.get("regions", []),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "errors": state.get("errors", []),
     }
     briefing_md, briefing_json = render_markdown(
@@ -455,7 +447,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 id=run_id,
                 account_id=account_id,
                 status="completed",
-                finished_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(UTC),
                 errors_json=errors,
                 bedrock_cost_usd=state.get("bedrock_cost_usd", 0.0),
             )
@@ -463,7 +455,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
         else:
             run.account_id = account_id
             run.status = "completed"
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             run.errors_json = errors
             run.bedrock_cost_usd = state.get("bedrock_cost_usd", 0.0)
 
@@ -484,9 +476,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
                 )
             )
 
-        existing_briefing = (
-            sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
-        )
+        existing_briefing = sess.query(Briefing).filter(Briefing.run_id == run_id).one_or_none()
         if existing_briefing is None:
             sess.add(
                 Briefing(

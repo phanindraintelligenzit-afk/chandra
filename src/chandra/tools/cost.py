@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from src.chandra.briefing.schemas import Finding
 from src.chandra.tools.base import DetectorContext
@@ -26,8 +25,7 @@ def find_unattached_ebs(ctx: DetectorContext) -> list[Finding]:
                             region=region,
                             detector_id="COST-002-unattached-ebs",
                             resource_arn=(
-                                f"arn:aws:ec2:{region}:{ctx.account_id}"
-                                f":volume/{volume['VolumeId']}"
+                                f"arn:aws:ec2:{region}:{ctx.account_id}:volume/{volume['VolumeId']}"
                             ),
                             resource_type="AWS::EC2::Volume",
                             title=f"Unattached EBS volume {volume['VolumeId']}",
@@ -162,15 +160,14 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
                         MetricName="CPUUtilization",
                         Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
                         StartTime=instance["LaunchTime"],
-                        EndTime=datetime.now(timezone.utc),
+                        EndTime=datetime.now(UTC),
                         Period=300,
                         Statistics=["Average"],
                     )
 
                     if metrics["Datapoints"]:
-                        avg_cpu = (
-                            sum(dp["Average"] for dp in metrics["Datapoints"])
-                            / len(metrics["Datapoints"])
+                        avg_cpu = sum(dp["Average"] for dp in metrics["Datapoints"]) / len(
+                            metrics["Datapoints"]
                         )
 
                         if avg_cpu < 5.0:
@@ -198,9 +195,7 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
                                 )
                             )
         except Exception as e:
-            ctx.errors.append(
-                {"region": region, "detector": "COST-001-idle-ec2", "error": str(e)}
-            )
+            ctx.errors.append({"region": region, "detector": "COST-001-idle-ec2", "error": str(e)})
 
     return findings
 

@@ -1,5 +1,5 @@
-﻿import json
-from datetime import datetime, timezone
+import json
+from datetime import UTC, datetime
 
 print("=" * 70)
 print("ESCALATION NODE DEMO - Publishing Critical Findings to SNS")
@@ -15,7 +15,7 @@ escalations = [
         "region": "us-east-1",
         "summary": "Security group allows unrestricted SSH access (0.0.0.0/0)",
         "recommended_action": "Remove 0.0.0.0/0 from security group ingress rules",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     },
     {
         "finding_id": "find-sec-002",
@@ -25,7 +25,7 @@ escalations = [
         "region": "us-east-1",
         "summary": "S3 bucket does not have encryption enabled",
         "recommended_action": "Enable default encryption on S3 bucket",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     },
     {
         "finding_id": "find-comp-001",
@@ -35,7 +35,7 @@ escalations = [
         "region": "global",
         "summary": "IAM user has not rotated access keys in 90+ days",
         "recommended_action": "Rotate IAM access keys immediately",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     },
 ]
 
@@ -57,8 +57,8 @@ print("=" * 70)
 critical = sum(1 for e in escalations if e["severity"] == "CRITICAL")
 high = sum(1 for e in escalations if e["severity"] == "HIGH")
 medium = sum(1 for e in escalations if e["severity"] == "MEDIUM")
-print("Critical: {} | High: {} | Medium: {}".format(critical, high, medium))
-print("Total Escalations: {}".format(len(escalations)))
+print(f"Critical: {critical} | High: {high} | Medium: {medium}")
+print(f"Total Escalations: {len(escalations)}")
 print("SNS Topic: arn:aws:sns:us-east-1:827295473120:chandra-escalations")
 print("Status: All messages published successfully ✓")
 print("=" * 70)
@@ -74,8 +74,8 @@ json_output = {
         "high_count": high,
         "medium_count": medium,
         "sns_topic": "arn:aws:sns:us-east-1:827295473120:chandra-escalations",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+        "timestamp": datetime.now(UTC).isoformat(),
+    },
 }
 print(json.dumps(json_output, indent=2))
 print()
