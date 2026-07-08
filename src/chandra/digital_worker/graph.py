@@ -20,7 +20,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy.exc import SQLAlchemyError
@@ -61,6 +60,7 @@ from src.chandra.graphs.action_nodes.action_executor import (
     ActionExecutor,
     registered_problem_type,
 )
+from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -600,8 +600,11 @@ def persist(state: DigitalWorkerState) -> dict[str, Any]:
 def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     """Compile the Digital Worker request workflow.
 
-    Pass an explicit checkpointer in tests; defaults to an in-memory
-    saver (each request is a fresh thread keyed by the FastAPI job id).
+    Pass an explicit checkpointer in tests (e.g. a ``MemorySaver``);
+    defaults to the shared durable checkpointer (Postgres in production,
+    in-memory fallback when unavailable) so a request paused at the human
+    approval gate survives a process restart and can still be resumed by
+    ``thread_id`` (== the FastAPI job id).
     """
     graph: StateGraph[DigitalWorkerState] = StateGraph(DigitalWorkerState)
 
@@ -652,7 +655,7 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("audit", "persist")
     graph.add_edge("persist", END)
 
-    saver = checkpointer if checkpointer is not None else MemorySaver()
+    saver = checkpointer if checkpointer is not None else build_checkpointer()
     # ``interrupt_before`` makes the human gate real (see the core graph's
     # build_graph for why the function-level interrupt alone is not enough
     # in LangGraph 1.x).

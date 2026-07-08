@@ -153,8 +153,10 @@ receive_request → understand_request → classify_request → identify_platfor
 |----------|---------|
 | `POST /requests` | Submit a request via REST (`{source, payload, dry_run}`) → `202 {job_id}` |
 | `POST /webhooks/{source}` | Channel-native webhook intake (auth via `CHANDRA_WEBHOOK_TOKEN` when set) |
+| `GET /requests` | List Digital Worker requests for the approval center; `?status=awaiting_approval` filter |
+| `GET /requests/{job_id}` | Full detail: approval card (plan + risk + RCA) or terminal workflow result |
 | `GET /jobs/status/{job_id}` | Poll workflow status; `awaiting_approval` carries the plan + risk payload |
-| `POST /requests/{job_id}/approve` | Approve/reject a workflow paused at the approval gate |
+| `POST /requests/{job_id}/approve` | Approve (`approved:true`) / reject (`approved:false`) a workflow paused at the gate |
 | `GET /health` · `GET /health/ready` | Liveness / per-component readiness |
 
 ```bash
@@ -179,9 +181,26 @@ curl -X POST localhost:6001/requests -H 'Content-Type: application/json' -d '{
 - **Approval policy**: P1 priority, high/critical risk, or irreversible plans
   pause at `approval_gate` (`interrupt_before`); rejection yields an engineer
   guidance document instead of execution.
-- **Known limitation**: the Digital Worker graph uses an in-memory
-  checkpointer — a workflow paused for approval does not survive a process
-  restart (tracked as roadmap: Postgres checkpointer).
+- **Durable human-in-the-loop**: the Digital Worker shares the core graph's
+  checkpointer factory (`src/chandra/graphs/checkpointer.py`) — Postgres in
+  production (a paused approval survives a process restart and is resumable by
+  `thread_id`), with an in-memory fallback when Postgres is unreachable.
+
+### Human Approval Center (frontend)
+
+The Next.js console renders a **Human Approval Center**
+(`frontend/components/HumanApprovalCenter.tsx`, mounted in
+`ChandraExperience`) wired directly to the Digital Worker — distinct from the
+legacy `WorkerActionExecutionCenter` (which drives the `/orchestrate`
+escalation flow). It polls `GET /requests` every few seconds (the same async
+pattern the rest of `services/api.ts` uses), so a request arriving on any
+channel — Jira, Slack, Teams, email, CloudWatch, Azure/GCP monitoring, or a
+raw webhook — appears automatically with no manual refresh. Each card shows
+source, ticket, summary, category, platform, priority, risk score, RCA
+summary, resolution plan, decision reason, and live status; requests paused at
+the gate expose **Approve** / **Reject** controls that call
+`POST /requests/{job_id}/approve` to resume the LangGraph run. Status tiles
+roll up pending / in-flight / completed / failed counts.
 
 Environment variables for notifications, Jira, and webhook auth are documented
 in `.env.example`.
