@@ -214,7 +214,5 @@ class TestApprovalCenterDiscovery:
             json={"source": "rest_api", "payload": {"title": "no approval needed here"}},
         ).json()["job_id"]
         _poll_request(client, job_id, {"completed"})
-        conflict = client.post(
-            f"/requests/{job_id}/approve", json={"approved": True}
-        )
+        conflict = client.post(f"/requests/{job_id}/approve", json={"approved": True})
         assert conflict.status_code == 409
