@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from src.chandra.config import settings
 from src.chandra.graphs.action_nodes import (
     _route_kra_workers,
     action_executor_node,
@@ -25,6 +23,7 @@ from src.chandra.graphs.action_nodes import (
     onboard_account,
     persist,
 )
+from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.graphs.state import ChandraState
 from src.chandra.logging import get_logger
 
@@ -40,48 +39,6 @@ logger = get_logger(__name__)
 # deprecation noise. The future-strict mode (``LANGGRAPH_STRICT_MSGPACK=true``)
 # will force a real fix: either a custom serde that preserves pydantic
 # types, or migrating state fields to plain dicts.
-
-
-def _build_checkpointer() -> Any:
-    """Return a checkpointer.
-
-    Prefers Postgres (production); falls back to in-memory if the Postgres
-    checkpoint library is unavailable in the runtime environment. The
-    fallback is logged at WARNING so it never silently regresses.
-    """
-    try:
-        from langgraph.checkpoint.postgres import (  # noqa: PLC0415  # lazy: optional dep
-            PostgresSaver,
-        )
-    except ImportError:
-        logger.warning("checkpointer.postgres_unavailable_fallback_to_memory")
-        return MemorySaver()
-
-    try:
-        # Convert SQLAlchemy URL format to psycopg native format
-        # postgresql+psycopg://... → postgresql://...
-        import psycopg  # noqa: PLC0415  # lazy: optional dep
-        from psycopg.rows import dict_row  # noqa: PLC0415  # lazy: optional dep
-        from psycopg_pool import (  # noqa: PLC0415  # lazy: optional dep
-            ConnectionPool,
-        )
-
-        conn_string = settings.postgres_url.replace("postgresql+psycopg://", "postgresql://")
-
-        with psycopg.connect(conn_string, autocommit=True, row_factory=dict_row) as conn:
-            PostgresSaver(conn).setup()
-
-        # kwargs row_factory yields dict rows at runtime; ConnectionPool's
-        # type parameter cannot express that, hence the cast.
-        pool = ConnectionPool(conn_string, max_size=10, kwargs={"row_factory": dict_row})
-        checkpointer = PostgresSaver(cast(Any, pool))
-        return checkpointer
-    except Exception as exc:
-        logger.warning(
-            "checkpointer.postgres_setup_failed_fallback_to_memory",
-            error=str(exc),
-        )
-        return MemorySaver()
 
 
 def build_graph(checkpointer: Any | None = None) -> Any:
@@ -152,7 +109,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("approval_node", "persist")
     graph.add_edge("persist", END)
 
-    saver = checkpointer if checkpointer is not None else _build_checkpointer()
+    saver = checkpointer if checkpointer is not None else build_checkpointer()
     # ``interrupt_before`` on ``approval_node`` actually halts the graph at
     # the human-in-the-loop gate. The function-level ``interrupt(...)`` in
     # approval_node alone is NOT enough in LangGraph 1.x — the runtime

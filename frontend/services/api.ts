@@ -733,6 +733,8 @@ export type OrchestrateRequest = {
     actionDescription: string;
     steps?: string[];
     service?: string;
+    kraCode?: string;
+    priorityLevel?: string;
   };
   sandbox_path?: string;
   reference_folder?: string;
@@ -801,6 +803,174 @@ export async function getJobStatus(
 
 export function subscribeToOperationsStream(_handlers: OperationsStreamHandlers): () => void {
   return () => {};
+}
+
+// ── Digital Worker · Human Approval Center ─────────────────────────────────────
+// Wires the Next.js console to the omnichannel Digital Worker workflow
+// (POST /webhooks/{source}, POST /requests) and its human approval gate
+// (POST /requests/{job_id}/approve). Discovery is via GET /requests — the
+// approval center polls it, so no job_id needs to be known in advance.
+
+export type DigitalWorkerStatus =
+  | "pending"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+/** One row in the approval-center list (GET /requests). */
+export type DigitalWorkerRequestSummary = {
+  job_id: string;
+  status: DigitalWorkerStatus;
+  progress: number;
+  message: string;
+  source: string | null;
+  title: string | null;
+  external_id: string | null;
+  category: string | null;
+  platform: string | null;
+  priority: string | null;
+  risk_level: string | null;
+  risk_score: number | null;
+  decision_mode: string | null;
+  reason: string | null;
+  requires_approval: boolean;
+  workflow_status?: string | null;
+  submitted_at: number | null;
+  started_at: number | null;
+  completed_at: number | null;
+};
+
+export type DigitalWorkerListResponse = {
+  status: string;
+  count: number;
+  counts: Record<string, number>;
+  requests: DigitalWorkerRequestSummary[];
+};
+
+export type ResolutionStep = {
+  order: number;
+  action: string;
+  detail?: string;
+  command?: string | null;
+  expected_outcome?: string | null;
+};
+
+export type ApprovalRequestDetail = {
+  request_id: string;
+  external_id?: string | null;
+  source: string;
+  title: string;
+  description?: string;
+  requester?: string | null;
+  category?: string;
+  platform?: string;
+  priority?: string;
+  services?: string[];
+  root_cause?: {
+    summary?: string;
+    probable_causes?: string[];
+    evidence?: string[];
+    confidence?: number;
+    generated_by?: string;
+  };
+  plan?: {
+    generated_by?: string;
+    steps?: ResolutionStep[];
+    rollback_steps?: ResolutionStep[];
+    detector_id?: string | null;
+    automation_available?: boolean;
+    notes?: string;
+  };
+  risk?: {
+    level?: string;
+    score?: number;
+    factors?: string[];
+    reversible?: boolean;
+    requires_approval?: boolean;
+  };
+  decision_mode?: string;
+  reason?: string;
+  resume_url?: string;
+};
+
+export type DigitalWorkerRequestDetail = {
+  status: string;
+  request: DigitalWorkerRequestSummary;
+  detail?: {
+    status?: string;
+    approval_request?: ApprovalRequestDetail;
+    output?: Record<string, unknown>;
+  } | null;
+  error?: string | null;
+};
+
+export type ApprovalDecisionInput = {
+  approved: boolean;
+  approver?: string;
+  comment?: string;
+};
+
+export type SubmitRequestInput = {
+  source?: string;
+  payload: Record<string, unknown>;
+  dry_run?: boolean;
+};
+
+export type SubmitRequestResponse = {
+  job_id: string;
+  status: string;
+  message: string;
+  poll_url: string;
+};
+
+/** List Digital Worker requests, optionally filtered by status. */
+export async function listDigitalWorkerRequests(
+  status?: DigitalWorkerStatus,
+  options: { signal?: AbortSignal } = {}
+): Promise<DigitalWorkerListResponse> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request<DigitalWorkerListResponse>(`/requests${qs}`, {
+    method: "GET",
+    signal: options.signal
+  }, 30_000);
+}
+
+/** Full detail for one Digital Worker request (approval payload + result). */
+export async function getDigitalWorkerRequest(
+  jobId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<DigitalWorkerRequestDetail> {
+  return request<DigitalWorkerRequestDetail>(`/requests/${encodeURIComponent(jobId)}`, {
+    method: "GET",
+    signal: options.signal
+  }, 30_000);
+}
+
+/** Approve (approved=true) or reject (approved=false) a paused request. */
+export async function submitDigitalWorkerApproval(
+  jobId: string,
+  decision: ApprovalDecisionInput,
+  options: { signal?: AbortSignal } = {}
+): Promise<SubmitRequestResponse> {
+  return request<SubmitRequestResponse>(`/requests/${encodeURIComponent(jobId)}/approve`, {
+    method: "POST",
+    body: JSON.stringify(decision),
+    signal: options.signal
+  }, 30_000);
+}
+
+/** Submit a cloud operations request via the first-party REST channel. */
+export async function submitDigitalWorkerRequest(
+  input: SubmitRequestInput,
+  options: { signal?: AbortSignal } = {}
+): Promise<SubmitRequestResponse> {
+  return request<SubmitRequestResponse>("/requests", {
+    method: "POST",
+    body: JSON.stringify({ source: "rest_api", dry_run: true, ...input }),
+    signal: options.signal
+  }, 30_000);
 }
 
 // ── Custom KRA persistence (customKras.json on backend) ────────────────────────

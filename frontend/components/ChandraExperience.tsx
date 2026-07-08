@@ -5,6 +5,7 @@ import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agen
 import { getKraMetric } from "@/store/kraCatalog";
 import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
+import { HumanApprovalCenter } from "./HumanApprovalCenter";
 import {
   buildKraPayload,
   deriveApprovals,
@@ -1360,12 +1361,12 @@ function OperationsCopilot({
   }, [open, isExpanded]);
 
   const [prompt, setPrompt] = useState("");
-  const [hitlAnswers, setHitlAnswers] = useState<Record<string, string[]>>({});
+  const [hitlAnswers, setHitlAnswers] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `session-${Math.random().toString(36).slice(2, 10)}`);
   const [messages, setMessages] = useState<CopilotChatMessage[]>([
     { role: "system", text: "Context synchronized. Latest high-risk incident status available.", meta: "memory: incidents / approvals / audit" },
-    { role: displayAgentName.toLowerCase(), text: "Live operational context is ready. Ask about incidents, approvals, cost posture, compliance, or remediation risk.", meta: "live copilot ready" }
+    { role: displayAgentName.toLowerCase() as CopilotChatMessage["role"], text: "Live operational context is ready. Ask about incidents, approvals, cost posture, compliance, or remediation risk.", meta: "live copilot ready" }
   ]);
 
   const suggestions = ["/review-pending-approvals", "/summarize-high-risk-incidents", "/draft-approval-email", "/explain-governance"];
@@ -1411,7 +1412,7 @@ function OperationsCopilot({
       setMessages((current) => [
         ...current,
         {
-          role: displayAgentName.toLowerCase(),
+          role: displayAgentName.toLowerCase() as CopilotChatMessage["role"],
           text: "I could not reach the live copilot endpoint. Operational context is preserved; retry when the backend is reachable.",
           meta: message
         }
@@ -2863,7 +2864,7 @@ export function ChandraExperience() {
           .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
         
         const currentActionsForKra = observations?.actions?.filter(a => {
-          const aCode = (a.kraCode || a.kra_code || "").toUpperCase().replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
+          const aCode = ((a.kraCode || (a as { kra_code?: string }).kra_code || "")).toUpperCase().replace(/^KRA[.\-_]?0*(\d+)$/, (_: string, n: string) => `KRA-${n.padStart(2, "0")}`);
           return aCode === normalizedCode;
         }).length || 0;
         
@@ -3006,6 +3007,12 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <HumanReviewQueue seed={approvalsAsRow} rawActions={observations?.actions} sync={observationsSync} onAutoApproved={handleExecuteAction} />
+        </div>
+      </section>
+
+      <section className="section-shell">
+        <div className="section-inner">
+          <HumanApprovalCenter />
         </div>
       </section>
 

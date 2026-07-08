@@ -258,7 +258,8 @@ frontend/
 ├── components/
 │   ├── OnboardingWizard.tsx    # Five-step provisioning flow
 │   ├── ChandraExperience.tsx   # Full operations dashboard composition
-│   └── WorkerActionExecutionCenter.tsx  # Approval center + actions
+│   ├── WorkerActionExecutionCenter.tsx  # Legacy /orchestrate escalation center + actions
+│   └── HumanApprovalCenter.tsx # Digital Worker approval center (polls /requests; Approve/Reject → /requests/{id}/approve)
 ├── services/                   # Frontend HTTP / WS clients
 │   ├── api.ts                  # REST client to FastAPI app
 │   └── mapping.ts              # Backend payload → UI shape

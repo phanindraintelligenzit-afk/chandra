@@ -1101,17 +1101,31 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
         snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
         if snapshot.next and "approval_gate" in snapshot.next:
             values = snapshot.values
+            request = values["request"]
+            classification = values["classification"]
+            root_cause = values["root_cause"]
             with _job_store_lock:
                 _job_store[job_id]["status"] = "awaiting_approval"
                 _job_store[job_id]["progress"] = 70
                 _job_store[job_id]["message"] = "Awaiting human approval"
+                _job_store[job_id]["title"] = request.title
                 _job_store[job_id]["result"] = {
                     "status": "awaiting_approval",
                     "approval_request": {
-                        "request_id": values["request"].request_id,
-                        "title": values["request"].title,
+                        "request_id": request.request_id,
+                        "external_id": request.external_id,
+                        "source": request.source.value,
+                        "title": request.title,
+                        "description": request.description,
+                        "requester": request.requester,
+                        "category": classification.category.value,
+                        "platform": classification.platform.value,
+                        "priority": classification.priority.value,
+                        "services": classification.services,
+                        "root_cause": root_cause.model_dump(mode="json"),
                         "plan": values["plan"].model_dump(mode="json"),
                         "risk": values["risk"].model_dump(mode="json"),
+                        "decision_mode": values["decision"].mode.value,
                         "reason": values["decision"].reason,
                         "resume_url": f"/requests/{job_id}/approve",
                     },
@@ -1168,6 +1182,67 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
         _thread_local.job_id = None
 
 
+def _dw_submission_title(submission: CloudRequestSubmission) -> str:
+    """Best-effort human title for a queued request, before classification.
+
+    The workflow overwrites this with the normalized CloudRequest.title
+    once ``receive_request`` runs; until then we surface whatever the
+    channel payload carried so the approval center list is never blank.
+    """
+    payload = submission.payload or {}
+    for key in ("title", "summary", "subject", "AlarmName", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:200]
+    fields = payload.get("fields")
+    if isinstance(fields, dict):
+        summary = fields.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()[:200]
+    return f"{submission.source} request"
+
+
+def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a Digital Worker job into the approval-center list shape.
+
+    Pulls the richer fields (category, platform, priority, risk, reason)
+    out of the awaiting-approval result payload when present, so the
+    frontend can render a full card without a second round-trip.
+    """
+    result = job.get("result") or {}
+    approval = result.get("approval_request") or {}
+    output = result.get("output") or {}
+    # Prefer the live approval payload; fall back to the terminal
+    # WorkflowResult so completed/failed cards stay fully populated.
+    classification = output.get("classification") or {}
+    out_risk = output.get("risk") or {}
+    out_decision = output.get("decision") or {}
+    request = output.get("request") or {}
+    risk = approval.get("risk") or out_risk
+    summary: Dict[str, Any] = {
+        "job_id": job_id,
+        "status": job.get("status"),
+        "progress": job.get("progress", 0),
+        "message": job.get("message", ""),
+        "source": approval.get("source") or request.get("source") or job.get("source"),
+        "title": approval.get("title") or request.get("title") or job.get("title"),
+        "external_id": approval.get("external_id") or request.get("external_id"),
+        "category": approval.get("category") or classification.get("category"),
+        "platform": approval.get("platform") or classification.get("platform"),
+        "priority": approval.get("priority") or classification.get("priority"),
+        "risk_level": risk.get("level"),
+        "risk_score": risk.get("score"),
+        "decision_mode": approval.get("decision_mode") or out_decision.get("mode"),
+        "reason": approval.get("reason") or out_decision.get("reason"),
+        "requires_approval": job.get("status") == "awaiting_approval",
+        "workflow_status": output.get("status"),
+        "submitted_at": job.get("submitted_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+    }
+    return summary
+
+
 def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONResponse:
     if submission.source not in SUPPORTED_SOURCES:
         return JSONResponse(status_code=400, content={
@@ -1180,8 +1255,17 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
         })
     job_id = str(uuid.uuid4())
     logger.info("Digital Worker request submitted → job_id=%s source=%s", job_id, submission.source)
+    import time
     with _job_store_lock:
         _job_store[job_id] = {
+            # ``kind`` tags this job as a Digital Worker request so the
+            # GET /requests discovery endpoint can list it apart from the
+            # legacy observation/orchestrate jobs that share _job_store.
+            "kind": "digital_worker",
+            "source": submission.source,
+            "title": _dw_submission_title(submission),
+            "dry_run": submission.dry_run,
+            "submitted_at": time.time(),
             "status": "pending", "progress": 0,
             "message": f"Queued: {submission.source} request workflow",
             "result": None, "error": None,
@@ -1254,6 +1338,56 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
         "job_id": job_id, "status": "accepted",
         "message": f"Approval decision submitted. Poll /jobs/status/{job_id}",
         "poll_url": f"/jobs/status/{job_id}",
+    })
+
+
+@app.get("/requests")
+def list_cloud_requests(status: Optional[str] = Query(default=None)):
+    """List Digital Worker requests for the Human Approval Center.
+
+    Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
+    ``completed``, ``failed``). Results are newest-first. This is the
+    discovery endpoint the approval center polls — no job_id needed.
+    """
+    with _job_store_lock:
+        items = [
+            _dw_request_summary(job_id, job)
+            for job_id, job in _job_store.items()
+            if job.get("kind") == "digital_worker" and (status is None or job.get("status") == status)
+        ]
+    items.sort(key=lambda row: row.get("submitted_at") or 0, reverse=True)
+    counts: Dict[str, int] = {}
+    with _job_store_lock:
+        for job in _job_store.values():
+            if job.get("kind") == "digital_worker":
+                key = str(job.get("status"))
+                counts[key] = counts.get(key, 0) + 1
+    return JSONResponse(status_code=200, content={
+        "status": "ok",
+        "count": len(items),
+        "counts": counts,
+        "requests": items,
+    })
+
+
+@app.get("/requests/{job_id}")
+def get_cloud_request(job_id: str):
+    """Full detail for one Digital Worker request (approval payload +
+    terminal workflow result when complete)."""
+    with _job_store_lock:
+        job = _job_store.get(job_id)
+        if job is None or job.get("kind") != "digital_worker":
+            return JSONResponse(status_code=404, content={
+                "status": "not_found",
+                "message": f"No Digital Worker request with id {job_id}",
+            })
+        job_copy = dict(job)
+    summary = _dw_request_summary(job_id, job_copy)
+    return JSONResponse(status_code=200, content={
+        "status": "ok",
+        "request": summary,
+        "detail": job_copy.get("result"),
+        "error": job_copy.get("error"),
     })
 
 
