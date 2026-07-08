@@ -129,16 +129,68 @@ START
 
 ---
 
-## 4. Forward-looking: Digital Worker design
+## 4. Digital Worker — omnichannel request workflow (IMPLEMENTED, DW-01)
 
-`architecture.txt` contains a 1192-line detailed comparison of the current Chandra
-architecture against the proposed **Digital Worker platform** — a self-healing,
-sandboxed, 7-agent pipeline (Observability → Analyzer → Planner → Generator →
-Executor → Validation → Reporter) with HITL gating, two reconciliation loops
-(Loop A code-fix, Loop B state reconciliation), and circuit breakers.
+The event-driven **Digital Worker** from `Proposedflow.tex` is implemented in
+`src/chandra/digital_worker/` and wired into the FastAPI surface. Requests
+from any supported channel flow through one governed LangGraph workflow:
 
-**Read `architecture.txt` before proposing any "agent that writes code" feature.**
-The plan there is the team's agreed direction.
+```
+Jira · Slack · Teams · Email · REST · Monitoring · CloudWatch · Azure Monitor · GCP Monitoring · Webhook
+        ↓  intake.normalize_request → CloudRequest envelope
+receive_request → understand_request → classify_request → identify_platform
+→ collect_context (CloudWatch alarms · runbooks/KB · prior Jira)
+→ root_cause_analysis → plan_resolution (memory-cache ▸ Bedrock via composer ▸ deterministic)
+→ risk_analysis → decision (deterministic)
+→ execute_automation | approval_gate (HITL interrupt) | generate_guidance
+→ validate_result → update_tracker (Jira) → notify (Slack/Teams/email/SNS)
+→ audit → persist (cloud_requests + resolution_memory tables)
+```
+
+### HTTP surface (`fastapi_app.py`, port 6001)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /requests` | Submit a request via REST (`{source, payload, dry_run}`) → `202 {job_id}` |
+| `POST /webhooks/{source}` | Channel-native webhook intake (auth via `CHANDRA_WEBHOOK_TOKEN` when set) |
+| `GET /jobs/status/{job_id}` | Poll workflow status; `awaiting_approval` carries the plan + risk payload |
+| `POST /requests/{job_id}/approve` | Approve/reject a workflow paused at the approval gate |
+| `GET /health` · `GET /health/ready` | Liveness / per-component readiness |
+
+```bash
+# Example: report a public S3 bucket via REST
+curl -X POST localhost:6001/requests -H 'Content-Type: application/json' -d '{
+  "source": "rest_api",
+  "payload": {"title": "S3 bucket acme-logs is public", "priority": "P2",
+               "resource_id": "acme-logs"},
+  "dry_run": true
+}'
+```
+
+### Guarantees
+
+- **Bedrock only via `briefing/composer.compose_request_analysis()`** — one LLM
+  round-trip per request, with a deterministic playbook fallback when Bedrock
+  is unreachable and a `resolution_memory` cache that skips the LLM entirely
+  for recurring problems.
+- **Deterministic decision engine**: auto-execution only for AWS requests that
+  map onto a registered `ActionExecutor` handler AND name their resource
+  explicitly in the payload; `dry_run=True` by default.
+- **Approval policy**: P1 priority, high/critical risk, or irreversible plans
+  pause at `approval_gate` (`interrupt_before`); rejection yields an engineer
+  guidance document instead of execution.
+- **Known limitation**: the Digital Worker graph uses an in-memory
+  checkpointer — a workflow paused for approval does not survive a process
+  restart (tracked as roadmap: Postgres checkpointer).
+
+Environment variables for notifications, Jira, and webhook auth are documented
+in `.env.example`.
+
+### Historical design documents
+
+`architecture.txt` (1192 lines) and `Proposedflow.tex` contain the original
+current-vs-target analysis that led to DW-01. Read them for background before
+proposing any "agent that writes code" feature.
 
 ---
 
