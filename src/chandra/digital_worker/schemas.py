@@ -198,6 +198,11 @@ class ExecutionOutcome(BaseModel):
     detail: str = ""
     step_results: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    execution_code: str = ""
+    execution_logs: str = ""
+    rollback_code: str = ""
+    rollback_logs: str = ""
+    sandbox_path: str | None = None
 
 
 class ValidationCheck(BaseModel):
@@ -209,6 +214,8 @@ class ValidationCheck(BaseModel):
 class ValidationResult(BaseModel):
     passed: bool = False
     checks: list[ValidationCheck] = Field(default_factory=list)
+    verification_code: str = ""
+    verification_logs: str = ""
 
 
 class NotificationResult(BaseModel):

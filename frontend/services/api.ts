@@ -774,6 +774,7 @@ export type JobStatusResponse = {
   error?: string;
   started_at?: number;
   completed_at?: number;
+  sandbox_path?: string;
 };
 
 export async function orchestrateAction(

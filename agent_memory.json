@@ -261,6 +261,86 @@
         "The AWS automation successfully deployed a t2"
       ],
       "lesson": "Always use dynamic AMI lookup via `aws_ami` data source instead of hardcoded IDs to ensure region compatibility and successful deployments across AWS regions."
+    },
+    {
+      "timestamp": "2026-07-08T13:33:07",
+      "action_name": "Deploy GuardDuty high-severity finding alert using CloudWatch Event",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation attempted to deploy a GuardDuty high-severity finding alert using Terraform via a CloudWatch Event, but pre-flight validation failed due to a Terraform configuration cycle: `Error: Cycl",
+        "The AWS automation successfully deployed a GuardDuty high-severity finding alert using Terraform, creating a CloudWatch Event Rule configured to trigger when 7 or more high-severity findings are detec"
+      ],
+      "lesson": "Using CloudWatch Event to trigger GuardDuty high-severity findings automation works reliably when the event pattern explicitly matches GuardDuty’s finding schema and is tied to a targeted Lambda function for alerting."
+    },
+    {
+      "timestamp": "2026-07-08T15:50:13",
+      "action_name": "Enable AWS Config in all regions to preserve audit trails",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "terraform init failed:"
+      ],
+      "fixes_applied": [
+        "The automation attempted to enable AWS Config across all 17 regions using Terraform, but the pre-flight `terraform validate` step failed because `terraform init` encountered configuration errors, prev",
+        "The automation attempted to enable AWS Config in all 17 regions using Terraform, but failed during the `terraform validate` pre-flight check due to an incompatible module usage",
+        "The automation attempted to enable AWS Config in all 17 regions using Terraform, running `terraform validate` and `py_compile` as pre-flight checks"
+      ],
+      "lesson": "Always use `for_each` with a map (not `count` with a list) when referencing dynamic module outputs like `module.config_recorder_per_region`, as `count.index` can’t be used directly in dynamic attribute references."
+    },
+    {
+      "timestamp": "2026-07-08T16:03:33",
+      "action_name": "create an EC2 Instance",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "terraform init failed:"
+      ],
+      "fixes_applied": [
+        "The automation attempted to validate and initialize a Terraform configuration to deploy a t2",
+        "The automation attempted to deploy a t2"
+      ],
+      "lesson": "Always validate Terraform configuration syntax and ensure all required providers and modules are properly declared before running `terraform init`."
+    },
+    {
+      "timestamp": "2026-07-08T16:17:51",
+      "action_name": "Create S3 bucket in us-east-1",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "terraform validate failed:"
+      ],
+      "fixes_applied": [
+        "The automation attempted to create an S3 bucket in us-east-1 using Terraform to fulfill KRA-05, but failed during the pre-flight `terraform validate` phase",
+        "The automation attempted to validate the Terraform configuration for creating an S3 bucket in us-east-1 but failed during the pre-flight `terraform init` phase",
+        "The automation attempted to create an S3 bucket using Terraform by running `terraform validate` as a pre-flight check, but it failed due to an unsupported attribute error"
+      ],
+      "lesson": "Always reference Terraform resource attributes correctly — `random_pet.bucket_suffix.result` is invalid; use `random_pet.bucket_suffix.id` instead."
+    },
+    {
+      "timestamp": "2026-07-08T16:54:08",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully initialized Terraform, validated the configuration, and applied a plan to deploy infrastructure in us-east-1 using the dynamically fetched Amazon Linux 2 AMI (ami-0483bbe24"
+      ],
+      "lesson": "Always configure the AWS provider with the correct region and ensure your IAM user/role has the necessary EC2 permissions before running `terraform apply`."
+    },
+    {
+      "timestamp": "2026-07-08T17:17:02",
+      "action_name": "Deploy t2.micro EC2 instance using Terraform",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform initialization and validation completed successfully, but the `terraform plan` command failed during variable validation",
+        "Terraform successfully initialized and validated the configuration, then generated a plan to create a t2",
+        "Terraform successfully initialized, validated, and applied a plan to deploy a t2"
+      ],
+      "lesson": "Always run `terraform init` before `terraform apply` — provider plugins must be downloaded before any infrastructure can be provisioned."
     }
   ]
 }

@@ -1040,7 +1040,7 @@ class CloudRequestSubmission(BaseModel):
         description="Channel-native payload; for rest_api use {title, description, priority, requester}."
     )
     dry_run: bool = Field(
-        default=True,
+        default=False,
         description="When False, approved automations perform real mutating AWS calls.",
     )
 
@@ -1071,6 +1071,12 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
         _job_store[job_id]["message"] = (
             f"Workflow {final_state.get('status', 'completed')} in {time.time() - start_time:.1f}s"
         )
+        
+        execution = final_state.get("execution")
+        if execution:
+            sandbox_path = execution.get("sandbox_path") if isinstance(execution, dict) else getattr(execution, "sandbox_path", None)
+            if sandbox_path:
+                _job_store[job_id]["sandbox_path"] = sandbox_path
 
 
 def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) -> None:
@@ -1190,15 +1196,29 @@ def _dw_submission_title(submission: CloudRequestSubmission) -> str:
     channel payload carried so the approval center list is never blank.
     """
     payload = submission.payload or {}
+    
+    # Try Jira webhook format first (issue.fields.summary)
+    issue = payload.get("issue")
+    if isinstance(issue, dict):
+        key = issue.get("key")
+        fields = issue.get("fields", {})
+        summary = fields.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            title = summary.strip()[:200]
+            return f"{key}: {title}" if key else title
+
+    # Fallback to direct fields
     for key in ("title", "summary", "subject", "AlarmName", "message"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()[:200]
+            
     fields = payload.get("fields")
     if isinstance(fields, dict):
         summary = fields.get("summary")
         if isinstance(summary, str) and summary.strip():
             return summary.strip()[:200]
+            
     return f"{submission.source} request"
 
 
@@ -1239,6 +1259,7 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "submitted_at": job.get("submitted_at"),
         "started_at": job.get("started_at"),
         "completed_at": job.get("completed_at"),
+        "sandbox_path": job.get("sandbox_path") or (output.get("execution") or {}).get("sandbox_path"),
     }
     return summary
 
@@ -1317,8 +1338,9 @@ def receive_webhook(
         return JSONResponse(status_code=401, content={
             "status": "error", "message": "invalid or missing X-Chandra-Webhook-Token",
         })
+    dry_run = payload.get("dry_run", False)
     return _submit_digital_worker_job(
-        CloudRequestSubmission(source=source, payload=payload, dry_run=True)
+        CloudRequestSubmission(source=source, payload=payload, dry_run=dry_run)
     )
 
 

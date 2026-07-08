@@ -234,34 +234,16 @@ def risk_analysis(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def decision(state: DigitalWorkerState) -> dict[str, Any]:
-    """Deterministic execute-vs-guidance decision. No LLM allowed here."""
-    plan = state["plan"]
-    risk = state["risk"]
-    if plan.automation_available and not risk.requires_approval:
-        verdict = ExecutionDecision(
-            mode=DecisionMode.AUTO_EXECUTE,
-            reason=(
-                f"automation registered ({plan.detector_id}) and "
-                f"risk {risk.level.value} needs no approval"
-            ),
-        )
-    elif plan.automation_available:
-        gate = (
-            "P1 priority"
-            if state["classification"].priority is RequestPriority.P1
-            else f"risk {risk.level.value}"
-        )
-        verdict = ExecutionDecision(
-            mode=DecisionMode.AWAIT_APPROVAL,
-            reason=(
-                f"automation registered ({plan.detector_id}) but {gate} requires human approval"
-            ),
-        )
-    else:
-        verdict = ExecutionDecision(
-            mode=DecisionMode.ENGINEER_GUIDANCE,
-            reason="no registered automation path for this request; producing engineer guidance",
-        )
+    """Dynamically evaluate the execute-vs-guidance decision using the Decision Engine."""
+    from src.chandra.digital_worker.decision_engine import evaluate_decision
+    
+    verdict = evaluate_decision(
+        request=state["request"],
+        classification=state["classification"],
+        plan=state["plan"],
+        risk=state["risk"]
+    )
+    
     logger.info(
         "graph.decision",
         request_id=state["request"].request_id,
@@ -330,49 +312,80 @@ def route_approval(state: DigitalWorkerState) -> str:
 
 
 def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
-    """Run the registered handler for the planned detector id.
-
-    Deterministic: resource id comes from the channel payload, never
-    inferred. ``dry_run`` defaults to True — real mutation is opt-in.
-    """
+    """Run the execution using the ExecutionAgents orchestrator."""
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
+    import json
+    
     request = state["request"]
     plan = state["plan"]
-    dry_run = state.get("dry_run", True)
-    detector_id = plan.detector_id or ""
-    problem_type = registered_problem_type(detector_id)
-    resource_id = explicit_resource_id(request)
-    region = str(request.raw_payload.get("region") or settings.aws_default_region)
-
-    if not (problem_type and resource_id):
+    classification = state["classification"]
+    dry_run = state.get("dry_run", False)
+    
+    if dry_run:
+        from src.chandra.digital_worker.schemas import ExecutionOutcome
         outcome = ExecutionOutcome(
-            status="skipped",
-            dry_run=dry_run,
-            detail="no registered handler or explicit resource id; nothing executed",
+            status="dry_run",
+            dry_run=True,
+            detail="ExecutionAgents orchestrator skipped due to dry-run mode."
         )
     else:
-        executor = ActionExecutor(dry_run=dry_run, region=region)
-        result = executor.run(
-            {
-                "action_type": f"remediate_{detector_id}",
-                "resource_id": resource_id,
-                "region": region,
-                "problem_type": problem_type,
-            }
+        # Map ResolutionPlan to ActionInput format
+        action_dict = {
+            "actionName": request.title or "Digital Worker Resolution",
+            "actionDescription": request.description or "Automated execution for request",
+            "service": ", ".join(classification.services) if classification.services else classification.platform.value,
+            "kraCode": None,
+            "priorityLevel": classification.priority.value,
+            "steps": [step.action for step in plan.steps]
+        }
+        
+        # Instantiate orchestrator with the request ID so logs match
+        orchestrator = ExecutionAgents(max_iterations=3, job_id=request.request_id)
+        
+        # Run it synchronously
+        response = orchestrator.RunPipeline(
+            action=action_dict,
+            sandbox_path=None,
+            reference_folder=None,
+            command_timeout=300
         )
-        status_map = {"success": "executed", "dry_run": "dry_run", "failure": "failed"}
+        
+        from src.chandra.digital_worker.schemas import ExecutionOutcome
+        status_map = {
+            200: "executed",
+            # We treat failed or needs_clarification as failed from the graph's perspective
+        }
+        status_str = status_map.get(response.statusCode, "failed")
+        
+        errors = []
+        if response.exception:
+            errors.append(response.exception)
+            
+        # Parse output logs if available
+        execution_logs = ""
+        if response.execution_results:
+            log_lines = []
+            for res in response.execution_results:
+                log_lines.append(f"Command: {res.command}")
+                if res.stdout: log_lines.append(res.stdout)
+                if res.stderr: log_lines.append(res.stderr)
+            execution_logs = "\n".join(log_lines)
+            
         outcome = ExecutionOutcome(
-            status=status_map.get(str(result.get("status")), "failed"),
+            status=status_str,
             dry_run=dry_run,
-            detail=str(result.get("message", "")),
-            step_results=[result],
-            errors=[str(result["error"])] if result.get("error") else [],
+            detail=response.summary or "Orchestrator completed",
+            errors=errors,
+            execution_logs=execution_logs,
+            execution_code=json.dumps([step.model_dump() for step in plan.steps]),
+            sandbox_path=response.sandbox_path
         )
+    
     logger.info(
         "graph.execute_automation",
         request_id=request.request_id,
         status=outcome.status,
         dry_run=dry_run,
-        detector_id=detector_id or None,
     )
     return {
         "execution": outcome,
@@ -382,8 +395,6 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
                 "automation_executed",
                 status=outcome.status,
                 dry_run=dry_run,
-                detector_id=detector_id or None,
-                resource_id=resource_id,
             )
         ],
     }
@@ -417,39 +428,29 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
+    from src.chandra.digital_worker.verifier import verify_execution
+    
     execution = state["execution"]
-    checks: list[ValidationCheck] = []
-    if execution.status in ("executed", "dry_run"):
-        checks.append(
-            ValidationCheck(
-                name="execution_completed",
-                passed=not execution.errors,
-                detail=execution.detail,
-            )
+    
+    if state.get("guidance_md") and execution.status == "skipped":
+        # Guidance path, no real execution to verify
+        from src.chandra.digital_worker.schemas import ValidationCheck, ValidationResult
+        validation = ValidationResult(
+            passed=True,
+            checks=[ValidationCheck(name="guidance_produced", passed=True, detail="engineer guidance rendered")]
         )
-        checks.append(
-            ValidationCheck(
-                name="all_steps_succeeded",
-                passed=all(r.get("status") != "failure" for r in execution.step_results),
-            )
+    else:
+        validation = verify_execution(
+            request=state["request"],
+            classification=state["classification"],
+            plan=state["plan"],
+            execution=execution,
         )
-    elif execution.status == "failed":
-        checks.append(
-            ValidationCheck(name="execution_completed", passed=False, detail=execution.detail)
-        )
-    else:  # guidance path
-        checks.append(
-            ValidationCheck(
-                name="guidance_produced",
-                passed=bool(state.get("guidance_md")),
-                detail="engineer guidance rendered",
-            )
-        )
-    validation = ValidationResult(passed=all(c.passed for c in checks), checks=checks)
+        
     return {
         "validation": validation,
         "audit_trail": [
-            _audit("validate_result", "validated", passed=validation.passed, checks=len(checks))
+            _audit("validate_result", "validated", passed=validation.passed, checks=len(validation.checks))
         ],
     }
 

@@ -35,20 +35,8 @@ from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Request-pattern → detector id with a registered ActionExecutor handler.
-# Keys are (category, frozenset of tokens that must ALL appear).
-_AUTOMATION_RULES: tuple[tuple[RequestCategory, frozenset[str], str], ...] = (
-    (RequestCategory.SECURITY, frozenset({"s3", "public"}), "SEC-001-public-s3"),
-    (RequestCategory.SECURITY, frozenset({"security", "group"}), "SEC-002-open-sg-ssh"),
-    (RequestCategory.SECURITY, frozenset({"stale", "key"}), "SEC-003-stale-key"),
-    (RequestCategory.SECURITY, frozenset({"iam", "key"}), "SEC-003-stale-key"),
-    (
-        RequestCategory.COST_OPTIMIZATION,
-        frozenset({"unattached", "ebs"}),
-        "COST-002-unattached-ebs",
-    ),
-    (RequestCategory.COST_OPTIMIZATION, frozenset({"untagged"}), "COST-004-untagged-billable"),
-)
+# Dynamic Execution Engine handles operations dynamically.
+# Hardcoded _AUTOMATION_RULES removed.
 
 _RESOURCE_KEYS = ("resource_id", "resource", "bucket", "instance_id", "volume_id", "group_id")
 
@@ -226,28 +214,11 @@ def _apply_automation(
     request: CloudRequest,
     classification: RequestClassification,
 ) -> ResolutionPlan:
-    """Deterministically decide whether this plan can auto-execute.
-
-    Requires: AWS platform, a matching automation rule, and an explicit
-    resource identifier in the channel payload (never inferred).
+    """Assume all plans are theoretically automatable for the Dynamic Execution Engine.
+    The Automation Decision Engine will later evaluate risk and policy to decide.
     """
     plan.detector_id = None
-    plan.automation_available = False
-    if classification.platform is not CloudPlatform.AWS:
-        return plan
-    if _explicit_resource_id(request) is None:
-        return plan
-    tokens = set(_tokens(request, classification))
-    for category, required, detector_id in _AUTOMATION_RULES:
-        if classification.category is category and required <= tokens:
-            plan.detector_id = detector_id
-            plan.automation_available = True
-            logger.info(
-                "planner.automation_mapped",
-                request_id=request.request_id,
-                detector_id=detector_id,
-            )
-            break
+    plan.automation_available = True
     return plan
 
 

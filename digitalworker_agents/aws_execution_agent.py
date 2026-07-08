@@ -69,7 +69,7 @@ logger = logging.getLogger("ExecutionAgents")
 
 MAX_ITERATIONS = 6
 DEFAULT_COMMAND_TIMEOUT = 500
-STUCK_THRESHOLD = 2
+STUCK_THRESHOLD = 3
 VALIDATE_MAX_RETRIES = 3
 PLAN_REVIEW_MAX_RETRIES = 2
 
@@ -393,6 +393,11 @@ class PlanReview(BaseModel):
     )
     reasoning: str = Field(description="One or two sentence justification")
 
+class PermissionCheck(BaseModel):
+    is_authorized: bool = Field(description="True if the provided policies cover all required actions for the expected resources.")
+    missing_permissions: List[str] = Field(description="List of specific permissions that appear to be missing. Leave empty if is_authorized is True.")
+    reasoning: str = Field(description="Brief explanation of the evaluation.")
+
 class AgentState(TypedDict):
     action: Dict[str, Any]
     reference_folder: str
@@ -408,6 +413,8 @@ class AgentState(TypedDict):
     terraform_state_context: str
     service_quotas_context: str
     terraform_docs: str
+    permission_issues: List[str]
+    caller_arn: str
 
     analysis: Optional[Dict]
     clarification: Optional[Dict]
@@ -637,77 +644,173 @@ class ExecutionAgents:
         self.logger.info("Read %d %s file(s) from %s", len(files), purpose, folder_path)
         return files
 
+    def _run_mcp_aws_command(self, command: str) -> dict:
+        import os
+        import json
+        import asyncio
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        server_config = {
+            "aws_api": {
+                "command": "uvx",
+                "args": ["awslabs.aws-api-mcp-server@latest"],
+                "env": {
+                    "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+                    "AWS_DEFAULT_REGION": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+                    **({"AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID")} if os.getenv("AWS_ACCESS_KEY_ID") else {}),
+                    **({"AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY")} if os.getenv("AWS_SECRET_ACCESS_KEY") else {}),
+                    **({"AWS_SESSION_TOKEN": os.getenv("AWS_SESSION_TOKEN")} if os.getenv("AWS_SESSION_TOKEN") else {}),
+                    **({"AWS_PROFILE": os.getenv("AWS_PROFILE")} if os.getenv("AWS_PROFILE") else {}),
+                    "UV_LINK_MODE": "copy",
+                },
+                "transport": "stdio",
+            },
+        }
+
+        async def _run():
+            try:
+                client = MultiServerMCPClient(server_config)
+                tools = await client.get_tools(server_name="aws_api")
+                aws_tool = next((t for t in tools if t.name == "call_aws"), None)
+                if aws_tool:
+                    res = await aws_tool.ainvoke({"cli_command": command})
+                    inner_text = res if isinstance(res, str) else json.dumps(res)
+                    try:
+                        parsed = json.loads(inner_text)
+                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+                            inner_text = parsed[0]["text"]
+                        elif isinstance(parsed, dict) and "text" in parsed:
+                            inner_text = parsed["text"]
+                    except Exception:
+                        pass
+                    
+                    try:
+                        parsed_text = json.loads(inner_text)
+                        if isinstance(parsed_text, list) and parsed_text and "response" in parsed_text[0]:
+                            as_json = parsed_text[0]["response"].get("as_json")
+                            if as_json:
+                                return json.loads(as_json)
+                    except Exception:
+                        pass
+                return {}
+            except Exception as exc:
+                self.logger.warning(f"MCP AWS CLI execution failed for '{command}': {exc}")
+                return {}
+
+        return asyncio.run(_run())
+
+    def _run_mcp_terraform_docs(self, provider_name: str, provider_namespace: str, service_slug: str, provider_document_type: str) -> str:
+        import os
+        import json
+        import asyncio
+        import re
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        TERRAFORM_MCP_BINARY = os.getenv("TERRAFORM_MCP_BINARY", os.path.join(os.path.dirname(_SCRIPT_DIR), "terraform", "terraform-mcp-server.exe"))
+        
+        server_config = {
+            "terraform": {
+                "command": TERRAFORM_MCP_BINARY,
+                "args": ["stdio"],
+                "transport": "stdio",
+            }
+        }
+        
+        async def _run():
+            try:
+                client = MultiServerMCPClient(server_config)
+                tools = await client.get_tools(server_name="terraform")
+                search_tool = next((t for t in tools if t.name == "search_providers"), None)
+                details_tool = next((t for t in tools if t.name == "get_provider_details"), None)
+                
+                if search_tool and details_tool:
+                    search_args = {
+                        "provider_name": provider_name,
+                        "provider_namespace": provider_namespace,
+                        "service_slug": service_slug,
+                        "provider_document_type": provider_document_type,
+                    }
+                    search_raw = await search_tool.ainvoke(search_args)
+                    search_text = search_raw if isinstance(search_raw, str) else json.dumps(search_raw, default=str)
+                    
+                    inner_text = search_text
+                    try:
+                        parsed = json.loads(search_text)
+                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+                            inner_text = parsed[0]["text"]
+                        elif isinstance(parsed, dict) and "text" in parsed:
+                            inner_text = parsed["text"]
+                    except Exception:
+                        pass
+                    
+                    match = re.search(r"providerDocID:\s*(\d+)", inner_text)
+                    if match:
+                        provider_doc_id = match.group(1)
+                        details_raw = await details_tool.ainvoke({"provider_doc_id": provider_doc_id})
+                        if isinstance(details_raw, list) and details_raw and isinstance(details_raw[0], dict) and "text" in details_raw[0]:
+                            return details_raw[0]["text"]
+                        return details_raw if isinstance(details_raw, str) else json.dumps(details_raw, default=str)
+                return ""
+            except Exception as exc:
+                self.logger.warning(f"MCP Terraform docs failed: {exc}")
+                return ""
+
+        return asyncio.run(_run())
+
     def _gather_aws_context(self) -> str:
         try:
-            import boto3
-            from botocore.exceptions import BotoCoreError, ClientError
-
-            session = boto3.session.Session()
-            region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or ""
-
+            import os
+            region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
             lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
 
-            try:
-                sts = session.client("sts")
-                identity = sts.get_caller_identity()
+            identity = self._run_mcp_aws_command("aws sts get-caller-identity")
+            if identity:
                 lines.append(f"  Account ID : {identity.get('Account')}")
                 lines.append(f"  Caller ARN : {identity.get('Arn')}")
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.sts_failed: %s", exc)
-                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity)")
+            else:
+                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
 
-            lines.append(f"  Region     : {region or '(not set — will rely on provider config)'}")
+            lines.append(f"  Region     : {region}")
 
-            try:
-                ec2 = session.client("ec2", region_name=region or None)
-                vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
-                default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId")
-                if default_vpc:
-                    lines.append(f"  Default VPC: {default_vpc}")
-                    subnets = ec2.describe_subnets(
-                        Filters=[{"Name": "vpc-id", "Values": [default_vpc]}]
-                    )
-                    subnet_ids = [s["SubnetId"] for s in subnets.get("Subnets", [])]
-                    if subnet_ids:
-                        lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
+            vpcs = self._run_mcp_aws_command(f"aws ec2 describe-vpcs --filters Name=is-default,Values=true --region {region}")
+            default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId") if vpcs else None
+            
+            if default_vpc:
+                lines.append(f"  Default VPC: {default_vpc}")
+                subnets = self._run_mcp_aws_command(f"aws ec2 describe-subnets --filters Name=vpc-id,Values={default_vpc} --region {region}")
+                subnet_ids = [s["SubnetId"] for s in (subnets.get("Subnets") or [])] if subnets else []
+                if subnet_ids:
+                    lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
+            else:
+                lines.append("  Default VPC: (none found in this account/region)")
+
+            azs = self._run_mcp_aws_command(f"aws ec2 describe-availability-zones --region {region}")
+            az_names = [az["ZoneName"] for az in (azs.get("AvailabilityZones") or []) if az["State"] == "available"] if azs else []
+            if az_names:
+                lines.append(f"  Available AZs: {', '.join(az_names)}")
+
+            key_pairs = self._run_mcp_aws_command(f"aws ec2 describe-key-pairs --region {region}")
+            kp_names = [kp["KeyName"] for kp in (key_pairs.get("KeyPairs") or [])] if key_pairs else []
+            if kp_names:
+                lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
+            else:
+                lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
+
+            if default_vpc:
+                sgs = self._run_mcp_aws_command(f"aws ec2 describe-security-groups --filters Name=vpc-id,Values={default_vpc} --region {region}")
+                sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in (sgs.get("SecurityGroups") or [])] if sgs else []
+                if sg_info:
+                    lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
                 else:
-                    lines.append("  Default VPC: (none found in this account/region)")
+                    lines.append("  Existing Security Groups: (none found)")
 
-                # Fetch available Availability Zones
-                azs = ec2.describe_availability_zones()
-                az_names = [az["ZoneName"] for az in azs.get("AvailabilityZones", []) if az["State"] == "available"]
-                if az_names:
-                    lines.append(f"  Available AZs: {', '.join(az_names)}")
-
-                # Fetch existing Key Pairs
-                key_pairs = ec2.describe_key_pairs()
-                kp_names = [kp["KeyName"] for kp in key_pairs.get("KeyPairs", [])]
-                if kp_names:
-                    lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
-                else:
-                    lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
-                # Fetch existing Security Groups in Default VPC
-                if default_vpc:
-                    sgs = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [default_vpc]}])
-                    sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in sgs.get("SecurityGroups", [])]
-                    if sg_info:
-                        lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
-                    else:
-                        lines.append("  Existing Security Groups: (none found)")
-
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.ec2_failed: %s", exc)
-
-            try:
-                route53 = session.client("route53", region_name=region or None)
-                zones = route53.list_hosted_zones()
-                zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in zones.get("HostedZones", []) if not z["Config"]["PrivateZone"]]
-                if zone_info:
-                    lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
-                else:
-                    lines.append("  Public Route53 Zones: (none found)")
-            except (BotoCoreError, ClientError) as exc:
-                self.logger.warning("aws_context.route53_failed: %s", exc)
+            zones = self._run_mcp_aws_command(f"aws route53 list-hosted-zones --region {region}")
+            zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in (zones.get("HostedZones") or []) if not z.get("Config", {}).get("PrivateZone")] if zones else []
+            if zone_info:
+                lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
+            else:
+                lines.append("  Public Route53 Zones: (none found)")
 
             lines.append(
                 "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones), hardcode it directly in your Terraform code to avoid data source filter errors. "
@@ -725,9 +828,6 @@ class ExecutionAgents:
             ctx_str = "\n".join(lines)
             self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
             return ctx_str
-        except ImportError:
-            self.logger.info("aws_context.boto3_unavailable — skipping live AWS grounding")
-            return ""
         except Exception as exc:
             self.logger.warning("aws_context.failed: %s", exc)
             return ""
@@ -852,6 +952,190 @@ sources or sensible defaults, do NOT ask the user."""
         except Exception as exc:
             self.logger.exception("Analysis failed: %s", exc)
             raise
+
+    def _check_permissions_node(self, state: AgentState) -> dict:
+        check_cancelled()
+        self.logger.info("Dynamic Grounding: Checking required IAM permissions for expected resources...")
+        
+        analysis = state.get("analysis") or {}
+        resources = analysis.get("expected_resources") or []
+        action = state.get("action", {})
+        action_name = action.get("actionName", "")
+        action_desc = action.get("actionDescription", "")
+        action_steps = action.get("steps", [])
+        
+        if not resources:
+            return {"permission_issues": [], "caller_arn": ""}
+
+        try:
+            import json
+            identity = self._run_mcp_aws_command("aws sts get-caller-identity")
+            if not identity or not identity.get('Arn'):
+                self.logger.warning("Could not get caller identity for permission check — STS call failed. Blocking to be safe.")
+                return {"permission_issues": ["Could not verify caller identity via aws sts get-caller-identity. Please check your AWS credentials/network and try again."], "caller_arn": ""}
+            
+            arn = identity.get('Arn')
+            policies_json = []
+
+            if ":user/" in arn:
+                user_name = arn.split(":user/")[-1]
+                self.logger.info("Dynamic Grounding: Checking attached policies for user %s...", user_name)
+                attached = self._run_mcp_aws_command(f"aws iam list-attached-user-policies --user-name {user_name}")
+                if attached and attached.get("AttachedPolicies"):
+                    for pol in attached["AttachedPolicies"]:
+                        pol_arn = pol["PolicyArn"]
+                        pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
+                        if pol_info and pol_info.get("Policy"):
+                            v_id = pol_info["Policy"]["DefaultVersionId"]
+                            v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
+                            if v_info and v_info.get("PolicyVersion"):
+                                policies_json.append({"PolicyName": pol["PolicyName"], "Document": v_info["PolicyVersion"]["Document"]})
+                inline = self._run_mcp_aws_command(f"aws iam list-user-policies --user-name {user_name}")
+                if inline and inline.get("PolicyNames"):
+                    for p_name in inline["PolicyNames"]:
+                        p_info = self._run_mcp_aws_command(f"aws iam get-user-policy --user-name {user_name} --policy-name {p_name}")
+                        if p_info and p_info.get("PolicyDocument"):
+                            policies_json.append({"PolicyName": p_name, "Document": p_info["PolicyDocument"]})
+
+                self.logger.info("Dynamic Grounding: Checking groups for user %s...", user_name)
+                groups_info = self._run_mcp_aws_command(f"aws iam list-groups-for-user --user-name {user_name}")
+                if groups_info and groups_info.get("Groups"):
+                    for group in groups_info["Groups"]:
+                        g_name = group["GroupName"]
+                        
+                        self.logger.info("Dynamic Grounding: Checking attached policies for group %s...", g_name)
+                        g_attached = self._run_mcp_aws_command(f"aws iam list-attached-group-policies --group-name {g_name}")
+                        if g_attached and g_attached.get("AttachedPolicies"):
+                            for pol in g_attached["AttachedPolicies"]:
+                                pol_arn = pol["PolicyArn"]
+                                pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
+                                if pol_info and pol_info.get("Policy"):
+                                    v_id = pol_info["Policy"]["DefaultVersionId"]
+                                    v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
+                                    if v_info and v_info.get("PolicyVersion"):
+                                        policies_json.append({"PolicyName": f"Group-{g_name}-{pol['PolicyName']}", "Document": v_info["PolicyVersion"]["Document"]})
+                        
+                        self.logger.info("Dynamic Grounding: Checking inline policies for group %s...", g_name)
+                        g_inline = self._run_mcp_aws_command(f"aws iam list-group-policies --group-name {g_name}")
+                        if g_inline and g_inline.get("PolicyNames"):
+                            for p_name in g_inline["PolicyNames"]:
+                                p_info = self._run_mcp_aws_command(f"aws iam get-group-policy --group-name {g_name} --policy-name {p_name}")
+                                if p_info and p_info.get("PolicyDocument"):
+                                    policies_json.append({"PolicyName": f"Group-{g_name}-{p_name}", "Document": p_info["PolicyDocument"]})
+
+            elif ":assumed-role/" in arn:
+                assumed_role_part = arn.split(":assumed-role/")[-1]
+                role_name = "/".join(assumed_role_part.split("/")[:-1]) if "/" in assumed_role_part else assumed_role_part
+                self.logger.info("Dynamic Grounding: Checking attached policies for role %s...", role_name)
+                attached = self._run_mcp_aws_command(f"aws iam list-attached-role-policies --role-name {role_name}")
+                if attached and attached.get("AttachedPolicies"):
+                    for pol in attached["AttachedPolicies"]:
+                        pol_arn = pol["PolicyArn"]
+                        pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
+                        if pol_info and pol_info.get("Policy"):
+                            v_id = pol_info["Policy"]["DefaultVersionId"]
+                            v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
+                            if v_info and v_info.get("PolicyVersion"):
+                                policies_json.append({"PolicyName": pol["PolicyName"], "Document": v_info["PolicyVersion"]["Document"]})
+                
+                self.logger.info("Dynamic Grounding: Checking inline policies for role %s...", role_name)
+                inline = self._run_mcp_aws_command(f"aws iam list-role-policies --role-name {role_name}")
+                if inline and inline.get("PolicyNames"):
+                    for p_name in inline["PolicyNames"]:
+                        p_info = self._run_mcp_aws_command(f"aws iam get-role-policy --role-name {role_name} --policy-name {p_name}")
+                        if p_info and p_info.get("PolicyDocument"):
+                            policies_json.append({"PolicyName": p_name, "Document": p_info["PolicyDocument"]})
+
+            elif ":root" in arn:
+                self.logger.info("Caller is the AWS Root account. Root has full permissions.")
+                return {"permission_issues": [], "caller_arn": arn}
+
+            else:
+                self.logger.warning("Unknown ARN type for permission check: %s. Will attempt LLM check with empty policies.", arn)
+
+            if not policies_json:
+                self.logger.warning("No policies could be fetched for %s", arn)
+                return {"permission_issues": [f"Could not automatically determine permissions for {arn}. You may lack IAM read access. Please verify you have required access manually."], "caller_arn": arn}
+                
+            policy_names = [p["PolicyName"] for p in policies_json]
+            self.logger.info("Fetched %d IAM policies for permission check (Caller: %s): %s", len(policies_json), arn, ", ".join(policy_names))
+
+            prompt = f"""You are a strict AWS security auditor.
+Analyze the following attached IAM policies to determine if the caller has sufficient permissions to perform the requested action on the expected Terraform resources.
+Note that we only have the policy documents; resource boundaries or specific conditions may apply. If the policies show clear administrative access (e.g. AdministratorAccess) or clear comprehensive access to the involved services, return is_authorized=True. 
+
+Action Name: {action_name}
+Action Description: {action_desc}
+Action Steps: {json.dumps(action_steps, indent=2)}
+Expected Terraform Resources: {resources}
+
+Attached Policies:
+{json.dumps(policies_json, indent=2)}
+"""
+            structured_llm = self.Llm.with_structured_output(PermissionCheck)
+            evaluation: PermissionCheck = structured_llm.invoke([HumanMessage(content=prompt)])
+            
+            self.logger.info("Permission Check Result: is_authorized=%s, missing=%s, reasoning=%s", evaluation.is_authorized, evaluation.missing_permissions, evaluation.reasoning)
+            
+            if not evaluation.is_authorized:
+                missing = evaluation.missing_permissions or ["(permissions not specified by evaluator)"]
+                self.logger.warning("Permission check failed: %s", missing)
+                return {"permission_issues": missing, "caller_arn": arn}
+
+            return {"permission_issues": [], "caller_arn": arn}
+
+        except Exception as exc:
+            self.logger.exception("Permission check encountered an unexpected error: %s", exc)
+            return {"permission_issues": [f"Permission check failed unexpectedly: {exc}. Please verify permissions manually before proceeding."], "caller_arn": ""}
+
+    @staticmethod
+    def _route_after_permissions(state: AgentState) -> str:
+        issues = state.get("permission_issues") or []
+        if issues:
+            return "inject_permission_hitl"
+
+        if state.get("analysis") and state["analysis"].get("needs_clarification"):
+            return "hitl"
+
+        return "gather_docs"
+
+    def _inject_permission_hitl_node(self, state: AgentState) -> dict:
+        """Proper node (not router) that injects permission issues into analysis state."""
+        issues = state.get("permission_issues") or []
+        analysis = state.get("analysis") or {}
+        action = state.get("action") or {}
+        action_name = action.get("actionName", "the requested action")
+        caller_arn = state.get("caller_arn") or "unknown"
+
+        # Extract a friendly identity label from the ARN
+        if ":user/" in caller_arn:
+            identity_label = f"IAM User: {caller_arn.split(':user/')[-1]}"
+        elif ":assumed-role/" in caller_arn:
+            parts = caller_arn.split(":assumed-role/")[-1].split("/")
+            identity_label = f"IAM Role: {parts[0]} (session: {parts[-1]})"
+        elif ":root" in caller_arn:
+            identity_label = "AWS Root Account"
+        else:
+            identity_label = caller_arn
+
+        # Build a clean, actionable message for the user
+        missing_list = "\n".join(f"  - {p}" for p in issues)
+        message = (
+            f"The following action requires additional AWS permissions to proceed:\n\n"
+            f"  Action  : {action_name}\n"
+            f"  Caller  : {identity_label}\n\n"
+            f"Required permissions that appear to be missing:\n"
+            f"{missing_list}\n\n"
+            f"Please grant these permissions to the above IAM identity and confirm to continue,\n"
+            f"or type 'no' to abort."
+        )
+
+        questions = list(analysis.get("questions") or [])
+        questions.append(message)
+        analysis["questions"] = questions
+        analysis["needs_clarification"] = True
+        self.logger.warning("Dynamic Grounding: Permission check FAILED — blocking for HITL. Missing: %s", issues)
+        return {"analysis": analysis}
 
     def _hitl_node(self, state: AgentState) -> dict:
         questions: List[str] = state["analysis"].get("questions") or []
@@ -2199,82 +2483,51 @@ Rules:
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
         
-        quotas_context = ""
-        if services:
-            quotas_context += "\nSERVICE QUOTAS (from dynamic lookup):\n"
-            try:
-                import boto3
-                session = boto3.Session()
-                region = session.region_name or os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
-                client = session.client('service-quotas', region_name=region)
-                for svc in services:
-                    if svc in self._quotas_cache:
-                        quotas_context += self._quotas_cache[svc]
-                        continue
-                    try:
-                        res = client.list_service_quotas(ServiceCode=svc.lower(), MaxResults=20)
-                        if res.get('Quotas'):
-                            svc_ctx = f"--- {svc.upper()} Quotas ---\n"
-                            for q in res['Quotas']:
-                                svc_ctx += f"- {q.get('QuotaName')}: {q.get('Value')}\n"
-                            self._quotas_cache[svc] = svc_ctx
-                            quotas_context += svc_ctx
-                    except Exception as e:
-                        self.logger.warning("Failed to fetch quotas for %s: %s", svc, e)
-            except Exception as e:
-                self.logger.warning("Boto3 service-quotas error: %s", e)
-                
         docs_context = ""
         if resources:
             docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
-            import urllib.request
+            import re
             for res_type in resources:
                 if res_type in self._docs_cache:
                     docs_context += self._docs_cache[res_type]
                     continue
                 if not res_type.startswith("aws_"):
                     continue
-                short_name = res_type[4:]
-                url = f"https://raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/{short_name}.html.markdown"
+                
                 try:
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        markdown = response.read().decode('utf-8')
+                    markdown = self._run_mcp_terraform_docs(
+                        provider_name="aws",
+                        provider_namespace="hashicorp",
+                        service_slug=res_type,
+                        provider_document_type="resources"
+                    )
                         
-                    match = re.search(r'## Argument Reference(.*?)(?:##|\Z)', markdown, re.DOTALL | re.IGNORECASE)
-                    if match:
-                        snippet = match.group(1).strip()
-                        res_ctx = f"\n--- {res_type} Argument Reference ---\n{snippet[:1500]}...\n"
+                    if markdown:
+                        res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
                     else:
-                        res_ctx = f"\n--- {res_type} ---\nNo Argument Reference found in docs.\n"
+                        res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
+                    
                     self._docs_cache[res_type] = res_ctx
                     docs_context += res_ctx
                 except Exception as e:
-                    self.logger.warning("Failed to fetch TF docs for %s at %s: %s", res_type, url, e)
+                    self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
 
         self.logger.info(
             "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
             services, resources
         )
         self.logger.info(
-            "Dynamic Grounding: Fetched quotas for %d services, docs for %d resources.",
-            len(services), len(resources)
+            "Dynamic Grounding: Fetched docs for %d resources.",
+            len(resources)
         )
-        if quotas_context:
-            self.logger.info("Dynamic Grounding: Quotas context output:\n%s", quotas_context)
         if docs_context:
             self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
         
         return {
-            "service_quotas_context": quotas_context,
+            "service_quotas_context": "",
             "terraform_docs": docs_context
         }
 
-    @staticmethod
-    def _route_after_analysis(state: AgentState) -> str:
-        if state["analysis"]["needs_clarification"]:
-            return "hitl"
-        return "gather_docs"
 
     @staticmethod
     def _route_after_record(state: AgentState) -> str:
@@ -2293,6 +2546,8 @@ Rules:
         builder.add_node("read_existing", self._read_existing_node)
         builder.add_node("read_reference", self._read_reference_node)
         builder.add_node("analyze", self._analyze_node)
+        builder.add_node("check_permissions", self._check_permissions_node)
+        builder.add_node("inject_permission_hitl", self._inject_permission_hitl_node)
         builder.add_node("hitl", self._hitl_node)
         builder.add_node("gather_docs", self._gather_docs_and_quotas_node)
         builder.add_node("generate", self._generate_node)
@@ -2316,11 +2571,13 @@ Rules:
         builder.set_entry_point("read_existing")
         builder.add_edge("read_existing", "read_reference")
         builder.add_edge("read_reference", "analyze")
+        builder.add_edge("analyze", "check_permissions")
         builder.add_conditional_edges(
-            "analyze",
-            self._route_after_analysis,
-            {"hitl": "hitl", "gather_docs": "gather_docs"},
+            "check_permissions",
+            self._route_after_permissions,
+            {"inject_permission_hitl": "inject_permission_hitl", "hitl": "hitl", "gather_docs": "gather_docs"},
         )
+        builder.add_edge("inject_permission_hitl", "hitl")
         builder.add_edge("hitl", "gather_docs")
         builder.add_edge("gather_docs", "generate")
         builder.add_edge("generate", "write_files")
@@ -2437,6 +2694,10 @@ Rules:
                         "last_error_class": "",
                         "aws_context": aws_ctx,
                         "terraform_state_context": "",
+                        "service_quotas_context": "",
+                        "terraform_docs": "",
+                        "permission_issues": [],
+                        "caller_arn": "",
 
                         "analysis": None,
                         "clarification": None,

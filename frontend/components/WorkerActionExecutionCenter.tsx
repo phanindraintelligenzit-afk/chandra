@@ -1,6 +1,6 @@
 "use client";
 
-import { orchestrateAction, getJobStatus, fetchBackendLogs, type BackendLog } from "@/services/api";
+import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon } from "lucide-react";
@@ -152,6 +152,69 @@ export const WorkerActionExecutionCenter = forwardRef<
       pollIntervalsRef.current.clear();
       if (logsIntervalRef.current) clearInterval(logsIntervalRef.current);
     };
+  }, []);
+
+  // --- Auto-discover Digital Worker jobs (Jira webhooks) ---
+  useEffect(() => {
+    const pollBackgroundJobs = async () => {
+      try {
+        const res = await listDigitalWorkerRequests();
+        if (res && res.requests) {
+          // Discover jobs that are running or recently finished
+          const dwJobs = res.requests.filter(r => r.status === "running" || r.status === "completed" || r.status === "failed");
+          
+          setExecutingActions(current => {
+            const currentIds = new Set(current.map(a => a.jobId));
+            const newActions: ExecutingAction[] = [];
+            
+            for (const job of dwJobs) {
+              if (!currentIds.has(job.job_id)) {
+                const actionId = `dw-${job.job_id}`;
+                newActions.push({
+                  id: actionId,
+                  actionName: job.title || "Jira Webhook Task",
+                  actionDescription: job.reason || "Automated Digital Worker execution",
+                  service: job.platform || "AWS",
+                  kraCode: job.category || "JIRA",
+                  priorityLevel: job.priority || "P3",
+                  steps: [],
+                  jiraKey: job.external_id || job.job_id.substring(0,8),
+                  jiraUrl: job.external_id,
+                  status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : "failed"),
+                  jobId: job.job_id,
+                  threadId: job.job_id,
+                  startedAt: job.started_at ? job.started_at * 1000 : Date.now(),
+                  logs: [],
+                  progress: job.progress || 0,
+                  jobMessage: job.message,
+                  sandboxPath: (job as any).sandbox_path
+                });
+              }
+            }
+            
+            if (newActions.length > 0) {
+              // Start polling for the newly discovered running jobs
+              setTimeout(() => {
+                newActions.forEach(a => {
+                   if (a.status === "running") {
+                     startPolling(a.id, a.jobId, a.startedAt, a.jiraKey);
+                   }
+                });
+              }, 100);
+              return [...newActions, ...current];
+            }
+            return current;
+          });
+        }
+      } catch (e) {
+        console.error("Failed to fetch background digital worker jobs:", e);
+      }
+    };
+    
+    // Initial fetch, then poll every 5 seconds
+    pollBackgroundJobs();
+    const interval = setInterval(pollBackgroundJobs, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   // Scroll the logs container (not the page) to bottom when logs update for the open action
