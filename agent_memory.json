@@ -341,6 +341,32 @@
         "Terraform successfully initialized, validated, and applied a plan to deploy a t2"
       ],
       "lesson": "Always run `terraform init` before `terraform apply` — provider plugins must be downloaded before any infrastructure can be provisioned."
+    },
+    {
+      "timestamp": "2026-07-09T11:52:37",
+      "action_name": "Configure Cost Anomaly Detection Alerts",
+      "iterations_used": 3,
+      "final_status": "failed",
+      "errors_encountered": [
+        "A subdirectory or file .\\terraform already exists."
+      ],
+      "fixes_applied": [
+        "The automation failed at the first step when attempting to change directory to `/code/terraform`, with the system reporting \"The system cannot find the path specified",
+        "The automation attempted to deploy AWS Cost Anomaly Detection infrastructure using Terraform, successfully initializing the environment and creating an SNS topic (`arn:aws:sns:us-east-1:827295473120:c",
+        "The automation failed when attempting to create a Terraform working directory due to a naming conflict: the subdirectory `"
+      ],
+      "lesson": "Before running `terraform init`, check if the `.terraform` directory already exists and remove it if necessary, or ensure you're in a clean workspace directory."
+    },
+    {
+      "timestamp": "2026-07-09T12:29:26",
+      "action_name": "Deploy new VPC using Terraform",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The Terraform automation successfully deployed a new isolated VPC for KRA-07"
+      ],
+      "lesson": "Always use the `aws_availability_zones` data source to dynamically fetch available AZs rather than hardcoding them, since AZ names vary between AWS accounts and regions."
     }
   ]
 }

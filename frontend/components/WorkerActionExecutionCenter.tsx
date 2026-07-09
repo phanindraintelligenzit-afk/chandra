@@ -165,9 +165,32 @@ export const WorkerActionExecutionCenter = forwardRef<
           
           setExecutingActions(current => {
             const currentIds = new Set(current.map(a => a.jobId));
+            
+            // Build a set of all active KRA action names to filter out duplicate Jira webhooks
+            const kraActionNames = new Set<string>();
+            current.forEach(a => {
+               if (a.kraCode && a.kraCode.toUpperCase() !== "JIRA") {
+                  kraActionNames.add(a.actionName.toLowerCase().trim());
+               }
+            });
+            dwJobs.forEach(j => {
+               const cat = (j.category || "JIRA").toUpperCase();
+               if (cat.startsWith("KRA") && j.title) {
+                  kraActionNames.add(j.title.toLowerCase().trim());
+               }
+            });
+
             const newActions: ExecutingAction[] = [];
             
             for (const job of dwJobs) {
+              const titleLower = (job.title || "").toLowerCase().trim();
+              const isJira = !job.category || job.category.toUpperCase() === "JIRA";
+              
+              // Skip Jira webhooks if a KRA action with the exact same name already exists
+              if (isJira && kraActionNames.has(titleLower)) {
+                 continue;
+              }
+
               if (!currentIds.has(job.job_id)) {
                 const actionId = `dw-${job.job_id}`;
                 newActions.push({
@@ -179,7 +202,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                   priorityLevel: job.priority || "P3",
                   steps: [],
                   jiraKey: job.external_id || job.job_id.substring(0,8),
-                  jiraUrl: job.external_id,
+                  jiraUrl: job.external_id ?? undefined,
                   status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : "failed"),
                   jobId: job.job_id,
                   threadId: job.job_id,
@@ -198,6 +221,18 @@ export const WorkerActionExecutionCenter = forwardRef<
                 newActions.forEach(a => {
                    if (a.status === "running") {
                      startPolling(a.id, a.jobId, a.startedAt, a.jiraKey);
+                   } else if (a.status === "completed") {
+                     // Verify if the job was actually exhausted or failed
+                     getJobStatus(a.jobId).then(jobStatus => {
+                        const result = jobStatus.result as any;
+                        const statusCode = result?.statusCode ?? 0;
+                        let finalStatus = "completed";
+                        if (statusCode === 207) finalStatus = "exhausted";
+                        else if (statusCode !== 200 && statusCode !== 0) finalStatus = "failed";
+                        if (finalStatus !== "completed") {
+                           setExecutingActions(curr => curr.map(currAction => currAction.id === a.id ? { ...currAction, status: finalStatus as any } : currAction));
+                        }
+                     }).catch(e => console.error("Failed to verify completed job status", e));
                    }
                 });
               }, 100);

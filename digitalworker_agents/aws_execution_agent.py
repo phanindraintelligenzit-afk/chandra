@@ -58,6 +58,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from tools.jira_tools.create_jira_ticket import add_summary_comment, update_ticket_status
+from src.chandra.digital_worker.tracker import add_comment_to_issue
 
 load_dotenv(override=True)
 
@@ -1145,6 +1146,17 @@ Attached Policies:
                 "bypassing interrupt and proceeding to generate"
             )
             return {"clarification": None}
+
+        # Attempt to comment the questions back to Jira
+        action = state.get("action", {})
+        jira_url = action.get("jiraUrl")
+        if jira_url:
+            issue_key = jira_url.split("/")[-1]
+            if issue_key and issue_key.upper() != "ERROR":
+                comment = "The Digital Worker requires more information to proceed with this task. Please provide the following details in the Digital Worker dashboard to resume execution:\n\n"
+                for i, q in enumerate(questions, 1):
+                    comment += f"{i}. {q}\n"
+                add_comment_to_issue(issue_key, comment)
 
         answers = interrupt(questions)
         answers_list = answers if isinstance(answers, list) else [answers]
@@ -2411,6 +2423,16 @@ Rules:
 
         self.logger.warning("MID-RUN HITL: pausing pipeline, asking user for guidance")
         self.logger.warning("Error context: %s", error_snippet[:200])
+
+        # Attempt to comment the questions back to Jira
+        jira_url = action.get("jiraUrl")
+        if jira_url:
+            issue_key = jira_url.split("/")[-1]
+            if issue_key and issue_key.upper() != "ERROR":
+                comment = "The Digital Worker is stuck and requires engineer guidance to proceed. Please provide the following details in the Digital Worker dashboard to resume execution:\n\n"
+                for i, q in enumerate(questions, 1):
+                    comment += f"{i}. {q}\n"
+                add_comment_to_issue(issue_key, comment)
 
         user_guidance = interrupt(questions)
         guidance_list = user_guidance if isinstance(user_guidance, list) else [user_guidance]

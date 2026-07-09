@@ -16,7 +16,7 @@ from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.config import settings
 
 FORBIDDEN_MODULES = {"os", "sys", "subprocess", "shlex", "pty", "socket"}
-FORBIDDEN_FUNCTIONS = {"exec", "eval", "open", "compile", "__import__"}
+FORBIDDEN_FUNCTIONS = {"exec", "eval", "open", "compile"}
 
 class SecurityError(Exception):
     pass

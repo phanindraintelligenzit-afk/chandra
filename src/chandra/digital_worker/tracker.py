@@ -113,6 +113,17 @@ def update_request_ticket(
         return TrackerUpdate(status="failed", detail=str(exc))
 
 
+def add_comment_to_issue(issue_key: str, comment: str) -> None:
+    """Add a simple comment to an existing Jira issue."""
+    try:
+        client = _jira_client()
+        if client:
+            client.add_comment(issue_key, comment)
+            logger.info("tracker.jira_comment_added", issue_key=issue_key)
+    except Exception as exc:
+        logger.warning("tracker.jira_comment_failed", issue_key=issue_key, error=str(exc))
+
+
 def _transition(client: Any, issue_key: str, status_name: str) -> None:
     """Move an issue to ``status_name`` when such a transition exists."""
     for transition in client.transitions(issue_key):

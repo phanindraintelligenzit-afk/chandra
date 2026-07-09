@@ -100,6 +100,16 @@ log_capture = LogCapture()
 log_capture.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
 logging.getLogger().addHandler(log_capture)
 
+# Add StreamHandler for terminal output, but filter out uvicorn access logs to prevent spam
+class UvicornFilter(logging.Filter):
+    def filter(self, record):
+        return not record.name.startswith("uvicorn")
+
+console_handler = logging.StreamHandler(sys.stderr)
+console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+console_handler.addFilter(UvicornFilter())
+logging.getLogger().addHandler(console_handler)
+
 # Job models
 class JobStatusResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")  # Ignore extra fields from job dict
@@ -127,10 +137,29 @@ class AsyncJobResponse(BaseModel):
     message: str = "Job submitted"
     poll_url: str = ""
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run alembic migrations on startup
+    # logger.info("Running database migrations (alembic upgrade head)...")
+    # try:
+    #     from alembic.config import Config
+    #     from alembic import command
+    #     alembic_cfg = Config("alembic.ini")
+    #     # Prevent Alembic from configuring logging and wiping out our structlog/fastapi setup
+    #     alembic_cfg.attributes['configure_logger'] = False
+    #     command.upgrade(alembic_cfg, "head")
+    #     logger.info("Database migrations applied successfully.")
+    # except Exception as e:
+    #     logger.error(f"Failed to run database migrations: {e}")
+    yield
+
 app = FastAPI(
     title="AWS Observability Agent API",
     description="Runs the KRA-aligned AWS observability pipeline and returns a structured report.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS for frontend access

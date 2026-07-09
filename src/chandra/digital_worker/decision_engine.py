@@ -58,7 +58,8 @@ def evaluate_decision(
     plan: ResolutionPlan,
     risk: RiskAssessment,
 ) -> ExecutionDecision:
-    """Dynamically decide execution mode using an LLM policy engine."""
+    """Dynamically decide execution mode. 
+    (LLM policy engine bypassed; ambiguity is handled via HITL in the execution agent)"""
     # Fallback to deterministic gate if automation is completely absent
     if not plan.automation_available:
         return ExecutionDecision(
@@ -66,61 +67,9 @@ def evaluate_decision(
             reason="No automation plan generated; producing engineer guidance.",
         )
 
-    try:
-        from langchain_aws import ChatBedrockConverse
-    except ImportError:
-        logger.warning("llm.bedrock_unavailable_fallback_to_deterministic_decision")
-        return _deterministic_fallback(classification, risk)
-
-    try:
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-        )
-        
-        payload = {
-            "request": request.model_dump(mode="json", exclude={"raw_payload"}),
-            "classification": classification.model_dump(mode="json"),
-            "risk": risk.model_dump(mode="json"),
-            "plan": plan.model_dump(mode="json"),
-        }
-        
-        cb = UsageCapture()
-        response = llm.invoke(
-            [
-                ("system", POLICY_PROMPT),
-                ("user", json.dumps(payload, default=str)),
-            ],
-            config={"callbacks": [cb]},
-        )
-        
-        text = response.content if isinstance(response.content, str) else str(response.content)
-        
-        # Clean up any markdown blocks (e.g., ```json ... ```)
-        text = text.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-            
-        parsed = json.loads(text)
-        mode_str = parsed.get("mode", "engineer_guidance")
-        reason = parsed.get("reason", "LLM decision parse failure.")
-        
-        return ExecutionDecision(
-            mode=DecisionMode(mode_str),
-            reason=reason
-        )
-        
-    except (json.JSONDecodeError, ValueError, ValidationError) as exc:
-        logger.warning("llm.decision_engine_parse_failed", error=str(exc))
-        return _deterministic_fallback(classification, risk)
-    except Exception as exc:
-        logger.warning("llm.decision_engine_failed", error=str(exc))
-        return _deterministic_fallback(classification, risk)
+    # Use deterministic fallback directly. Risk score triggers approval gate,
+    # otherwise we auto_execute (which then hits the HITL logic if ambiguous).
+    return _deterministic_fallback(classification, risk)
 
 
 def _deterministic_fallback(classification: RequestClassification, risk: RiskAssessment) -> ExecutionDecision:
