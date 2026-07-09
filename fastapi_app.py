@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Header, Query
+from fastapi import FastAPI, Header, Query, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -944,7 +944,169 @@ def orchestrate_action(request: OrchestrateRequest):
         poll_url=f"/orchestrate/status/{job_id}"
     )
 
+class ResumeRequest(BaseModel):
+    answers: List[str] = Field(description="User's answers to the HITL questions")
+
+
+@app.post("/orchestrate/{job_id}/resume", response_model=OrchestrateJobResponse)
+def resume_orchestration(job_id: str, request: ResumeRequest):
+    """
+    Resume a paused HITL job using the SAME job_id.
+    Handles two job types:
+    - 'dw'  : Digital Worker graph job (Jira webhook). Resumes the DW LangGraph.
+    - 'kra' : Direct Execution Agent job (/orchestrate). Resumes RunPipeline.
+    """
+    with _job_store_lock:
+        if job_id not in _job_store:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        job = dict(_job_store[job_id])  # snapshot inside lock
+        result = job.get("result") or {}
+        if result.get("status") != "needs_clarification":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job {job_id} is not paused for HITL (current status={result.get('status')})"
+            )
+        # Reset to running — same job_id, no new entry
+        _job_store[job_id]["status"] = "running"
+        _job_store[job_id]["progress"] = 5
+        _job_store[job_id]["message"] = "Resuming with your answers..."
+        _job_store[job_id]["result"] = None
+        _job_store[job_id]["completed_at"] = None
+
+    job_type = job.get("job_type", "kra")  # default to kra for backwards compat
+    sandbox_path = job.get("sandbox_path")
+    stored_action = job.get("action_dict", {})
+    answers = request.answers
+
+    logger.info(
+        "POST /orchestrate/%s/resume | job_type=%s | answers=%s",
+        job_id, job_type, answers
+    )
+
+    def _run_dw_resume():
+        """Resume a Digital Worker graph that is paused at execute_automation HITL."""
+        import time
+        start_time = time.time()
+        _thread_local.job_id = job_id
+        try:
+            with _job_store_lock:
+                _job_store[job_id]["thread_id"] = threading.get_ident()
+
+            if _digital_worker is None:
+                raise RuntimeError("Digital Worker graph is not initialized")
+
+            # Resume the DW graph with the user's answers as the interrupt value
+            from langgraph.types import Command as LGCommand
+            final_state = _digital_worker.invoke(
+                LGCommand(resume=answers),
+                config=_dw_thread_config(job_id),
+            )
+
+            snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+            # Check if it paused AGAIN for another HITL round
+            if snapshot.next and "execute_automation" in snapshot.next:
+                interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+                interrupt_val = interrupts[0].value if interrupts else {}
+                questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
+                summary = interrupt_val.get("summary", "Awaiting input")
+                with _job_store_lock:
+                    _job_store[job_id]["status"] = "completed"
+                    _job_store[job_id]["progress"] = 100
+                    _job_store[job_id]["message"] = "Awaiting further user input"
+                    _job_store[job_id]["job_type"] = "dw"
+                    _job_store[job_id]["result"] = {
+                        "statusCode": 202,
+                        "status": "needs_clarification",
+                        "thread_id": job_id,
+                        "questions": questions,
+                        "summary": summary,
+                    }
+                return
+
+            with _job_store_lock:
+                if _job_store[job_id].get("status") == "stopped":
+                    return
+            _dw_finalize_job(job_id, final_state, start_time)
+            logger.info("DW RESUME [%s] completed in %.1fs", job_id, time.time() - start_time)
+
+        except Exception as exc:
+            logger.exception("DW RESUME [%s] failed", job_id)
+            with _job_store_lock:
+                if _job_store[job_id].get("status") != "stopped":
+                    _job_store[job_id]["status"] = "failed"
+                    _job_store[job_id]["error"] = str(exc)
+                    _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+        finally:
+            _thread_local.job_id = None
+
+    def _run_kra_resume():
+        """Resume a direct Execution Agent (KRA) job."""
+        import time
+        start_time = time.time()
+        exec_thread_id = f"exec-{job_id}"
+        try:
+            with _job_store_lock:
+                _job_store[job_id]["thread_id"] = threading.get_ident()
+
+            orchestrator = ExecutionAgents(max_iterations=5, job_id=job_id)
+            response = orchestrator.RunPipeline(
+                action=stored_action,
+                sandbox_path=sandbox_path,
+                thread_id=exec_thread_id,
+                answers=answers,
+            )
+
+            with _job_store_lock:
+                if _job_store[job_id].get("status") == "stopped":
+                    return
+                # Another HITL round?
+                if response.statusCode == 202:
+                    _job_store[job_id]["status"] = "completed"
+                    _job_store[job_id]["progress"] = 100
+                    _job_store[job_id]["message"] = "Awaiting further user input"
+                    _job_store[job_id]["result"] = {
+                        "statusCode": 202,
+                        "status": "needs_clarification",
+                        "thread_id": exec_thread_id,
+                        "questions": response.questions or ["Please provide the required input."],
+                        "summary": response.summary or "",
+                    }
+                    return
+                _job_store[job_id]["status"] = "completed"
+                _job_store[job_id]["progress"] = 100
+                _job_store[job_id]["result"] = response.model_dump()
+                _job_store[job_id]["completed_at"] = time.time()
+                _job_store[job_id]["sandbox_path"] = response.sandbox_path or sandbox_path
+                _job_store[job_id]["message"] = (
+                    f"Completed in {time.time() - start_time:.1f}s"
+                    if response.statusCode == 200
+                    else response.summary or "Completed with errors"
+                )
+            logger.info("KRA RESUME [%s] completed | statusCode=%d", job_id, response.statusCode)
+        except Exception as exc:
+            logger.exception("KRA RESUME [%s] failed", job_id)
+            with _job_store_lock:
+                if _job_store[job_id].get("status") != "stopped":
+                    _job_store[job_id]["status"] = "failed"
+                    _job_store[job_id]["error"] = str(exc)
+                    _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+
+    if job_type == "dw":
+        _thread_pool.submit(_run_dw_resume)
+    else:
+        _thread_pool.submit(_run_kra_resume)
+
+    return OrchestrateJobResponse(
+        job_id=job_id,
+        status="accepted",
+        message=f"Job {job_id} resumed. Poll /orchestrate/status/{job_id} for progress.",
+        poll_url=f"/orchestrate/status/{job_id}"
+
+    )
+
+
 @app.get("/orchestrate/status/{job_id}", response_model=JobStatusResponse)
+
 def get_orchestrate_status(job_id: str):
     """Poll the status of a submitted orchestration job."""
     with _job_store_lock:
@@ -998,6 +1160,9 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         if request.jiraUrl:
             action_dict["jiraUrl"] = request.jiraUrl
 
+        # Store action_dict so the /resume endpoint can use it without needing a new request body
+        with _job_store_lock:
+            _job_store[job_id]["action_dict"] = action_dict
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=request.sandbox_path,
@@ -1012,6 +1177,27 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             if _job_store[job_id].get("status") == "stopped":
                 logger.info("ORCHESTRATION TASK [%s] finished naturally but was already stopped", job_id)
                 return
+
+            # ── HITL pause: RunPipeline returns 202 when it needs human input ──
+            if response.statusCode == 202:
+                exec_thread_id = f"exec-{job_id}"
+                _job_store[job_id]["status"] = "completed"
+                _job_store[job_id]["progress"] = 100
+                _job_store[job_id]["message"] = "Awaiting user input"
+                _job_store[job_id]["job_type"] = "kra"  # Resume via _run_kra_resume
+                _job_store[job_id]["result"] = {
+                    "statusCode": 202,
+                    "status": "needs_clarification",
+                    "thread_id": exec_thread_id,
+                    "questions": response.questions or ["Please provide the required input to proceed."],
+                    "summary": response.summary or "Agent needs clarification",
+                }
+                logger.info(
+                    "ORCHESTRATION TASK [%s] paused for HITL | exec thread_id=%s",
+                    job_id, exec_thread_id
+                )
+                return
+
             is_success = response.statusCode == 200
             _job_store[job_id]["status"] = "completed"
             _job_store[job_id]["progress"] = 100
@@ -1168,7 +1354,31 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             logger.info("DIGITAL WORKER JOB [%s] awaiting approval", job_id)
             return
 
+        # Handle Execution Agent HITL pause!
+        if snapshot.next and "execute_automation" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
+            questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
+            summary = interrupt_val.get("summary", "Awaiting input")
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "completed"
+                _job_store[job_id]["progress"] = 100
+                _job_store[job_id]["message"] = "Awaiting user input"
+                # Store job_type='dw' so resume endpoint resumes the DW graph,
+                # not the Execution Agent directly.
+                _job_store[job_id]["job_type"] = "dw"
+                _job_store[job_id]["result"] = {
+                    "statusCode": 202,
+                    "status": "needs_clarification",
+                    "thread_id": job_id,  # DW graph thread_id = job_id
+                    "questions": questions,
+                    "summary": summary,
+                }
+            logger.info("DIGITAL WORKER JOB [%s] paused for HITL", job_id)
+            return
+
         _dw_finalize_job(job_id, final_state, start_time)
+
         logger.info("DIGITAL WORKER JOB [%s] completed in %.1fs", job_id, time.time() - start_time)
 
     except Exception as exc:

@@ -367,6 +367,28 @@
         "The Terraform automation successfully deployed a new isolated VPC for KRA-07"
       ],
       "lesson": "Always use the `aws_availability_zones` data source to dynamically fetch available AZs rather than hardcoding them, since AZ names vary between AWS accounts and regions."
+    },
+    {
+      "timestamp": "2026-07-09T16:29:54",
+      "action_name": "Deploy new VPC using Terraform",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The Terraform deployment completed successfully with all commands (init, validate, plan, apply, and output) exiting with code 0 and no errors"
+      ],
+      "lesson": "Always configure Terraform backend state storage early—local state risks loss and prevents team collaboration."
+    },
+    {
+      "timestamp": "2026-07-09T19:39:35",
+      "action_name": "Need permission",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "This automation successfully provisioned EC2 permissions using Terraform"
+      ],
+      "lesson": "The action succeeded without errors, so the key lesson is: **Request permission proactively before executing operations that require authorization to prevent unnecessary delays.**"
     }
   ]
 }

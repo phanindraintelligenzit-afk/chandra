@@ -1,6 +1,6 @@
 "use client";
 
-import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, type BackendLog } from "@/services/api";
+import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon } from "lucide-react";
@@ -164,7 +164,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           const dwJobs = res.requests.filter(r => r.status === "running" || r.status === "completed" || r.status === "failed");
           
           setExecutingActions(current => {
-            const currentIds = new Set(current.map(a => a.jobId));
+            // Create sets of both job IDs and action IDs to accurately detect duplicates
+            // even after an action's jobId has been updated via submitAnswers
+            const currentJobIds = new Set(current.map(a => a.jobId));
+            const currentActionIds = new Set(current.map(a => a.id));
             
             // Build a set of all active KRA action names to filter out duplicate Jira webhooks
             const kraActionNames = new Set<string>();
@@ -191,8 +194,8 @@ export const WorkerActionExecutionCenter = forwardRef<
                  continue;
               }
 
-              if (!currentIds.has(job.job_id)) {
-                const actionId = `dw-${job.job_id}`;
+              const actionId = `dw-${job.job_id}`;
+              if (!currentJobIds.has(job.job_id) && !currentActionIds.has(actionId)) {
                 newActions.push({
                   id: actionId,
                   actionName: job.title || "Jira Webhook Task",
@@ -427,7 +430,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const submitAnswers = async (actionId: string, providedAnswers?: string[]) => {
     // Reading from ref ensures programmatic calls use latest state
     const action = executingActionsRef.current.find((a) => a.id === actionId);
-    if (!action || !action.questions) return;
+    if (!action || !action.questions || action.status !== "awaiting_input") return;
 
     // Collect answers from DOM if not provided programmatically
     const answers: string[] = providedAnswers || [];
@@ -438,7 +441,7 @@ export const WorkerActionExecutionCenter = forwardRef<
       }
     }
 
-    // Reset status to running and clear completedAt
+    // Reset status to running, clear completedAt, and clear questions
     setExecutingActions((current) =>
       current.map((a) =>
         a.id === actionId
@@ -448,43 +451,30 @@ export const WorkerActionExecutionCenter = forwardRef<
               completedAt: undefined,
               progress: 5,
               jobMessage: "Resuming orchestration with answers...",
-              errorMessage: ""
+              errorMessage: "",
+              questions: undefined,
+              summary: undefined
             }
           : a
       )
     );
 
     try {
-      // Re-call orchestrateAction
-      const jobResponse = await orchestrateAction({
-        action: {
-          actionName: action.actionName,
-          actionDescription: action.actionDescription,
-          steps: action.steps,
-          service: action.service || "AWS"
-        },
-        jiraUrl: action.jiraUrl,
-        command_timeout: timeoutMins * 60,
-        max_iterations: maxIterations,
-        thread_id: action.threadId,
-        sandbox_path: action.sandboxPath,
-        answers: answers
+      // Call the dedicated resume endpoint — reuses the SAME job_id
+      // No new job_id created, no frontend tracking complexity
+      const resumeResp = await fetch(getApiUrl(`/orchestrate/${action.jobId}/resume`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers }),
       });
 
-      const jobId = jobResponse.job_id;
-      setExecutingActions((current) =>
-        current.map((a) =>
-          a.id === actionId
-            ? {
-                ...a,
-                jobId,
-                jobMessage: jobResponse.message || "Job resumed..."
-              }
-            : a
-        )
-      );
+      if (!resumeResp.ok) {
+        const err = await resumeResp.json().catch(() => ({ detail: resumeResp.statusText }));
+        throw new Error(err.detail || `Resume failed: ${resumeResp.status}`);
+      }
 
-      startPolling(actionId, jobId, Date.now(), action.jiraKey);
+      // job_id is exactly the same — just restart polling on it
+      startPolling(actionId, action.jobId, Date.now(), action.jiraKey);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setExecutingActions((current) =>

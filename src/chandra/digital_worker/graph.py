@@ -336,11 +336,17 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
             "service": ", ".join(classification.services) if classification.services else classification.platform.value,
             "kraCode": None,
             "priorityLevel": classification.priority.value,
-            "steps": [step.action for step in plan.steps]
+            "steps": [step.action for step in plan.steps],
+            "jiraUrl": f"https://dummyintelligenzit.atlassian.net/browse/{request.external_id}" if request.external_id else None,
+            "skipJiraUpdate": True,
         }
         
-        # Instantiate orchestrator with the request ID so logs match
-        orchestrator = ExecutionAgents(max_iterations=3, job_id=request.request_id)
+        # Instantiate orchestrator — use request_id as job_id so exec-<request_id>
+        # is the deterministic thread_id, matching what _run_digital_worker_task
+        # stores in _job_store and what the /resume endpoint computes.
+        dw_job_id = request.request_id
+        orchestrator = ExecutionAgents(max_iterations=3, job_id=dw_job_id)
+        exec_thread_id = f"exec-{dw_job_id}"
         
         # Run it synchronously
         response = orchestrator.RunPipeline(
@@ -349,6 +355,23 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
             reference_folder=None,
             command_timeout=300
         )
+        
+        if response.statusCode == 202:
+            # Propagate pause to Digital Worker graph
+            user_answers = interrupt({
+                "type": "clarification",
+                "questions": response.questions,
+                "summary": response.summary,
+            })
+            # When resumed, re-invoke with the SAME thread_id so it finds the checkpoint
+            response = orchestrator.RunPipeline(
+                action=action_dict,
+                sandbox_path=None,
+                reference_folder=None,
+                command_timeout=300,
+                thread_id=exec_thread_id,
+                answers=user_answers if isinstance(user_answers, list) else [user_answers]
+            )
         
         from src.chandra.digital_worker.schemas import ExecutionOutcome
         status_map = {

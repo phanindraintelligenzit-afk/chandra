@@ -219,6 +219,28 @@ class AgentMemory:
         )
         return "\n".join(lines)
 
+# ── Singleton checkpointer ─────────────────────────────────────────────────────
+# CRITICAL: This MUST be a module-level singleton.
+# Each HTTP request creates a new ExecutionAgents instance. If each instance
+# had its own checkpointer, the pause state saved by request-1 would be in
+# Memory A, which is garbage-collected when that request ends. Request-2
+# (resume) would create empty Memory B and fail with KeyError: 'action'.
+# A singleton means ALL instances share the same store, so pause → resume works.
+_SHARED_CHECKPOINTER: Any = None
+_SHARED_CHECKPOINTER_LOCK = __import__("threading").Lock()
+
+
+def _get_shared_checkpointer() -> Any:
+    """Return (and lazily create) the process-wide singleton checkpointer."""
+    global _SHARED_CHECKPOINTER
+    if _SHARED_CHECKPOINTER is not None:
+        return _SHARED_CHECKPOINTER
+    with _SHARED_CHECKPOINTER_LOCK:
+        if _SHARED_CHECKPOINTER is None:
+            _SHARED_CHECKPOINTER = _build_checkpointer()
+    return _SHARED_CHECKPOINTER
+
+
 def _build_checkpointer() -> Any:
     """Return a checkpointer using a three-tier fallback strategy.
 
@@ -587,7 +609,7 @@ class ExecutionAgents:
                 )
             self.Llm = ChatBedrockConverse(model_id=model_name)
             self.Memory = AgentMemory(memory_path)
-            self.Checkpointer = _build_checkpointer()
+            self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()
             self.logger.info("ExecutionAgents initialised successfully with model %s", model_name)
         except Exception as exc:
@@ -2665,7 +2687,8 @@ Rules:
         to resume either a pre-execution clarification pause OR a mid-run HITL pause.
         Both pause types return statusCode=202 / status='needs_clarification'.
         """
-        tid = thread_id or str(uuid.uuid4())
+        # Prevent checkpointer collisions with parent orchestrators by prefixing
+        tid = thread_id or (f"exec-{self.job_id}" if self.job_id else str(uuid.uuid4()))
 
         if answers and not thread_id:
             raise ValueError(
@@ -2699,10 +2722,14 @@ Rules:
         self.logger.info("")
 
         try:
+            import contextvars
+            ctx = contextvars.Context()
+            
             if answers:
-                self.Graph.invoke(Command(resume=answers), config=config)
+                ctx.run(self.Graph.invoke, Command(resume=answers), config)
             else:
-                self.Graph.invoke(
+                ctx.run(
+                    self.Graph.invoke,
                     {
                         "action": action,
                         "reference_folder": reference_folder or "",
@@ -2750,10 +2777,10 @@ Rules:
                         "final_status": "in_progress",
                         "final_summary": "",
                     },
-                    config=config,
+                    config
                 )
 
-            snapshot = self.Graph.get_state(config)
+            snapshot = ctx.run(self.Graph.get_state, config)
 
             if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
                 questions = snapshot.tasks[0].interrupts[0].value
@@ -2786,7 +2813,8 @@ Rules:
             final_summary_text = final.get("final_summary") or final.get("executor_summary")
 
             jira_url = action.get("jiraUrl")
-            if jira_url and final_summary_text:
+            skip_jira = action.get("skipJiraUpdate", False)
+            if jira_url and final_summary_text and not skip_jira:
                 try:
                     issue_key = jira_url.rstrip("/").split("/")[-1]
                     add_summary_comment(issue_key, final_summary_text)
