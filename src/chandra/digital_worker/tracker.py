@@ -92,22 +92,9 @@ def update_request_ticket(
                 _transition(client, issue_key, "Done")
             logger.info("tracker.jira_updated", issue_key=issue_key, resolved=resolved)
             return TrackerUpdate(issue_key=issue_key, status="updated", detail="comment added")
+            
+        return TrackerUpdate(status="skipped", detail="Not a Jira request, skipping ticket creation")
 
-        project = project_key or os.getenv("JIRA_PROJECT_KEY", "DEV")
-        issue = client.create_issue(
-            fields={
-                "project": {"key": project},
-                "summary": request.title[:250],
-                "description": request.description or request.title,
-                "issuetype": {"name": "Task"},
-                "labels": ["chandra-digital-worker", request.source.value],
-            }
-        )
-        client.add_comment(issue.key, comment)
-        if resolved:
-            _transition(client, issue.key, "Done")
-        logger.info("tracker.jira_created", issue_key=issue.key, source=request.source.value)
-        return TrackerUpdate(issue_key=issue.key, status="created", detail="tracking issue created")
     except Exception as exc:
         logger.warning("tracker.jira_update_failed", request_id=request.request_id, error=str(exc))
         return TrackerUpdate(status="failed", detail=str(exc))

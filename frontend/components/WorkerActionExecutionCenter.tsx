@@ -1,6 +1,6 @@
 "use client";
 
-import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, type BackendLog } from "@/services/api";
+import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, getDigitalWorkerSettings, updateDigitalWorkerSettings, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon } from "lucide-react";
@@ -119,6 +119,13 @@ export const WorkerActionExecutionCenter = forwardRef<
   useEffect(() => { onPendingHitlChangeRef.current = onPendingHitlChange; }, [onPendingHitlChange]);
 
   useEffect(() => {
+    getDigitalWorkerSettings().then(settings => {
+      setMaxIterations(settings.max_iterations);
+      setTimeoutMins(Math.floor(settings.command_timeout / 60));
+    }).catch(err => console.error("Failed to load digital worker settings", err));
+  }, []);
+
+  useEffect(() => {
     if (onPendingHitlChangeRef.current) {
       const hitlActions = executingActions.filter(a => a.status === "awaiting_input" && a.questions && a.questions.length > 0);
       onPendingHitlChangeRef.current(hitlActions.map(a => ({
@@ -169,7 +176,7 @@ export const WorkerActionExecutionCenter = forwardRef<
             const currentJobIds = new Set(current.map(a => a.jobId));
             const currentActionIds = new Set(current.map(a => a.id));
             
-            // Build a set of all active KRA action names to filter out duplicate Jira webhooks
+            // Build a set of all active KRA action names to filter out duplicate webhooks
             const kraActionNames = new Set<string>();
             current.forEach(a => {
                if (a.kraCode && a.kraCode.toUpperCase() !== "JIRA") {
@@ -177,7 +184,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                }
             });
             dwJobs.forEach(j => {
-               const cat = (j.category || "JIRA").toUpperCase();
+               const cat = (j.category || j.source || "JIRA").toUpperCase();
                if (cat.startsWith("KRA") && j.title) {
                   kraActionNames.add(j.title.toLowerCase().trim());
                }
@@ -187,10 +194,10 @@ export const WorkerActionExecutionCenter = forwardRef<
             
             for (const job of dwJobs) {
               const titleLower = (job.title || "").toLowerCase().trim();
-              const isJira = !job.category || job.category.toUpperCase() === "JIRA";
+              const isWebhook = !job.category;
               
-              // Skip Jira webhooks if a KRA action with the exact same name already exists
-              if (isJira && kraActionNames.has(titleLower)) {
+              // Skip webhooks if a KRA action with the exact same name already exists
+              if (isWebhook && kraActionNames.has(titleLower)) {
                  continue;
               }
 
@@ -198,10 +205,10 @@ export const WorkerActionExecutionCenter = forwardRef<
               if (!currentJobIds.has(job.job_id) && !currentActionIds.has(actionId)) {
                 newActions.push({
                   id: actionId,
-                  actionName: job.title || "Jira Webhook Task",
+                  actionName: job.title || "Webhook Task",
                   actionDescription: job.reason || "Automated Digital Worker execution",
                   service: job.platform || "AWS",
-                  kraCode: job.category || "JIRA",
+                  kraCode: job.category || (job.source ? job.source.toUpperCase() : "JIRA"),
                   priorityLevel: job.priority || "P3",
                   steps: [],
                   jiraKey: job.external_id || job.job_id.substring(0,8),
@@ -658,6 +665,16 @@ export const WorkerActionExecutionCenter = forwardRef<
                 onChange={(e) => setTimeoutMins(Number(e.target.value) || 5)}
               />
             </div>
+            <button
+              onClick={() => {
+                updateDigitalWorkerSettings({ max_iterations: maxIterations, command_timeout: timeoutMins * 60 })
+                  .then(() => alert("Default settings saved successfully! Webhooks will now use these settings."))
+                  .catch(err => alert("Failed to save settings: " + err.message));
+              }}
+              className="text-[0.65rem] uppercase tracking-[0.1em] bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-md transition-colors whitespace-nowrap"
+            >
+              Save as Default
+            </button>
           </div>
         </div>
         <div className="rounded-full bg-signal/20 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-signal">

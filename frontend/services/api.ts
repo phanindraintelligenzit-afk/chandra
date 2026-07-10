@@ -926,6 +926,28 @@ export type SubmitRequestResponse = {
   poll_url: string;
 };
 
+export type DigitalWorkerSettings = {
+  max_iterations: number;
+  command_timeout: number;
+};
+
+export async function getDigitalWorkerSettings(): Promise<DigitalWorkerSettings> {
+  const url = getApiUrl("/settings/digital-worker");
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to fetch digital worker settings");
+  return res.json();
+}
+
+export async function updateDigitalWorkerSettings(settings: DigitalWorkerSettings): Promise<void> {
+  const url = getApiUrl("/settings/digital-worker");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error("Failed to update digital worker settings");
+}
+
 /** List Digital Worker requests, optionally filtered by status. */
 export async function listDigitalWorkerRequests(
   status?: DigitalWorkerStatus,

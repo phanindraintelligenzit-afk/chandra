@@ -25,13 +25,28 @@ logger = get_logger(__name__)
 
 def build_checkpointer() -> Any:
     """Return a durable Postgres checkpointer, or an in-memory fallback."""
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    import inspect
+    from pydantic import BaseModel
+    from enum import Enum
+    import src.chandra.digital_worker.schemas as schemas
+    
+    # Dynamically allow all Pydantic models and Enums defined in the schemas module
+    # This avoids hardcoding the list while still satisfying LangGraph's strict msgpack security.
+    allowed_modules = []
+    for name, obj in inspect.getmembers(schemas, inspect.isclass):
+        if issubclass(obj, (BaseModel, Enum)) and obj.__module__ == schemas.__name__:
+            allowed_modules.append((schemas.__name__, name))
+            
+    serde = JsonPlusSerializer(allowed_msgpack_modules=allowed_modules)
+
     try:
         from langgraph.checkpoint.postgres import (  # noqa: PLC0415  # lazy: optional dep
             PostgresSaver,
         )
     except ImportError:
         logger.warning("checkpointer.postgres_unavailable_fallback_to_memory")
-        return MemorySaver()
+        return MemorySaver(serde=serde)
 
     try:
         # Convert SQLAlchemy URL format to psycopg native format
@@ -50,11 +65,11 @@ def build_checkpointer() -> Any:
         # kwargs row_factory yields dict rows at runtime; ConnectionPool's
         # type parameter cannot express that, hence the cast.
         pool = ConnectionPool(conn_string, max_size=10, kwargs={"row_factory": dict_row})
-        checkpointer = PostgresSaver(cast(Any, pool))
+        checkpointer = PostgresSaver(cast(Any, pool), serde=serde)
         return checkpointer
     except Exception as exc:
         logger.warning(
             "checkpointer.postgres_setup_failed_fallback_to_memory",
             error=str(exc),
         )
-        return MemorySaver()
+        return MemorySaver(serde=serde)

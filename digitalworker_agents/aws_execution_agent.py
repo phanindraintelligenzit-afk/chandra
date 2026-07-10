@@ -358,7 +358,7 @@ class GeneratedFile(BaseModel):
     filename: str
     content: str
     file_type: str
-    description: str
+    description: Optional[str] = None
 
 class ExecutableStep(BaseModel):
     description: str
@@ -673,6 +673,8 @@ class ExecutionAgents:
         import asyncio
         from langchain_mcp_adapters.client import MultiServerMCPClient
         
+        check_cancelled()
+
         server_config = {
             "aws_api": {
                 "command": "uvx",
@@ -692,6 +694,7 @@ class ExecutionAgents:
 
         async def _run():
             try:
+                check_cancelled()
                 client = MultiServerMCPClient(server_config)
                 tools = await client.get_tools(server_name="aws_api")
                 aws_tool = next((t for t in tools if t.name == "call_aws"), None)
@@ -729,6 +732,8 @@ class ExecutionAgents:
         import re
         from langchain_mcp_adapters.client import MultiServerMCPClient
         
+        check_cancelled()
+
         _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
         TERRAFORM_MCP_BINARY = os.getenv("TERRAFORM_MCP_BINARY", os.path.join(os.path.dirname(_SCRIPT_DIR), "terraform", "terraform-mcp-server.exe"))
         
@@ -742,6 +747,7 @@ class ExecutionAgents:
         
         async def _run():
             try:
+                check_cancelled()
                 client = MultiServerMCPClient(server_config)
                 tools = await client.get_tools(server_name="terraform")
                 search_tool = next((t for t in tools if t.name == "search_providers"), None)
@@ -1246,6 +1252,7 @@ Attached Policies:
                 )
             )
             clarification_context = f"\n\nCLARIFICATIONS FROM USER:\n{qa_lines}"
+            self.logger.info("Resuming execution with Clarifications:\n%s", qa_lines)
 
         feedback_context = (
             f"\n\nPREVIOUS EXECUTION FEEDBACK (MUST FIX — do not repeat these errors):\n{feedback}"

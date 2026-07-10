@@ -496,6 +496,7 @@ def _run_observations_task(job_id: str, request: PipelineRequest):
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = "Initializing AWS agent..."
+            _job_store[job_id]["thread_id"] = threading.get_ident()
 
         agent = AwsObservabilityAgent(region=request.region, kras=request.kras)
 
@@ -515,6 +516,12 @@ def _run_observations_task(job_id: str, request: PipelineRequest):
 
         logger.info("OBSERVATIONS JOB [%s] completed in %.1fs", job_id, elapsed)
 
+    except (InterruptedError, SystemExit):
+        logger.info("OBSERVATIONS JOB [%s] was stopped by the user", job_id)
+        with _job_store_lock:
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "stopped"
+                _job_store[job_id]["completed_at"] = time.time()
     except Exception as exc:
         logger.exception("OBSERVATIONS JOB [%s] failed", job_id)
         with _job_store_lock:
@@ -537,6 +544,7 @@ def _run_detector_task(job_id: str):
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = "Running compliance/security detectors..."
+            _job_store[job_id]["thread_id"] = threading.get_ident()
 
         # Use shared bg loop — avoids competing event loops crashing uvicorn
         findings = _run_async(run_all_detectors())
@@ -557,6 +565,12 @@ def _run_detector_task(job_id: str):
 
         logger.info("DETECTOR JOB [%s] found %d issues in %.1fs", job_id, total_issues, elapsed)
 
+    except (InterruptedError, SystemExit):
+        logger.info("DETECTOR JOB [%s] was stopped by the user", job_id)
+        with _job_store_lock:
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "stopped"
+                _job_store[job_id]["completed_at"] = time.time()
     except Exception as exc:
         logger.exception("DETECTOR JOB [%s] failed", job_id)
         with _job_store_lock:
@@ -855,9 +869,20 @@ def stop_orchestration(job_id: str):
             return JSONResponse(status_code=404, content={"error": "Job not found"})
         
         current_status = _job_store[job_id].get("status")
+        
+        # Check if the job is paused for HITL (Execution Agents pause)
+        is_hitl = False
+        if current_status == "completed":
+            res = _job_store[job_id].get("result") or {}
+            if res.get("status") == "needs_clarification":
+                is_hitl = True
+                
         # If the job is already in a terminal state, the thread has been released.
-        # Killing it now would accidentally kill whatever new job is reusing the thread.
-        if current_status in ["completed", "failed", "exhausted", "stopped", "destroyed"]:
+        terminal_states = ["failed", "exhausted", "stopped", "destroyed"]
+        if not is_hitl:
+            terminal_states.append("completed")
+
+        if current_status in terminal_states:
             return JSONResponse(status_code=200, content={"status": "already_finished", "message": f"Job is already {current_status}"})
             
         thread_id = _job_store[job_id].get("thread_id")
@@ -1276,18 +1301,36 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
     with _job_store_lock:
         if _job_store[job_id].get("status") == "stopped":
             return
-        _job_store[job_id]["status"] = "completed"
+        execution = final_state.get("execution")
+        actual_status = "completed"
+        pipeline_res = {}
+        if execution:
+            if hasattr(execution, "status"):
+                actual_status = execution.status
+            elif isinstance(execution, dict) and "status" in execution:
+                actual_status = execution["status"]
+                
+            if actual_status == "executed":
+                actual_status = "completed"
+
+            if hasattr(execution, "pipeline_response") and execution.pipeline_response:
+                pipeline_res = execution.pipeline_response
+            elif isinstance(execution, dict) and "pipeline_response" in execution:
+                pipeline_res = execution.get("pipeline_response") or {}
+
+        _job_store[job_id]["status"] = actual_status
         _job_store[job_id]["progress"] = 100
-        _job_store[job_id]["result"] = {
-            "status": final_state.get("status", "completed"),
-            "output": final_state.get("result", {}),
-        }
+        
+        result_dict = pipeline_res.copy() if pipeline_res else {}
+        result_dict["status"] = actual_status
+        result_dict["output"] = final_state.get("result", {})
+        
+        _job_store[job_id]["result"] = result_dict
         _job_store[job_id]["completed_at"] = time.time()
         _job_store[job_id]["message"] = (
-            f"Workflow {final_state.get('status', 'completed')} in {time.time() - start_time:.1f}s"
+            f"Workflow {actual_status} in {time.time() - start_time:.1f}s"
         )
         
-        execution = final_state.get("execution")
         if execution:
             sandbox_path = execution.get("sandbox_path") if isinstance(execution, dict) else getattr(execution, "sandbox_path", None)
             if sandbox_path:
@@ -1297,6 +1340,7 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
 def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) -> None:
     """Background worker for /requests and /webhooks/{source}."""
     import time
+    import threading
     start_time = time.time()
     _thread_local.job_id = job_id
     try:
@@ -1307,12 +1351,14 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
+            _job_store[job_id]["thread_id"] = threading.get_ident()
 
         final_state = _digital_worker.invoke(
             {
                 "source": submission.source,
                 "payload": submission.payload,
                 "dry_run": submission.dry_run,
+                "job_id": job_id,
             },
             config=_dw_thread_config(job_id),
         )
@@ -1381,13 +1427,21 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
 
         logger.info("DIGITAL WORKER JOB [%s] completed in %.1fs", job_id, time.time() - start_time)
 
-    except Exception as exc:
-        logger.exception("DIGITAL WORKER JOB [%s] failed", job_id)
+    except (InterruptedError, SystemExit):
+        # Both are raised by our stop mechanism — status is already "stopped", do nothing
+        logger.info("DIGITAL WORKER JOB [%s] was stopped by the user", job_id)
         with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "stopped"
+                _job_store[job_id]["completed_at"] = time.time()
+    except BaseException as exc:
+        logger.exception("DIGITAL WORKER JOB [%s] failed with exception", job_id)
+        with _job_store_lock:
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "failed"
+                _job_store[job_id]["error"] = str(exc)
+                _job_store[job_id]["completed_at"] = time.time()
+                _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
     finally:
         _thread_local.job_id = None
 
@@ -1395,6 +1449,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
 def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> None:
     """Background worker for /requests/{job_id}/approve — resumes the interrupt."""
     import time
+    import threading
     from langgraph.types import Command
 
     start_time = time.time()
@@ -1406,6 +1461,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["status"] = "running"
             _job_store[job_id]["progress"] = 80
             _job_store[job_id]["message"] = "Resuming after approval decision..."
+            _job_store[job_id]["thread_id"] = threading.get_ident()
 
         final_state = _digital_worker.invoke(
             Command(resume=approval.model_dump()),
@@ -1443,20 +1499,39 @@ def _dw_submission_title(submission: CloudRequestSubmission) -> str:
         fields = issue.get("fields", {})
         summary = fields.get("summary")
         if isinstance(summary, str) and summary.strip():
-            title = summary.strip()[:200]
+            title = summary.strip()
             return f"{key}: {title}" if key else title
 
+    # Try Slack Event format
+    event = payload.get("event")
+    if isinstance(event, dict):
+        text = event.get("text")
+        if isinstance(text, str) and text.strip():
+            import re
+            clean_text = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
+            return clean_text if clean_text else "Slack request"
+
+    # Try Teams format
+    if submission.source == "teams":
+        text = payload.get("text")
+        if isinstance(text, str) and text.strip():
+            import re
+            clean_text = re.sub(r'<at>.*?</at>', '', text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'<[^>]+>', '', clean_text)
+            clean_text = clean_text.replace("&nbsp;", " ").replace("&#160;", " ").strip()
+            return clean_text if clean_text else "Teams request"
+
     # Fallback to direct fields
-    for key in ("title", "summary", "subject", "AlarmName", "message"):
+    for key in ("title", "summary", "subject", "AlarmName", "message", "text"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:200]
+            return value.strip()
             
     fields = payload.get("fields")
     if isinstance(fields, dict):
         summary = fields.get("summary")
         if isinstance(summary, str) and summary.strip():
-            return summary.strip()[:200]
+            return summary.strip()
             
     return f"{submission.source} request"
 
@@ -1509,6 +1584,7 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "status": "error",
             "message": f"Unsupported source '{submission.source}'. Expected one of: {', '.join(SUPPORTED_SOURCES)}",
         })
+        
     if _digital_worker is None:
         return JSONResponse(status_code=503, content={
             "status": "error", "message": "Digital Worker graph is not initialized",
@@ -1532,6 +1608,14 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "started_at": None, "completed_at": None,
         }
     _thread_pool.submit(_run_digital_worker_task, job_id, submission)
+    
+    if submission.source == "teams":
+        # Teams requires a specific Bot Framework JSON schema to avoid showing an error in the channel
+        return JSONResponse(status_code=200, content={
+            "type": "message",
+            "text": f"Digital Worker request accepted! Monitor progress on your dashboard. (Job ID: {job_id})"
+        })
+        
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Request submitted. Poll /jobs/status/{job_id}",
@@ -1564,6 +1648,8 @@ def receive_webhook(
     payload: Dict[str, Any],
     x_chandra_webhook_token: Optional[str] = Header(default=None),
 ):
+    import json
+    logger.info(f"Received webhook from {source} with payload: {json.dumps(payload)}")
     """Omnichannel webhook intake: jira | slack | teams | email | monitoring |
     cloudwatch | azure_monitor | gcp_monitoring | webhook.
 
@@ -1572,6 +1658,11 @@ def receive_webhook(
     unset means unauthenticated intake (development only).
     """
     expected_token = os.getenv("CHANDRA_WEBHOOK_TOKEN")
+    
+    # Handle Slack's URL verification challenge
+    if source == "slack" and payload.get("type") == "url_verification":
+        return JSONResponse(status_code=200, content={"challenge": payload.get("challenge")})
+
     if expected_token and x_chandra_webhook_token != expected_token:
         logger.warning("Webhook rejected: bad or missing X-Chandra-Webhook-Token (source=%s)", source)
         return JSONResponse(status_code=401, content={
@@ -1600,6 +1691,37 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
         "message": f"Approval decision submitted. Poll /jobs/status/{job_id}",
         "poll_url": f"/jobs/status/{job_id}",
     })
+
+
+class DigitalWorkerSettings(BaseModel):
+    max_iterations: int = Field(default=5, description="Maximum agent loop iterations.")
+    command_timeout: int = Field(default=300, description="Timeout for shell commands.")
+
+@app.get("/settings/digital-worker", response_model=DigitalWorkerSettings)
+def get_digital_worker_settings():
+    """Get the global digital worker settings."""
+    config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
+    if os.path.exists(config_path):
+        import json
+        try:
+            with open(config_path, "r") as f:
+                data = json.load(f)
+                return DigitalWorkerSettings(**data)
+        except Exception as e:
+            logger.warning("Failed to load digital_worker_config.json: %s", e)
+    return DigitalWorkerSettings()
+
+@app.post("/settings/digital-worker")
+def update_digital_worker_settings(settings: DigitalWorkerSettings):
+    """Update the global digital worker settings."""
+    config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
+    import json
+    try:
+        with open(config_path, "w") as f:
+            json.dump(settings.model_dump(), f, indent=4)
+        return {"status": "success"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/requests")

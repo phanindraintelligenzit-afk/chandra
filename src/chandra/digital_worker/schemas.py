@@ -203,6 +203,7 @@ class ExecutionOutcome(BaseModel):
     rollback_code: str = ""
     rollback_logs: str = ""
     sandbox_path: str | None = None
+    pipeline_response: dict[str, Any] | None = None
 
 
 class ValidationCheck(BaseModel):

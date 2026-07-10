@@ -284,7 +284,7 @@ function RequestCard({
               {STATUS_META[req.status]?.label ?? req.status}
             </span>
             <span className={`border px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] ${req.isKra ? "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300" : "border-sky-400/30 bg-sky-400/10 text-sky-300"}`}>
-              {req.isKra ? "KRA" : "JIRA"}
+              {req.isKra ? "KRA" : (req.source ? req.source.toUpperCase() : "JIRA")}
             </span>
             {(req.kraData?.kraCode || req.external_id) && (
               <span className="border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-sky-300">
@@ -533,7 +533,7 @@ export function HumanApprovalCenter({
         </div>
       )}
 
-      <div className="mt-4 flex flex-col gap-3">
+      <div className="mt-4 flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
         {loaded && unifiedRequests.length === 0 && !error && (
           <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-frost/50">
             No Digital Worker requests yet. Incoming Jira / Slack / Teams / webhook requests appear here automatically.

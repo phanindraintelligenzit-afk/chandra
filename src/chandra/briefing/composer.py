@@ -316,7 +316,9 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        parsed = json.loads(text)
+        import json_repair
+        
+        parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:
             logger.warning("llm.request_analysis_malformed_fallback_to_deterministic")
             return None

@@ -325,8 +325,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
         from src.chandra.digital_worker.schemas import ExecutionOutcome
         outcome = ExecutionOutcome(
             status="dry_run",
-            dry_run=True,
-            detail="ExecutionAgents orchestrator skipped due to dry-run mode."
+            detail="Dry run requested, skipping execution",
         )
     else:
         # Map ResolutionPlan to ActionInput format
@@ -337,23 +336,50 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
             "kraCode": None,
             "priorityLevel": classification.priority.value,
             "steps": [step.action for step in plan.steps],
-            "jiraUrl": f"https://dummyintelligenzit.atlassian.net/browse/{request.external_id}" if request.external_id else None,
+            "jiraUrl": f"https://dummyintelligenzit.atlassian.net/browse/{request.external_id}" if request.external_id and request.source.value == "jira" else "",
             "skipJiraUpdate": True,
         }
         
-        # Instantiate orchestrator — use request_id as job_id so exec-<request_id>
-        # is the deterministic thread_id, matching what _run_digital_worker_task
-        # stores in _job_store and what the /resume endpoint computes.
-        dw_job_id = request.request_id
-        orchestrator = ExecutionAgents(max_iterations=3, job_id=dw_job_id)
+        # Instantiate orchestrator using the native job_id injected into state
+        dw_job_id = state.get("job_id") or request.request_id
+        
+        # Load global digital worker settings if available
+        import os, json
+        # graph.py is in src/chandra/digital_worker/
+        # so dirname(dirname(dirname(dirname(__file__)))) is the root
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "digital_worker_config.json")
+        max_iters = 5
+        cmd_timeout = 300
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    data = json.load(f)
+                    max_iters = data.get("max_iterations", max_iters)
+                    cmd_timeout = data.get("command_timeout", cmd_timeout)
+            except Exception:
+                pass
+                
+        orchestrator = ExecutionAgents(max_iterations=max_iters, job_id=dw_job_id)
         exec_thread_id = f"exec-{dw_job_id}"
+        
+        # Register the actual LangGraph worker thread ID into the backend job store
+        # so that the /orchestrate/stop endpoint can correctly kill this thread.
+        import threading
+        import sys
+        if "fastapi_app" in sys.modules:
+            fastapi_app = sys.modules["fastapi_app"]
+            if hasattr(fastapi_app, "_job_store_lock") and hasattr(fastapi_app, "_job_store"):
+                with fastapi_app._job_store_lock:
+                    if dw_job_id in fastapi_app._job_store:
+                        fastapi_app._job_store[dw_job_id]["thread_id"] = threading.get_ident()
         
         # Run it synchronously
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=None,
             reference_folder=None,
-            command_timeout=300
+            command_timeout=cmd_timeout,
+            thread_id=exec_thread_id
         )
         
         if response.statusCode == 202:
@@ -401,7 +427,8 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
             errors=errors,
             execution_logs=execution_logs,
             execution_code=json.dumps([step.model_dump() for step in plan.steps]),
-            sandbox_path=response.sandbox_path
+            sandbox_path=response.sandbox_path,
+            pipeline_response=response.model_dump()
         )
     
     logger.info(

@@ -19,6 +19,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from digitalworker_agents.aws_execution_agent import check_cancelled
+
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 
@@ -165,6 +167,7 @@ class AwsObservabilityAgent:
         return "\n".join(lines)
 
     def TriggerToolsNode(self, state: AgentState) -> dict:
+        check_cancelled()
         region = state.get("region", self.Region)
         logger.info("Triggering %d tools for region=%s", len(TOOLS_LIST), region)
         try:
@@ -184,6 +187,7 @@ class AwsObservabilityAgent:
             raise ToolExecutionError(f"Failed to build tool calls: {exc}") from exc
 
     def NormalizeNode(self, state: AgentState) -> dict:
+        check_cancelled()
         logger.info("Normalising tool results")
         raw_results: Dict[str, Any] = {}
         failed_tools: List[str] = []
@@ -227,6 +231,7 @@ class AwsObservabilityAgent:
         return {"raw_results": raw_results}
 
     def SummaryNode(self, state: AgentState) -> dict:
+        check_cancelled()
         raw_results = state.get("raw_results", {})
         logger.info("Generating summary. Available tool results=%d", len(raw_results))
 

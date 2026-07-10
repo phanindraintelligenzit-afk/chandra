@@ -83,8 +83,10 @@ def _from_jira(payload: dict[str, Any]) -> CloudRequest:
 def _from_slack(payload: dict[str, Any]) -> CloudRequest:
     """Slack Events API message / slash-command payload."""
     event = payload.get("event", payload)
-    text = _text(event.get("text") or payload.get("text"), default="Slack request")
-    title = text.splitlines()[0][:200] if text else "Slack request"
+    import re
+    raw_text = _text(event.get("text") or payload.get("text"), default="Slack request")
+    text = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip() if raw_text else "Slack request"
+    title = text if text else "Slack request"
     return CloudRequest(
         source=RequestSource.SLACK,
         external_id=_text(event.get("ts") or event.get("event_ts")) or None,
@@ -98,13 +100,29 @@ def _from_slack(payload: dict[str, Any]) -> CloudRequest:
 
 def _from_teams(payload: dict[str, Any]) -> CloudRequest:
     """Microsoft Teams bot-framework activity payload."""
-    text = _text(payload.get("text"), default="Teams request")
+    import re
+    
+    raw_text = _text(payload.get("text"), default="Teams request")
+    
+    # Teams sends text wrapped in HTML (e.g. <p><at>BotName</at>&nbsp;deploy ec2</p>)
+    # 1. Remove the entire <at>BotName</at> mention block
+    clean_text = re.sub(r'<at>.*?</at>', '', raw_text, flags=re.IGNORECASE)
+    # 2. Strip all remaining HTML tags
+    clean_text = re.sub(r'<[^>]+>', '', clean_text)
+    # 3. Replace common HTML spaces with regular space
+    clean_text = clean_text.replace("&nbsp;", " ").replace("&#160;", " ")
+    # 4. Strip leading/trailing whitespace
+    clean_text = clean_text.strip()
+    
+    if not clean_text:
+        clean_text = "Teams request"
+        
     sender = payload.get("from") or {}
     return CloudRequest(
         source=RequestSource.TEAMS,
         external_id=_text(payload.get("id")) or None,
-        title=text.splitlines()[0][:200] if text else "Teams request",
-        description=text,
+        title=clean_text,
+        description=clean_text,
         requester=_text(sender.get("name") if isinstance(sender, dict) else sender) or None,
         raw_payload=payload,
     )
