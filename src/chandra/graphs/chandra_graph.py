@@ -10,7 +10,6 @@ from src.chandra.graphs.action_nodes import (
     action_executor_node,
     analyze,
     approval_node,
-    compose_briefing,
     decision_router,
     escalation_node,
     ingest_observations,
@@ -28,17 +27,6 @@ from src.chandra.graphs.state import ChandraState
 from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
-
-# LangGraph 1.x emits "Deserializing unregistered type
-# src.chandra.briefing.schemas.*" deprecation warnings on every
-# checkpoint round-trip of a pydantic model. Registering the module
-# via ``JsonPlusSerializer(allowed_msgpack_modules=...)`` silences
-# them, but in 1.2.0 it also changes deserialization to return plain
-# dicts, which breaks pydantic field access in ``persist`` and other
-# post-checkpoint nodes. So we accept the warnings as forward-looking
-# deprecation noise. The future-strict mode (``LANGGRAPH_STRICT_MSGPACK=true``)
-# will force a real fix: either a custom serde that preserves pydantic
-# types, or migrating state fields to plain dicts.
 
 
 def build_graph(checkpointer: Any | None = None) -> Any:
@@ -63,7 +51,6 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("observe_reliability", observe_reliability)
     graph.add_node("analyze", analyze)
     graph.add_node("decision_router", decision_router)
-    graph.add_node("compose_briefing", compose_briefing)
     graph.add_node("approval_node", approval_node)
     graph.add_node("persist", persist)
     graph.add_node("action_executor", action_executor_node)
@@ -95,14 +82,13 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("analyze", "decision_router")
     graph.add_edge("decision_router", "action_executor")
     graph.add_edge("action_executor", "escalation")
-    graph.add_edge("escalation", "compose_briefing")
 
     def route_to_approval(state: ChandraState) -> str:
         pending = state.get("pending_writes", []) or []
         return "approval_node" if pending else "persist"
 
     graph.add_conditional_edges(
-        "compose_briefing",
+        "escalation",
         route_to_approval,
         ["approval_node", "persist"],
     )

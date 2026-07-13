@@ -26,19 +26,6 @@ from langgraph.types import Command
 
 from src.chandra.graphs.chandra_graph import build_graph
 
-# LangGraph 1.x emits "Deserializing unregistered type
-# src.chandra.briefing.schemas.*" warnings every time a pydantic model
-# round-trips through a checkpoint. The default serde preserves
-# pydantic model instances across the round-trip; registering the
-# module would silence the warning but also changes the deserializer
-# to return plain dicts, which breaks ``f.evidence``-style field
-# access in ``persist`` and similar nodes. Until we either (a) write a
-# custom serde that preserves pydantic types, or (b) migrate state
-# fields to plain dicts, accept the warnings as forward-looking
-# deprecation noise. See the comment in ``_build_serde`` in
-# ``chandra_graph.py`` for the long version.
-
-# Configure logging to write to logs.txt
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -56,6 +43,8 @@ AUTO_APPROVE = os.environ.get("CHANDRA_AUTO_APPROVE", "").lower() in {"1", "true
 
 
 def default_serializer(obj):
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
     return str(obj)
 
 

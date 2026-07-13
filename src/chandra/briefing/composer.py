@@ -136,7 +136,10 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        ranked = json.loads(text).get("ranked", [])
+        import json_repair
+        
+        parsed = json_repair.loads(text)
+        ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
     except Exception as exc:
         logger.warning("llm.rank_failed_fallback_to_deterministic", error=str(exc))
         return deterministic_rank(findings)

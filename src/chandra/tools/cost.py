@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from src.chandra.briefing.schemas import Finding
 from src.chandra.tools.base import DetectorContext
@@ -155,13 +155,15 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
                 for instance in reservation.get("Instances", []):
                     instance_id = instance["InstanceId"]
 
+                    now = datetime.now(UTC)
+                    start_time = max(instance["LaunchTime"], now - timedelta(days=14))
                     metrics = cw.get_metric_statistics(
                         Namespace="AWS/EC2",
                         MetricName="CPUUtilization",
                         Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
-                        StartTime=instance["LaunchTime"],
-                        EndTime=datetime.now(UTC),
-                        Period=300,
+                        StartTime=start_time,
+                        EndTime=now,
+                        Period=3600,
                         Statistics=["Average"],
                     )
 

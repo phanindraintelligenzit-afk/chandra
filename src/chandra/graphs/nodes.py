@@ -33,7 +33,7 @@ from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.aws.regions import active_regions
 from src.chandra.briefing.composer import (
     compose_executive_summary,
-    llm_rank,
+    deterministic_rank,
     render_markdown,
     score_findings,
 )
@@ -319,7 +319,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
     for kra_findings in raw.values():
         flat.extend(kra_findings)
 
-    analyzed: list[AnalyzedFinding] = llm_rank(flat)
+    analyzed: list[AnalyzedFinding] = deterministic_rank(flat)
     scorecard = score_findings(raw)
 
     logger.info(

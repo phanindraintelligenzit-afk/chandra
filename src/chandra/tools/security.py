@@ -186,7 +186,7 @@ def _inspect_security_group(sg: dict[str, Any], region: str, detector_id: str) -
     owner_id = sg.get("OwnerId", "unknown")
     arn = f"arn:aws:ec2:{region}:{owner_id}:security-group/{sg_id}"
 
-    exposed: list[tuple[int, str]] = []
+    exposed_set: set[tuple[int, str]] = set()
     for perm in sg.get("IpPermissions", []) or []:
         ip_protocol = perm.get("IpProtocol")
         if ip_protocol not in ("tcp", "-1"):
@@ -198,16 +198,19 @@ def _inspect_security_group(sg: dict[str, Any], region: str, detector_id: str) -
             continue
         if ip_protocol == "-1":
             for port, name in DANGEROUS_PORTS.items():
-                exposed.append((port, name))
+                exposed_set.add((port, name))
             continue
         if from_port is None or to_port is None:
             continue
         for port, name in DANGEROUS_PORTS.items():
             if from_port <= port <= to_port:
-                exposed.append((port, name))
+                exposed_set.add((port, name))
 
-    if not exposed:
+    if not exposed_set:
         return findings
+
+    # Preserve order of DANGEROUS_PORTS to ensure deterministic output
+    exposed = [(p, n) for p, n in DANGEROUS_PORTS.items() if (p, n) in exposed_set]
 
     severity = "critical" if any(p in (22, 3389) for p, _ in exposed) else "high"
     ports_listed = ", ".join(f"{p} ({n})" for p, n in exposed)
@@ -857,11 +860,11 @@ ALL_DETECTORS = (
     find_stale_access_keys,
     check_root_mfa,
     find_overly_permissive_iam,
-    # find_config_noncompliant_rules,   # SEC-006 — disabled for testing
-    # find_guardduty_threats,            # SEC-007 — disabled for testing
-    # find_access_analyzer_findings,     # SEC-008 — disabled for testing
+    # find_config_noncompliant_rules,   
+    # find_guardduty_threats,            
+    find_access_analyzer_findings,    
     find_kms_rotation_disabled,
-    # find_security_hub_findings,        # SEC-010 — disabled for testing
+    find_security_hub_findings,        
 )
 
 

@@ -27,9 +27,7 @@ from langgraph.types import Send, interrupt
 from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.aws.regions import active_regions
 from src.chandra.briefing.composer import (
-    compose_executive_summary,
-    llm_rank,
-    render_markdown,
+    deterministic_rank,
     score_findings,
 )
 from src.chandra.briefing.schemas import (
@@ -310,7 +308,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
     for kra_findings in raw.values():
         flat.extend(kra_findings)
 
-    analyzed: list[AnalyzedFinding] = llm_rank(flat)
+    analyzed: list[AnalyzedFinding] = deterministic_rank(flat)
     scorecard = score_findings(raw)
 
     logger.info(
@@ -325,43 +323,7 @@ def analyze(state: ChandraState) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Compose briefing (LLM narrative)
-# ---------------------------------------------------------------------------
 
-
-def compose_briefing(state: ChandraState) -> dict[str, Any]:
-    """Render the markdown + JSON briefing for the run."""
-    analyzed = state.get("analyzed_findings", []) or []
-    scorecard = state.get("scorecard", {}) or {}
-    raw = state.get("raw_findings", {}) or {}
-
-    flat: list[Finding] = []
-    for kra_findings in raw.values():
-        flat.extend(kra_findings)
-
-    executive = compose_executive_summary(analyzed, scorecard)
-    metadata = {
-        "regions": state.get("regions", []),
-        "generated_at": datetime.now(UTC).isoformat(),
-        "errors": state.get("errors", []),
-    }
-    briefing_md, briefing_json = render_markdown(
-        run_id=state["run_id"],
-        account_id=state["account_id"],
-        scorecard=scorecard,
-        executive_summary=executive,
-        top_findings=analyzed[:10],
-        all_findings=flat,
-        metadata=metadata,
-    )
-    logger.info(
-        "graph.compose_briefing",
-        run_id=state["run_id"],
-        analyzed_findings=len(analyzed),
-        briefing_length=len(briefing_md),
-    )
-    return {"briefing_md": briefing_md, "briefing_json": briefing_json}
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +570,6 @@ __all__ = [
     "action_executor_node",
     "analyze",
     "approval_node",
-    "compose_briefing",
     "decision_router",
     "escalation_node",
     "fanout_observers",

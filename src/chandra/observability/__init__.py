@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import inspect
+import json
 import logging
 import signal
 import sys
@@ -12,6 +13,18 @@ from typing import Any
 import structlog.contextvars
 
 logger = logging.getLogger(__name__)
+
+
+def _pretty_format(obj: Any) -> str:
+    def _default(o: Any) -> Any:
+        if hasattr(o, "model_dump"):
+            return o.model_dump()
+        return str(o)
+    try:
+        return json.dumps(obj, indent=2, default=_default)
+    except Exception:
+        import pprint
+        return pprint.pformat(obj)
 
 
 def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
@@ -36,14 +49,14 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                 try:
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
-                    logger.info(f"Input received for node ({node_name}):\n{state_in}")
+                    logger.info(f"Input received for node ({node_name}):\n{_pretty_format(state_in)}")
 
                     if timeout_s:
                         result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout_s)
                     else:
                         result = await func(*args, **kwargs)
 
-                    logger.info(f"Output for node ({node_name}):\n{result}")
+                    logger.info(f"Output for node ({node_name}):\n{_pretty_format(result)}")
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric("NodeLatency", 1.0, "Count", {"node": node_name})
                     return result
@@ -79,11 +92,11 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                 try:
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
-                    logger.info(f"Input received for node ({node_name}):\n{state_in}")
+                    logger.info(f"Input received for node ({node_name}):\n{_pretty_format(state_in)}")
 
                     result = func(*args, **kwargs)
 
-                    logger.info(f"Output for node ({node_name}):\n{result}")
+                    logger.info(f"Output for node ({node_name}):\n{_pretty_format(result)}")
                     logger.info("node.completed", extra={"node": node_name})
                     _emit_metric("NodeLatency", 1.0, "Count", {"node": node_name})
                     return result
