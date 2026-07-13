@@ -2302,7 +2302,7 @@ function DetectorIssuesMonitoring({ issues }: { issues: DetectorIssuesOutput | n
                   <table className="w-full text-[0.7rem] border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-black/80 backdrop-blur">
-                        {["Category", "Severity", "Finding", "Region", "Resource Type", "Recommendation"].map(h => (
+                        {["Category", "Severity", "Finding", "Region", "Resource", "Recommendation"].map(h => (
                           <th key={h} className="px-3 py-2.5 text-left text-[0.58rem] uppercase tracking-[0.18em] text-muted font-semibold border-b border-white/10 whitespace-nowrap">
                             {h}
                           </th>
@@ -2335,8 +2335,13 @@ function DetectorIssuesMonitoring({ issues }: { issues: DetectorIssuesOutput | n
                           <td className="px-3 py-2.5 whitespace-nowrap">
                             <span className="font-mono text-frost/60">{row.region || "—"}</span>
                           </td>
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            <span className="text-frost/60">{row.resource_type || "—"}</span>
+                          <td className="px-3 py-2.5 max-w-[200px]">
+                            <div className="text-frost/80 truncate text-[0.7rem]" title={row.resource_arn}>
+                              {row.resource_arn ? row.resource_arn.split(':').pop() : "—"}
+                            </div>
+                            <div className="text-[0.55rem] uppercase tracking-wider text-muted mt-0.5 truncate" title={row.resource_type}>
+                              {row.resource_type || "—"}
+                            </div>
                           </td>
                           <td className="px-3 py-2.5 max-w-[280px]">
                             <div className="text-frost/70 leading-snug">{row.recommendation}</div>
@@ -2717,13 +2722,11 @@ export function ChandraExperience() {
   const AGENT = agentName || "Chandra";
 
   const hasIncident = selectedKRAs.includes("Incident Detection");
-  const hasCost = selectedKRAs.includes("Cost Optimization");
 
   return (
     <main className="bg-obsidian text-frost">
       <CommandHeader liveObservations={observations} liveSummary={liveSummary} sync={observationsSync} />
 
-      {hasCost ? (
       <section className="section-shell">
         <div className="section-inner">
           <CostMonitoring 
@@ -2735,7 +2738,6 @@ export function ChandraExperience() {
           />
         </div>
       </section>
-      ) : null}
 
       <section className="section-shell">
         <div className="section-inner">

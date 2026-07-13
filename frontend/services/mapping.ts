@@ -99,11 +99,7 @@ export function buildKraPayload(
   customKras: CustomKra[]
 ): KraPayloadEntry[] {
   const payload: KraPayloadEntry[] = [];
-  predefinedKraCatalog.forEach((kra, index) => {
-    if (selectedPredefined.includes(kra.id)) {
-      payload.push({ code: formatKraCode(index + 1), description: kra.desc });
-    }
-  });
+
   customKras.forEach((kra, index) => {
     payload.push({
       code: formatKraCode(KRA_CODE_OFFSET + index + 1),

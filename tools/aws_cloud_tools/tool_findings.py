@@ -92,7 +92,32 @@ async def run_all_detectors():
     # FIX: Await the coroutine directly instead of trying to start a new event loop
     findings = await run_all_detectors_async(ctx)
 
-    logger.info("Total findings across all KRAs: %d", len(findings))
+    # --- DEDUPLICATION LOGIC ---
+    seen = set()
+    deduped_findings = []
+    for finding in findings:
+        if hasattr(finding, "title"):
+            title = getattr(finding, "title")
+            arn = getattr(finding, "resource_arn", "")
+        elif isinstance(finding, dict):
+            title = finding.get("title", "")
+            arn = finding.get("resource_arn", "")
+        else:
+            title = str(finding)
+            arn = ""
+            
+        # Make the key case-insensitive and stripped to catch slight formatting differences
+        safe_title = str(title).lower().strip() if title else ""
+        safe_arn = str(arn).lower().strip() if arn else ""
+        
+        key = (safe_title, safe_arn)
+        if key not in seen:
+            seen.add(key)
+            deduped_findings.append(finding)
+    
+    findings = deduped_findings
+
+    logger.info("Total unique findings across all KRAs: %d", len(findings))
 
     # --- ROBUST JSON EXPORT LOGIC ---
     if findings:

@@ -34,13 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AwsObservabilityAgent")
 
-ORIGINAL_KRAS = """
-**KRA-01** Cloud cost anomaly detection & remediation
-**KRA-02** IAM drift & security posture monitoring
-**KRA-03** Incident triage & first-response
-**KRA-04** Compliance evidence collection
-**KRA-05** Infra documentation & runbook authoring
-"""
+
 
 
 class _TokenUsageCallback(BaseCallbackHandler):
@@ -152,7 +146,7 @@ class AwsObservabilityAgent:
     @staticmethod
     def _build_kras_str(kras: Optional[List[Any]]) -> str:
         if not kras:
-            return ORIGINAL_KRAS
+            return ""
         lines = []
         for i, k in enumerate(kras, start=1):
             code = getattr(k, "code", None) or f"KRA-{i:02d}"
