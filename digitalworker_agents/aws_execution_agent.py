@@ -31,6 +31,7 @@ Mid-run HITL (when stuck):
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -541,6 +542,13 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
         text=True,
         encoding="utf-8",
         errors="replace",
+        # Without this, the child inherits THIS process's process group on
+        # POSIX, so os.killpg(os.getpgid(proc.pid), SIGKILL) on timeout/cancel
+        # would signal the whole group — including this agent process itself
+        # — instead of just the hung/cancelled shell command. Giving the
+        # child its own session scopes killpg to just it and its descendants.
+        # No-op on Windows (that branch uses taskkill /T instead).
+        start_new_session=True,
     )
     
     register_subprocess(proc)
@@ -583,13 +591,768 @@ def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any
         "return_code": proc.returncode,
     }
 
+
+class _PersistentMCPSession:
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._start_lock = threading.Lock()
+        self._client = None
+        self._init_lock: Optional[asyncio.Lock] = None  # bound to the loop, created lazily
+        self._aws_tool = None
+        self._tf_search_tool = None
+        self._tf_details_tool = None
+
+    def _ensure_loop_started(self) -> None:
+        if self._loop is not None:
+            return
+        with self._start_lock:
+            if self._loop is not None:
+                return
+            loop = asyncio.ProactorEventLoop() if sys.platform == "win32" else asyncio.new_event_loop()
+
+            def _run_forever():
+                asyncio.set_event_loop(loop)
+                loop.run_forever()
+
+            t = threading.Thread(target=_run_forever, daemon=True, name="mcp-session-loop")
+            t.start()
+            self._loop = loop
+            self._thread = t
+
+    async def _init_servers(self) -> None:
+        """First coroutine on the loop launches BOTH MCP servers at once
+        (concurrently, via asyncio.gather); every later coroutine on the same
+        loop just reads the cached tool handles — no re-init."""
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+
+        async with self._init_lock:
+            if self._aws_tool is not None or self._tf_search_tool is not None:
+                return  # already initialised by a previous call
+
+            from langchain_mcp_adapters.client import MultiServerMCPClient
+
+            region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
+            _script_dir = os.path.dirname(os.path.abspath(__file__))
+            terraform_binary = os.getenv(
+                "TERRAFORM_MCP_BINARY",
+                os.path.join(os.path.dirname(_script_dir), "terraform", "terraform-mcp-server.exe"),
+            )
+
+            server_config = {
+                "aws_api": {
+                    "command": "uvx",
+                    "args": ["awslabs.aws-api-mcp-server@latest"],
+                    "env": {
+                        "AWS_REGION": os.getenv("AWS_REGION", region),
+                        "AWS_DEFAULT_REGION": os.getenv("AWS_DEFAULT_REGION", region),
+                        **({"AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID")} if os.getenv("AWS_ACCESS_KEY_ID") else {}),
+                        **({"AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY")} if os.getenv("AWS_SECRET_ACCESS_KEY") else {}),
+                        **({"AWS_SESSION_TOKEN": os.getenv("AWS_SESSION_TOKEN")} if os.getenv("AWS_SESSION_TOKEN") else {}),
+                        **({"AWS_PROFILE": os.getenv("AWS_PROFILE")} if os.getenv("AWS_PROFILE") else {}),
+                        "UV_LINK_MODE": "copy",
+                    },
+                    "transport": "stdio",
+                },
+                "terraform": {
+                    "command": terraform_binary,
+                    "args": ["stdio"],
+                    "transport": "stdio",
+                },
+            }
+
+            logger.info(
+                "[MCP SESSION] Cold start: launching aws_api + terraform MCP servers together "
+                "(first call in this process only)..."
+            )
+            t0 = time.perf_counter()
+            self._client = MultiServerMCPClient(server_config)
+
+            # ---- initialize both MCP servers AT ONCE, concurrently ----
+            aws_tools, tf_tools = await asyncio.gather(
+                self._client.get_tools(server_name="aws_api"),
+                self._client.get_tools(server_name="terraform"),
+                return_exceptions=True,
+            )
+
+            if isinstance(aws_tools, Exception):
+                logger.warning("[MCP SESSION] aws_api server failed to start: %s", aws_tools)
+                aws_tools = []
+            if isinstance(tf_tools, Exception):
+                logger.warning("[MCP SESSION] terraform server failed to start: %s", tf_tools)
+                tf_tools = []
+
+            self._aws_tool = next((t for t in aws_tools if t.name == "call_aws"), None)
+            self._tf_search_tool = next((t for t in tf_tools if t.name == "search_providers"), None)
+            self._tf_details_tool = next((t for t in tf_tools if t.name == "get_provider_details"), None)
+
+            logger.info(
+                "[MCP SESSION] Ready in %.2fs (aws_api=%s, terraform=%s) — reused for every "
+                "future MCP call in this process, no more per-call subprocess startup.",
+                time.perf_counter() - t0,
+                "up" if self._aws_tool else "unavailable",
+                "up" if (self._tf_search_tool and self._tf_details_tool) else "unavailable",
+            )
+
+    async def get_tools_async(self) -> Dict[str, Any]:
+        """For callers already running inside the persistent loop."""
+        await self._init_servers()
+        return {
+            "aws_tool": self._aws_tool,
+            "tf_search_tool": self._tf_search_tool,
+            "tf_details_tool": self._tf_details_tool,
+        }
+
+    def run_coro(self, coro_fn, *args, **kwargs):
+        """Submit a coroutine to the persistent loop from any (sync) calling
+        thread and block until it completes."""
+        self._ensure_loop_started()
+        fut = asyncio.run_coroutine_threadsafe(coro_fn(*args, **kwargs), self._loop)
+        return fut.result()
+
+
+_mcp_session = _PersistentMCPSession()
+
+# Process-wide cache: the AWS account grounding context is fetched from MCP
+# exactly once — by whichever job/thread gets there first — and reused for
+# every later call: every retry iteration of the pipeline, AND every
+# subsequent RunPipeline() call / ExecutionAgents instance in this process.
+# Call ExecutionAgents._gather_aws_context(force_refresh=True) if a caller
+# ever needs to intentionally bust this (e.g. a long-lived worker process
+# that wants fresh account state for a brand-new run).
+_AWS_CONTEXT_CACHE: Dict[str, Optional[str]] = {"value": None}
+_AWS_CONTEXT_CACHE_LOCK = threading.Lock()
+
+# Process-wide cache of Terraform resource docs, keyed by resource type (e.g.
+# "aws_instance"). Shared across ExecutionAgents instances so a doc fetched
+# once for one job/iteration is never re-fetched for another.
+_TERRAFORM_DOCS_CACHE: Dict[str, str] = {}
+
+# Process-wide cache: the terraform_docs context is fetched from MCP exactly
+# ONCE for the life of the process. Every later call to gather_docs — next
+# retry iteration, next job — reuses that first result verbatim, with zero
+# MCP calls, even if the resource list differs on a later iteration.
+_TERRAFORM_DOCS_CONTEXT_CACHE: Dict[str, Optional[str]] = {"value": None}
+_TERRAFORM_DOCS_CONTEXT_LOCK = threading.Lock()
+
+
+def _parse_call_aws_response(res, command: str, log: logging.Logger = logger, debug: bool = False):
+    """Unwraps the nested text/JSON envelope the aws_api MCP server wraps its
+    `call_aws` responses in. Returns a dict on success, or None on a parse miss."""
+    if debug:
+        log.debug("[MCP] %s RAW: %r", command, res)
+
+    inner_text = res if isinstance(res, str) else json.dumps(res)
+    try:
+        parsed = json.loads(inner_text)
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+            inner_text = parsed[0]["text"]
+        elif isinstance(parsed, dict) and "text" in parsed:
+            inner_text = parsed["text"]
+    except Exception:
+        pass
+
+    try:
+        parsed_text = json.loads(inner_text)
+        if isinstance(parsed_text, list) and parsed_text and "response" in parsed_text[0]:
+            as_json = parsed_text[0]["response"].get("as_json")
+            if as_json:
+                return json.loads(as_json)
+    except Exception:
+        pass
+
+    log.warning("[MCP] Could not parse call_aws response for: %s", command)
+    return None
+
+
+async def _mcp_run_aws_command_async(command: str, log: logging.Logger = logger) -> dict:
+    """Runs a single `call_aws` invocation against the persistent,
+    already-connected aws_api tool handle. No client creation here."""
+    check_cancelled()
+    tools = await _mcp_session.get_tools_async()
+    aws_tool = tools["aws_tool"]
+    if aws_tool is None:
+        log.warning("[MCP] aws_api 'call_aws' tool unavailable for '%s'", command)
+        return {}
+    try:
+        res = await aws_tool.ainvoke({"cli_command": command})
+    except Exception as exc:
+        log.warning("MCP AWS CLI execution failed for '%s': %s", command, exc)
+        return {}
+    parsed = _parse_call_aws_response(res, command, log=log)
+    return parsed if parsed is not None else {}
+
+
+async def _mcp_run_aws_commands_parallel_async(commands: List[str], log: logging.Logger = logger) -> Dict[str, dict]:
+    """Fires many independent `call_aws` commands concurrently against the one
+    persistent, already-connected aws_tool handle. Returns {command: parsed}."""
+    tools = await _mcp_session.get_tools_async()
+    aws_tool = tools["aws_tool"]
+    if aws_tool is None:
+        log.warning("[MCP] aws_api 'call_aws' tool unavailable — skipping %d command(s)", len(commands))
+        return {cmd: {} for cmd in commands}
+
+    async def _one(cmd: str):
+        try:
+            res = await aws_tool.ainvoke({"cli_command": cmd})
+            parsed = _parse_call_aws_response(res, cmd, log=log)
+            return cmd, (parsed if parsed is not None else {})
+        except Exception as exc:
+            log.warning("MCP AWS CLI execution failed for '%s': %s", cmd, exc)
+            return cmd, {}
+
+    pairs = await asyncio.gather(*[_one(c) for c in commands])
+    return dict(pairs)
+
+
+async def _mcp_fetch_terraform_docs_async(
+    provider_name: str,
+    provider_namespace: str,
+    service_slug: str,
+    provider_document_type: str,
+    log: logging.Logger = logger,
+) -> str:
+    """Looks up a Terraform provider resource's argument-reference docs using
+    the persistent, already-connected terraform tool handles."""
+    check_cancelled()
+    tools = await _mcp_session.get_tools_async()
+    search_tool = tools["tf_search_tool"]
+    details_tool = tools["tf_details_tool"]
+    if not (search_tool and details_tool):
+        log.warning("[MCP] terraform docs tools unavailable for '%s'", service_slug)
+        return ""
+
+    try:
+        search_args = {
+            "provider_name": provider_name,
+            "provider_namespace": provider_namespace,
+            "service_slug": service_slug,
+            "provider_document_type": provider_document_type,
+        }
+        search_raw = await search_tool.ainvoke(search_args)
+        search_text = search_raw if isinstance(search_raw, str) else json.dumps(search_raw, default=str)
+
+        inner_text = search_text
+        try:
+            parsed = json.loads(search_text)
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
+                inner_text = parsed[0]["text"]
+            elif isinstance(parsed, dict) and "text" in parsed:
+                inner_text = parsed["text"]
+        except Exception:
+            pass
+
+        match = re.search(r"providerDocID:\s*(\d+)", inner_text)
+        if not match:
+            return ""
+        provider_doc_id = match.group(1)
+        details_raw = await details_tool.ainvoke({"provider_doc_id": provider_doc_id})
+        if isinstance(details_raw, list) and details_raw and isinstance(details_raw[0], dict) and "text" in details_raw[0]:
+            return details_raw[0]["text"]
+        return details_raw if isinstance(details_raw, str) else json.dumps(details_raw, default=str)
+    except Exception as exc:
+        log.warning("MCP Terraform docs failed for '%s': %s", service_slug, exc)
+        return ""
+
+
+async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
+    """Fetches the full AWS account-grounding context. All independent
+    describe/list calls fire concurrently in one asyncio.gather() round; a
+    second small round fetches per-role policies for roles that are actually
+    attached to an instance profile. Pure post-processing (no more network
+    calls) builds the final grounding text from the results dict."""
+    check_cancelled()
+    region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
+
+    try:
+        # Warms up (or reuses) BOTH the aws_api and terraform MCP servers —
+        # so the terraform server is already hot by the time gather_docs runs.
+        tools = await _mcp_session.get_tools_async()
+        aws_tool = tools["aws_tool"]
+        if aws_tool is None:
+            log.warning("aws_context.failed: aws_api 'call_aws' tool unavailable")
+            return ""
+
+        # SSM public-parameter paths to pull the FULL AMI catalog from, instead
+        # of one hardcoded parameter name. get-parameters-by-path returns every
+        # variant under the path in one call (AL2 vs AL2023, x86_64 vs arm64,
+        # full vs minimal, gp2 vs gp3), so Terraform can pick the AMI that
+        # actually matches the target instance architecture/generation.
+        AMI_SSM_PATHS = [
+            "/aws/service/ami-amazon-linux-latest",
+        ]
+        ami_commands = [
+            f"aws ssm get-parameters-by-path --path {path} --recursive --region {region}"
+            for path in AMI_SSM_PATHS
+        ]
+
+        # ---- Build the full list of independent commands up front ----
+        commands = [
+            "aws sts get-caller-identity",
+            f"aws ec2 describe-vpcs --region {region}",
+            f"aws ec2 describe-subnets --region {region}",
+            f"aws ec2 describe-internet-gateways --region {region}",
+            f"aws ec2 describe-route-tables --region {region}",
+            f"aws ec2 describe-security-groups --region {region}",
+            f"aws ec2 describe-vpc-endpoints --region {region}",
+            f"aws ec2 describe-availability-zones --region {region}",
+            f"aws ec2 describe-key-pairs --region {region}",
+            f"aws route53 list-hosted-zones --region {region}",
+            "aws iam list-roles",
+            "aws iam list-instance-profiles",
+            "aws s3api list-buckets",
+            *ami_commands,
+            f"aws rds describe-db-instances --region {region}",
+            f"aws rds describe-db-subnet-groups --region {region}",
+            f"aws dynamodb list-tables --region {region}",
+            f"aws elbv2 describe-load-balancers --region {region}",
+            f"aws ec2 describe-addresses --region {region}",
+            f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}",
+            f"aws acm list-certificates --region {region}",
+            "aws cloudfront list-distributions",
+            f"aws kms list-aliases --region {region}",
+            f"aws lambda list-functions --region {region}",
+        ]
+
+        acm_use1_cmd = None
+        if region != "us-east-1":
+            acm_use1_cmd = "aws acm list-certificates --region us-east-1"
+            commands.append(acm_use1_cmd)
+
+        # ---- Round 1: fire ALL independent commands concurrently, no cap ----
+        results = await _mcp_run_aws_commands_parallel_async(commands, log=log)
+
+        # ---- Round 2: role policies for roles attached to instance profiles ----
+        # `list-instance-profiles` already embeds each profile's attached Role
+        # object (name/ARN), so that link needs no extra call. What it does NOT
+        # include is what permissions that role actually grants — for that we
+        # need one more call per role. Only fetched for roles actually attached
+        # to an instance profile (i.e. usable by EC2), to keep this bounded.
+        instance_profiles_result = results.get("aws iam list-instance-profiles")
+        profile_role_map = {}  # instance_profile_name -> role_name or None
+        if instance_profiles_result:
+            for p in instance_profiles_result.get("InstanceProfiles") or []:
+                prof_name = p.get("InstanceProfileName")
+                roles_on_profile = p.get("Roles") or []
+                profile_role_map[prof_name] = roles_on_profile[0].get("RoleName") if roles_on_profile else None
+
+        roles_needing_policies = sorted({r for r in profile_role_map.values() if r})
+
+        policy_commands = []
+        for role_name in roles_needing_policies:
+            policy_commands.append(f"aws iam list-attached-role-policies --role-name {role_name}")
+            policy_commands.append(f"aws iam list-role-policies --role-name {role_name}")
+
+        if policy_commands:
+            results.update(await _mcp_run_aws_commands_parallel_async(policy_commands, log=log))
+
+    except Exception as exc:
+        log.warning("aws_context.failed (fetch phase): %s", exc)
+        return ""
+
+    # ============================================================
+    # Everything below is pure post-processing on already-fetched
+    # data — no more network calls.
+    # ============================================================
+    try:
+        lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
+
+        identity = results.get("aws sts get-caller-identity")
+        if identity:
+            lines.append(f"  Account ID : {identity.get('Account')}")
+            lines.append(f"  Caller ARN : {identity.get('Arn')}")
+        else:
+            lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
+
+        lines.append(f"  Region     : {region}")
+
+        def _name_tag(tags):
+            return next((t["Value"] for t in (tags or []) if t.get("Key") == "Name"), None)
+
+        all_vpcs = results.get(f"aws ec2 describe-vpcs --region {region}")
+        vpc_list = all_vpcs.get("Vpcs") or [] if all_vpcs else []
+
+        all_subnets = results.get(f"aws ec2 describe-subnets --region {region}")
+        subnet_list = all_subnets.get("Subnets") or [] if all_subnets else []
+        subnets_by_vpc = {}
+        for s in subnet_list:
+            subnets_by_vpc.setdefault(s["VpcId"], []).append(s)
+
+        all_igws = results.get(f"aws ec2 describe-internet-gateways --region {region}")
+        igw_list = all_igws.get("InternetGateways") or [] if all_igws else []
+        igw_by_vpc = {}
+        for igw in igw_list:
+            for att in igw.get("Attachments") or []:
+                if att.get("State") == "available":
+                    igw_by_vpc[att["VpcId"]] = igw["InternetGatewayId"]
+
+        all_route_tables = results.get(f"aws ec2 describe-route-tables --region {region}")
+        rt_list = all_route_tables.get("RouteTables") or [] if all_route_tables else []
+        main_rt_by_vpc = {}
+        subnet_rt_map = {}
+        for rt in rt_list:
+            vpc_id = rt.get("VpcId")
+            for assoc in rt.get("Associations") or []:
+                if assoc.get("Main"):
+                    main_rt_by_vpc[vpc_id] = rt
+                if assoc.get("SubnetId"):
+                    subnet_rt_map[assoc["SubnetId"]] = rt
+
+        def _is_public_subnet(subnet_id, vpc_id):
+            rt = subnet_rt_map.get(subnet_id) or main_rt_by_vpc.get(vpc_id)
+            if not rt:
+                return False
+            for route in rt.get("Routes") or []:
+                gw = route.get("GatewayId") or ""
+                dest = route.get("DestinationCidrBlock") or route.get("DestinationIpv6CidrBlock") or ""
+                if gw.startswith("igw-") and dest in ("0.0.0.0/0", "::/0"):
+                    return True
+            return False
+
+        all_sgs = results.get(f"aws ec2 describe-security-groups --region {region}")
+        sg_list = all_sgs.get("SecurityGroups") or [] if all_sgs else []
+        sgs_by_vpc = {}
+        for sg in sg_list:
+            sgs_by_vpc.setdefault(sg["VpcId"], []).append(sg)
+
+        all_endpoints = results.get(f"aws ec2 describe-vpc-endpoints --region {region}")
+        endpoint_list = all_endpoints.get("VpcEndpoints") or [] if all_endpoints else []
+        endpoints_by_vpc = {}
+        for ep in endpoint_list:
+            endpoints_by_vpc.setdefault(ep["VpcId"], []).append(ep)
+
+        default_vpc = None
+        if not vpc_list:
+            lines.append("  VPCs: (none found in this account/region)")
+        else:
+            lines.append(f"  VPCs found in {region}: {len(vpc_list)}")
+            for vpc in vpc_list:
+                vpc_id = vpc["VpcId"]
+                is_default = vpc.get("IsDefault", False)
+                if is_default:
+                    default_vpc = vpc_id
+                name = _name_tag(vpc.get("Tags"))
+                label = f"{vpc_id}{' (' + name + ')' if name else ''}{' [DEFAULT]' if is_default else ''}"
+                lines.append(f"\n  --- VPC: {label} ---")
+                lines.append(f"    Primary CIDR: {vpc.get('CidrBlock')}")
+
+                secondary_cidrs = [
+                    c["CidrBlock"] for c in (vpc.get("CidrBlockAssociationSet") or [])
+                    if c.get("CidrBlock") != vpc.get("CidrBlock") and c.get("CidrBlockState", {}).get("State") == "associated"
+                ]
+                if secondary_cidrs:
+                    lines.append(f"    Secondary CIDR blocks: {', '.join(secondary_cidrs)}")
+
+                ipv6_cidrs = [
+                    c["Ipv6CidrBlock"] for c in (vpc.get("Ipv6CidrBlockAssociationSet") or [])
+                    if c.get("Ipv6CidrBlockState", {}).get("State") == "associated"
+                ]
+                if ipv6_cidrs:
+                    lines.append(f"    IPv6 CIDR blocks: {', '.join(ipv6_cidrs)}")
+
+                igw_id = igw_by_vpc.get(vpc_id)
+                lines.append(f"    Internet Gateway: {igw_id if igw_id else '(none attached — no route to the internet is possible without one)'}")
+
+                vpc_subnets = subnets_by_vpc.get(vpc_id, [])
+                if vpc_subnets:
+                    for s in vpc_subnets:
+                        sid = s["SubnetId"]
+                        s_name = _name_tag(s.get("Tags"))
+                        public = _is_public_subnet(sid, vpc_id)
+                        lines.append(
+                            f"    Subnet {sid}{' (' + s_name + ')' if s_name else ''}: "
+                            f"CIDR={s.get('CidrBlock')}, AZ={s.get('AvailabilityZone')}, "
+                            f"AvailableIPs={s.get('AvailableIpAddressCount')}, "
+                            f"{'PUBLIC (has IGW route)' if public else 'PRIVATE (no IGW route)'}"
+                        )
+                else:
+                    lines.append("    Subnets: (none found in this VPC)")
+
+                vpc_sgs = sgs_by_vpc.get(vpc_id, [])
+                if vpc_sgs:
+                    sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in vpc_sgs]
+                    lines.append(f"    Security Groups: {', '.join(sg_info)}")
+                else:
+                    lines.append("    Security Groups: (none found)")
+
+                vpc_endpoints = endpoints_by_vpc.get(vpc_id, [])
+                if vpc_endpoints:
+                    ep_info = [
+                        f"{ep.get('ServiceName')} ({ep.get('VpcEndpointType')}, {ep.get('State')})"
+                        for ep in vpc_endpoints
+                    ]
+                    lines.append(f"    VPC Endpoints: {', '.join(ep_info)}")
+                else:
+                    lines.append("    VPC Endpoints: (none — private subnets with no NAT Gateway will NOT be able to reach S3/DynamoDB/other AWS services)")
+
+            lines.append("")
+            if default_vpc:
+                lines.append(f"  Default VPC for this account/region: {default_vpc} (use this VPC unless the request specifies otherwise or names a different VPC above)")
+            else:
+                lines.append("  Default VPC for this account/region: (none — you MUST pick one of the VPCs listed above, or ask which VPC to target if ambiguous)")
+
+        azs = results.get(f"aws ec2 describe-availability-zones --region {region}")
+        az_names = [az["ZoneName"] for az in (azs.get("AvailabilityZones") or []) if az["State"] == "available"] if azs else []
+        if az_names:
+            lines.append(f"  Available AZs: {', '.join(az_names)}")
+
+        key_pairs = results.get(f"aws ec2 describe-key-pairs --region {region}")
+        kp_names = [kp["KeyName"] for kp in (key_pairs.get("KeyPairs") or [])] if key_pairs else []
+        if kp_names:
+            lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
+        else:
+            lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
+
+        zones = results.get(f"aws route53 list-hosted-zones --region {region}")
+        zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in (zones.get("HostedZones") or []) if not z.get("Config", {}).get("PrivateZone")] if zones else []
+        if zone_info:
+            lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
+        else:
+            lines.append("  Public Route53 Zones: (none found)")
+
+        iam_roles = results.get("aws iam list-roles")
+        role_objs = [
+            r for r in (iam_roles.get("Roles") or [])
+            if not r.get("Path", "/").startswith("/aws-service-role/")
+        ] if iam_roles else []
+        if role_objs:
+            lines.append(f"  Existing IAM Roles in account ({len(role_objs)}, name-collision + ARN reference — see Instance Profiles below for role->permissions detail):")
+            for r in role_objs:
+                lines.append(
+                    f"    {r.get('RoleName')}  ARN={r.get('Arn')}  "
+                    f"(ID={r.get('RoleId')}, Path={r.get('Path')}, Created={r.get('CreateDate')})"
+                )
+        else:
+            lines.append("  Existing IAM Roles: (none found or unavailable — use name_prefix regardless)")
+
+        instance_profiles_list = instance_profiles_result.get("InstanceProfiles") or [] if instance_profiles_result else []
+        if instance_profiles_list:
+            lines.append(f"  Existing IAM Instance Profiles ({len(instance_profiles_list)}) — role and permissions each one actually grants:")
+            for p in instance_profiles_list:
+                prof_name = p.get("InstanceProfileName")
+                prof_arn = p.get("Arn")
+                prof_id = p.get("InstanceProfileId")
+                prof_created = p.get("CreateDate")
+                role_name = profile_role_map.get(prof_name)
+
+                lines.append(f"    {prof_name}")
+                lines.append(f"      Profile ARN: {prof_arn}  (ID: {prof_id}, Created: {prof_created})")
+
+                if not role_name:
+                    lines.append("      Role: (none attached — cannot be used as-is)")
+                    continue
+
+                # Already embedded on the instance profile's Roles list — no
+                # extra call needed to get the role's ARN/ID/CreateDate.
+                role_obj = next(
+                    (r for r in (p.get("Roles") or []) if r.get("RoleName") == role_name),
+                    {},
+                )
+                role_arn = role_obj.get("Arn")
+                role_id = role_obj.get("RoleId")
+                role_created = role_obj.get("CreateDate")
+
+                attached = results.get(f"aws iam list-attached-role-policies --role-name {role_name}") or {}
+                managed_policies = [
+                    ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])
+                ]
+
+                inline = results.get(f"aws iam list-role-policies --role-name {role_name}") or {}
+                inline_policies = inline.get("PolicyNames") or []
+
+                lines.append(f"      Role: {role_name}")
+                lines.append(f"      Role ARN: {role_arn}  (ID: {role_id}, Created: {role_created})")
+                lines.append(f"      Managed Policies: {', '.join(managed_policies) if managed_policies else '(none)'}")
+                lines.append(f"      Inline Policies: {', '.join(inline_policies) if inline_policies else '(none)'}")
+        else:
+            lines.append("  Existing IAM Instance Profiles: (none found)")
+
+        s3_buckets = results.get("aws s3api list-buckets")
+        bucket_names = [b["Name"] for b in (s3_buckets.get("Buckets") or [])] if s3_buckets else []
+        if bucket_names:
+            lines.append(f"  Existing S3 Buckets in account ({len(bucket_names)}): {', '.join(bucket_names)}")
+        else:
+            lines.append("  Existing S3 Buckets in account: (none found)")
+
+        # ---- AMI catalog: parse every variant instead of one hardcoded
+        # parameter, so Terraform can match AMI to the actual target
+        # architecture (x86_64 vs arm64/Graviton) and generation (AL2 vs
+        # AL2023, full vs minimal, gp2 vs gp3) instead of always defaulting
+        # to one image.
+        ami_catalog = {}  # friendly_name -> ami_id
+        for path, cmd in zip(AMI_SSM_PATHS, ami_commands):
+            ami_result = results.get(cmd)
+            if not ami_result:
+                continue
+            for p in ami_result.get("Parameters") or []:
+                full_name = p.get("Name") or ""
+                value = p.get("Value")
+                if not full_name or not value:
+                    continue
+                friendly = full_name[len(path):].lstrip("/")
+                ami_catalog[friendly] = value
+
+        if ami_catalog:
+            lines.append(f"  Amazon Linux AMI Catalog (latest, {len(ami_catalog)} variants found):")
+            for name in sorted(ami_catalog):
+                lines.append(f"    {name}: {ami_catalog[name]}")
+            default_ami_id = next(
+                (v for k, v in sorted(ami_catalog.items())
+                 if k.startswith("al2023-ami-kernel-") and k.endswith("-x86_64") and "minimal" not in k),
+                None,
+            )
+            if default_ami_id:
+                lines.append(f"  Recommended default if OS/arch unspecified (AL2023, x86_64): {default_ami_id}")
+        else:
+            lines.append("  Amazon Linux AMI Catalog: (unavailable — use a data \"aws_ami\" lookup instead)")
+
+        rds_instances_result = results.get(f"aws rds describe-db-instances --region {region}")
+        rds_instance_list = rds_instances_result.get("DBInstances") or [] if rds_instances_result else []
+
+        rds_subnet_groups_result = results.get(f"aws rds describe-db-subnet-groups --region {region}")
+        rds_subnet_group_list = rds_subnet_groups_result.get("DBSubnetGroups") or [] if rds_subnet_groups_result else []
+
+        if rds_instance_list:
+            lines.append(f"  Existing RDS Instances ({len(rds_instance_list)}) — VPC/subnets each one actually runs in:")
+            for db in rds_instance_list:
+                db_id = db.get("DBInstanceIdentifier")
+                engine = db.get("Engine")
+                status = db.get("DBInstanceStatus")
+                db_sg = db.get("DBSubnetGroup") or {}
+                db_vpc = db_sg.get("VpcId")
+                db_sg_name = db_sg.get("DBSubnetGroupName")
+                db_subnet_ids = [s.get("SubnetIdentifier") for s in (db_sg.get("Subnets") or []) if s.get("SubnetIdentifier")]
+                lines.append(
+                    f"    {db_id} (engine={engine}, status={status}): VPC={db_vpc}, "
+                    f"DBSubnetGroup={db_sg_name}, Subnets=[{', '.join(db_subnet_ids) if db_subnet_ids else '(none)'}]"
+                )
+        else:
+            lines.append("  Existing RDS Instances: (none found)")
+
+        if rds_subnet_group_list:
+            lines.append(f"  Existing RDS Subnet Groups ({len(rds_subnet_group_list)}) — VPC + AZ spread each one covers (check this against golden rule #10, 'spans the needed AZs'):")
+            for g in rds_subnet_group_list:
+                g_name = g.get("DBSubnetGroupName")
+                g_vpc = g.get("VpcId")
+                subnet_az_pairs = [
+                    f"{s.get('SubnetIdentifier')}({(s.get('SubnetAvailabilityZone') or {}).get('Name', '?')})"
+                    for s in (g.get("Subnets") or [])
+                ]
+                lines.append(f"    {g_name}: VPC={g_vpc}, Subnets=[{', '.join(subnet_az_pairs) if subnet_az_pairs else '(none)'}]")
+        else:
+            lines.append("  Existing RDS Subnet Groups: (none found — you must create one for any RDS instance)")
+
+        dynamo_tables = results.get(f"aws dynamodb list-tables --region {region}")
+        table_names = dynamo_tables.get("TableNames") or [] if dynamo_tables else []
+        if table_names:
+            lines.append(f"  Existing DynamoDB Tables: {', '.join(table_names)}")
+        else:
+            lines.append("  Existing DynamoDB Tables: (none found)")
+
+        albs = results.get(f"aws elbv2 describe-load-balancers --region {region}")
+        alb_info = [f"{lb['LoadBalancerName']} ({lb['Type']}, {lb['DNSName']})" for lb in (albs.get("LoadBalancers") or [])] if albs else []
+        if alb_info:
+            lines.append(f"  Existing Load Balancers (ALB/NLB): {', '.join(alb_info)}")
+        else:
+            lines.append("  Existing Load Balancers (ALB/NLB): (none found)")
+
+        eips = results.get(f"aws ec2 describe-addresses --region {region}")
+        unassociated_eips = [e["PublicIp"] for e in (eips.get("Addresses") or []) if not e.get("AssociationId")] if eips else []
+        if unassociated_eips:
+            lines.append(f"  Unassociated Elastic IPs available for reuse: {', '.join(unassociated_eips)}")
+        else:
+            lines.append("  Unassociated Elastic IPs: (none — a new EIP will consume account quota)")
+
+        nats = results.get(f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}")
+        nat_ids = [n["NatGatewayId"] for n in (nats.get("NatGateways") or [])] if nats else []
+        if nat_ids:
+            lines.append(f"  Existing NAT Gateways: {', '.join(nat_ids)}")
+        else:
+            lines.append("  Existing NAT Gateways: (none found — private subnets have no internet egress unless one is created)")
+
+        acm_certs = results.get(f"aws acm list-certificates --region {region}")
+        cert_info = [f"{c['DomainName']} ({c['CertificateArn']})" for c in (acm_certs.get("CertificateSummaryList") or [])] if acm_certs else []
+        if cert_info:
+            lines.append(f"  Existing ACM Certificates ({region}): {', '.join(cert_info)}")
+        else:
+            lines.append(f"  Existing ACM Certificates ({region}): (none found — HTTPS listeners will need a new cert, which requires DNS validation)")
+
+        if acm_use1_cmd:
+            acm_certs_use1 = results.get(acm_use1_cmd)
+            cert_info_use1 = [f"{c['DomainName']} ({c['CertificateArn']})" for c in (acm_certs_use1.get("CertificateSummaryList") or [])] if acm_certs_use1 else []
+            if cert_info_use1:
+                lines.append(f"  Existing ACM Certificates (us-east-1, for CloudFront use only): {', '.join(cert_info_use1)}")
+            else:
+                lines.append("  Existing ACM Certificates (us-east-1, for CloudFront use only): (none found)")
+
+        cf_dists = results.get("aws cloudfront list-distributions")
+        dist_info = [
+            f"{d['Id']} ({d.get('DomainName')})"
+            for d in ((cf_dists.get("DistributionList") or {}).get("Items") or [])
+        ] if cf_dists else []
+        if dist_info:
+            lines.append(f"  Existing CloudFront Distributions: {', '.join(dist_info)}")
+        else:
+            lines.append("  Existing CloudFront Distributions: (none found)")
+
+        kms_aliases = results.get(f"aws kms list-aliases --region {region}")
+        alias_names = [
+            a["AliasName"] for a in (kms_aliases.get("Aliases") or [])
+            if not a["AliasName"].startswith("alias/aws/")
+        ] if kms_aliases else []
+        if alias_names:
+            lines.append(f"  Existing customer-managed KMS Key Aliases: {', '.join(alias_names)}")
+        else:
+            lines.append("  Existing customer-managed KMS Key Aliases: (none found — will use AWS-managed keys by default)")
+
+        lambdas = results.get(f"aws lambda list-functions --region {region}")
+        fn_names = [f["FunctionName"] for f in (lambdas.get("Functions") or [])] if lambdas else []
+        if fn_names:
+            lines.append(f"  Existing Lambda Functions: {', '.join(fn_names)}")
+        else:
+            lines.append("  Existing Lambda Functions: (none found)")
+
+        lines.append(
+            "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones, AMI, RDS Subnet Groups, Elastic IPs, NAT Gateways, ACM Certs, KMS Aliases), hardcode it directly in your Terraform code to avoid data source filter errors. "
+            "ONLY use Terraform data sources (e.g. data \"aws_vpc\") if the required resource is marked as '(none found)' or is missing from the context.\n"
+            "\nTERRAFORM GOLDEN RULES:\n"
+            "1. S3 Buckets: Names must be globally unique. Always use random_id or random_pet to append a suffix to bucket names.\n"
+            "2. IAM Roles/Policies: Always use name_prefix instead of name to avoid conflicts with existing roles.\n"
+            "3. EC2/RDS Security Groups: Prefer using existing security groups if they match your needs.\n"
+            "4. Circular Dependencies: Never make a Security Group depend on an EC2 instance's IP if the EC2 instance also depends on that Security Group.\n"
+            "5. Hardcoding: Hardcode environment IDs only if provided above. NEVER hardcode ARNs or Regions.\n"
+            "6. Stateful Resources: Always set lifecycle { prevent_destroy = true } for RDS/DynamoDB/S3 unless instructed otherwise.\n"
+            "7. Provider Version: hashicorp/aws ~> 5.0.\n"
+            "8. Local Files: use the Terraform local_file resource instead of shell commands.\n"
+            "9. AMIs: pick the catalog entry matching the target OS/arch (AL2 vs AL2023, x86_64 vs arm64/Graviton, full vs minimal) and hardcode that AMI ID. Only use a data \"aws_ami\" lookup if the AMI Catalog above is empty or the OS you need isn't in it.\n"
+            "10. RDS: reuse an existing DB Subnet Group if listed and spans the needed AZs.\n"
+            "11. Elastic IPs: reuse an unassociated EIP if listed.\n"
+            "12. HTTPS/ACM: provision with DNS validation or default to HTTP-only and flag it.\n"
+            "13. Subnet CIDRs: must be non-overlapping sub-blocks of the VPC CIDR; use cidrsubnet().\n"
+            "14. CloudFront + ACM: cert MUST be in us-east-1 regardless of deployment region.\n"
+            "15. VPC selection: prefer [DEFAULT] VPC when ambiguous, else ask.\n"
+            "16. Public vs private subnets: trust the computed PUBLIC/PRIVATE label above.\n"
+            "17. Subnet IP exhaustion: check AvailableIPs before placing IP-hungry resources.\n"
+            "18. Private subnet AWS service access: verify NAT Gateway or VPC Endpoint exists before placing resources there."
+        )
+        ctx_str = "\n".join(lines)
+        log.info("Dynamic Grounding: _gather_aws_context output generated (%d chars)", len(ctx_str))
+        return ctx_str
+    except Exception as exc:
+        log.warning("aws_context.failed (processing phase): %s", exc)
+        return ""
+
+
 class ExecutionAgents:
 
     def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None, job_id: Optional[str] = None) -> None:
         self.max_iterations = max_iterations
         self.job_id = job_id or "default"
         self._quotas_cache = {}
-        self._docs_cache = {}
+        # Shared process-wide dict (see _TERRAFORM_DOCS_CACHE above): a doc
+        # fetched once for any job/iteration is reused by every other one.
+        self._docs_cache = _TERRAFORM_DOCS_CACHE
         self.logger = logging.getLogger(f"ExecutionAgents.{self.job_id}")
         self.logger.propagate = True
         
@@ -668,198 +1431,78 @@ class ExecutionAgents:
         return files
 
     def _run_mcp_aws_command(self, command: str) -> dict:
-        import os
-        import json
-        import asyncio
-        from langchain_mcp_adapters.client import MultiServerMCPClient
-        
+        """Runs a single `call_aws` invocation against the persistent MCP
+        session (module-level `_mcp_session`). The aws_api server subprocess
+        is started once for the life of the process — every call here (across
+        every node, every retry iteration, every job) reuses the same warm
+        connection instead of paying subprocess-startup cost again."""
         check_cancelled()
-
-        server_config = {
-            "aws_api": {
-                "command": "uvx",
-                "args": ["awslabs.aws-api-mcp-server@latest"],
-                "env": {
-                    "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
-                    "AWS_DEFAULT_REGION": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
-                    **({"AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID")} if os.getenv("AWS_ACCESS_KEY_ID") else {}),
-                    **({"AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY")} if os.getenv("AWS_SECRET_ACCESS_KEY") else {}),
-                    **({"AWS_SESSION_TOKEN": os.getenv("AWS_SESSION_TOKEN")} if os.getenv("AWS_SESSION_TOKEN") else {}),
-                    **({"AWS_PROFILE": os.getenv("AWS_PROFILE")} if os.getenv("AWS_PROFILE") else {}),
-                    "UV_LINK_MODE": "copy",
-                },
-                "transport": "stdio",
-            },
-        }
-
-        async def _run():
-            try:
-                check_cancelled()
-                client = MultiServerMCPClient(server_config)
-                tools = await client.get_tools(server_name="aws_api")
-                aws_tool = next((t for t in tools if t.name == "call_aws"), None)
-                if aws_tool:
-                    res = await aws_tool.ainvoke({"cli_command": command})
-                    inner_text = res if isinstance(res, str) else json.dumps(res)
-                    try:
-                        parsed = json.loads(inner_text)
-                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
-                            inner_text = parsed[0]["text"]
-                        elif isinstance(parsed, dict) and "text" in parsed:
-                            inner_text = parsed["text"]
-                    except Exception:
-                        pass
-                    
-                    try:
-                        parsed_text = json.loads(inner_text)
-                        if isinstance(parsed_text, list) and parsed_text and "response" in parsed_text[0]:
-                            as_json = parsed_text[0]["response"].get("as_json")
-                            if as_json:
-                                return json.loads(as_json)
-                    except Exception:
-                        pass
-                return {}
-            except Exception as exc:
-                self.logger.warning(f"MCP AWS CLI execution failed for '{command}': {exc}")
-                return {}
-
-        return asyncio.run(_run())
+        try:
+            return _mcp_session.run_coro(_mcp_run_aws_command_async, command, self.logger)
+        except Exception as exc:
+            self.logger.warning(f"MCP AWS CLI execution failed for '{command}': {exc}")
+            return {}
 
     def _run_mcp_terraform_docs(self, provider_name: str, provider_namespace: str, service_slug: str, provider_document_type: str) -> str:
-        import os
-        import json
-        import asyncio
-        import re
-        from langchain_mcp_adapters.client import MultiServerMCPClient
-        
+        """Looks up Terraform provider resource docs against the persistent
+        MCP session's terraform tool handles — no per-call subprocess spin-up."""
         check_cancelled()
-
-        _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-        TERRAFORM_MCP_BINARY = os.getenv("TERRAFORM_MCP_BINARY", os.path.join(os.path.dirname(_SCRIPT_DIR), "terraform", "terraform-mcp-server.exe"))
-        
-        server_config = {
-            "terraform": {
-                "command": TERRAFORM_MCP_BINARY,
-                "args": ["stdio"],
-                "transport": "stdio",
-            }
-        }
-        
-        async def _run():
-            try:
-                check_cancelled()
-                client = MultiServerMCPClient(server_config)
-                tools = await client.get_tools(server_name="terraform")
-                search_tool = next((t for t in tools if t.name == "search_providers"), None)
-                details_tool = next((t for t in tools if t.name == "get_provider_details"), None)
-                
-                if search_tool and details_tool:
-                    search_args = {
-                        "provider_name": provider_name,
-                        "provider_namespace": provider_namespace,
-                        "service_slug": service_slug,
-                        "provider_document_type": provider_document_type,
-                    }
-                    search_raw = await search_tool.ainvoke(search_args)
-                    search_text = search_raw if isinstance(search_raw, str) else json.dumps(search_raw, default=str)
-                    
-                    inner_text = search_text
-                    try:
-                        parsed = json.loads(search_text)
-                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "text" in parsed[0]:
-                            inner_text = parsed[0]["text"]
-                        elif isinstance(parsed, dict) and "text" in parsed:
-                            inner_text = parsed["text"]
-                    except Exception:
-                        pass
-                    
-                    match = re.search(r"providerDocID:\s*(\d+)", inner_text)
-                    if match:
-                        provider_doc_id = match.group(1)
-                        details_raw = await details_tool.ainvoke({"provider_doc_id": provider_doc_id})
-                        if isinstance(details_raw, list) and details_raw and isinstance(details_raw[0], dict) and "text" in details_raw[0]:
-                            return details_raw[0]["text"]
-                        return details_raw if isinstance(details_raw, str) else json.dumps(details_raw, default=str)
-                return ""
-            except Exception as exc:
-                self.logger.warning(f"MCP Terraform docs failed: {exc}")
-                return ""
-
-        return asyncio.run(_run())
-
-    def _gather_aws_context(self) -> str:
         try:
-            import os
-            region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
-            lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
-
-            identity = self._run_mcp_aws_command("aws sts get-caller-identity")
-            if identity:
-                lines.append(f"  Account ID : {identity.get('Account')}")
-                lines.append(f"  Caller ARN : {identity.get('Arn')}")
-            else:
-                lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
-
-            lines.append(f"  Region     : {region}")
-
-            vpcs = self._run_mcp_aws_command(f"aws ec2 describe-vpcs --filters Name=is-default,Values=true --region {region}")
-            default_vpc = (vpcs.get("Vpcs") or [{}])[0].get("VpcId") if vpcs else None
-            
-            if default_vpc:
-                lines.append(f"  Default VPC: {default_vpc}")
-                subnets = self._run_mcp_aws_command(f"aws ec2 describe-subnets --filters Name=vpc-id,Values={default_vpc} --region {region}")
-                subnet_ids = [s["SubnetId"] for s in (subnets.get("Subnets") or [])] if subnets else []
-                if subnet_ids:
-                    lines.append(f"  Default VPC subnets: {', '.join(subnet_ids)}")
-            else:
-                lines.append("  Default VPC: (none found in this account/region)")
-
-            azs = self._run_mcp_aws_command(f"aws ec2 describe-availability-zones --region {region}")
-            az_names = [az["ZoneName"] for az in (azs.get("AvailabilityZones") or []) if az["State"] == "available"] if azs else []
-            if az_names:
-                lines.append(f"  Available AZs: {', '.join(az_names)}")
-
-            key_pairs = self._run_mcp_aws_command(f"aws ec2 describe-key-pairs --region {region}")
-            kp_names = [kp["KeyName"] for kp in (key_pairs.get("KeyPairs") or [])] if key_pairs else []
-            if kp_names:
-                lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
-            else:
-                lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
-
-            if default_vpc:
-                sgs = self._run_mcp_aws_command(f"aws ec2 describe-security-groups --filters Name=vpc-id,Values={default_vpc} --region {region}")
-                sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in (sgs.get("SecurityGroups") or [])] if sgs else []
-                if sg_info:
-                    lines.append(f"  Existing Security Groups: {', '.join(sg_info)}")
-                else:
-                    lines.append("  Existing Security Groups: (none found)")
-
-            zones = self._run_mcp_aws_command(f"aws route53 list-hosted-zones --region {region}")
-            zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in (zones.get("HostedZones") or []) if not z.get("Config", {}).get("PrivateZone")] if zones else []
-            if zone_info:
-                lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
-            else:
-                lines.append("  Public Route53 Zones: (none found)")
-
-            lines.append(
-                "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones), hardcode it directly in your Terraform code to avoid data source filter errors. "
-                "ONLY use Terraform data sources (e.g. data \"aws_vpc\") if the required resource is marked as '(none found)' or is missing from the context.\n"
-                "\nTERRAFORM GOLDEN RULES:\n"
-                "1. S3 Buckets: Names must be globally unique. Always use random_id or random_pet to append a suffix to bucket names.\n"
-                "2. IAM Roles/Policies: Always use name_prefix instead of name to avoid conflicts with existing roles.\n"
-                "3. EC2/RDS Security Groups: Prefer using existing security groups if they match your needs, or use name_prefix when creating new ones.\n"
-                "4. Circular Dependencies: Never make a Security Group depend on an EC2 instance's IP if the EC2 instance also depends on that Security Group.\n"
-                "5. Hardcoding: Hardcode environment IDs (like VPCs) *only* if they are provided in the context above. NEVER hardcode full ARNs or Regions (use data.aws_caller_identity.current and data.aws_region.current instead).\n"
-                "6. Stateful Resources: For databases (RDS, DynamoDB) and storage (S3), always set lifecycle { prevent_destroy = true } unless instructed otherwise.\n"
-                "7. Provider Version: Use the required_providers block to specify hashicorp/aws version ~> 5.0 to ensure modern syntax is supported.\n"
-                "8. Local Files: NEVER use shell commands (like jq, echo, or icacls) to save files or parse Terraform output. Use the Terraform local_file resource instead."
+            return _mcp_session.run_coro(
+                _mcp_fetch_terraform_docs_async,
+                provider_name, provider_namespace, service_slug, provider_document_type,
+                self.logger,
             )
-            ctx_str = "\n".join(lines)
-            self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
-            return ctx_str
         except Exception as exc:
-            self.logger.warning("aws_context.failed: %s", exc)
+            self.logger.warning(f"MCP Terraform docs failed: {exc}")
             return ""
+
+    def _gather_aws_context(self, force_refresh: bool = False) -> str:
+        """Returns the AWS account-grounding context.
+
+        Optimization vs the old version:
+          - All ~24 independent `describe`/`list` AWS calls fire concurrently
+            via asyncio.gather() on the persistent MCP session, instead of one
+            at a time (each paying its own subprocess round trip).
+          - The aws_api AND terraform MCP servers are both initialised
+            together, at once, on the very first call in this process.
+          - The composed result is cached at module (process) level. Every
+            later call — next retry iteration, next node, next RunPipeline()
+            invocation, next ExecutionAgents instance — reuses the FIRST
+            fetched context instantly, with zero additional MCP calls.
+
+        Pass force_refresh=True to intentionally bust the cache and re-fetch
+        live state (e.g. a long-lived worker process starting a brand-new,
+        unrelated run where account state may have changed).
+        """
+        if not force_refresh:
+            cached = _AWS_CONTEXT_CACHE.get("value")
+            if cached:
+                self.logger.info(
+                    "Dynamic Grounding: reusing first-fetched AWS context "
+                    "(process-cached, %d chars, no MCP calls made).",
+                    len(cached),
+                )
+                return cached
+
+        with _AWS_CONTEXT_CACHE_LOCK:
+            # Re-check inside the lock in case another thread/job populated
+            # the cache while this call was waiting.
+            if not force_refresh:
+                cached = _AWS_CONTEXT_CACHE.get("value")
+                if cached:
+                    return cached
+
+            try:
+                ctx_str = _mcp_session.run_coro(_gather_aws_context_async, self.logger)
+            except Exception as exc:
+                self.logger.warning("aws_context.failed: %s", exc)
+                return ""
+
+            if ctx_str:
+                _AWS_CONTEXT_CACHE["value"] = ctx_str
+                self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
+            return ctx_str
 
     def _get_terraform_state_list(self, sandbox_dir: str) -> str:
         if not sandbox_dir:
@@ -2533,51 +3176,80 @@ Rules:
         analysis = state.get("analysis") or {}
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
-        
-        docs_context = ""
-        if resources:
-            docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
-            import re
-            for res_type in resources:
-                if res_type in self._docs_cache:
-                    docs_context += self._docs_cache[res_type]
-                    continue
-                if not res_type.startswith("aws_"):
-                    continue
-                
-                try:
-                    markdown = self._run_mcp_terraform_docs(
-                        provider_name="aws",
-                        provider_namespace="hashicorp",
-                        service_slug=res_type,
-                        provider_document_type="resources"
-                    )
-                        
-                    if markdown:
-                        res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
-                    else:
-                        res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
-                    
-                    self._docs_cache[res_type] = res_ctx
-                    docs_context += res_ctx
-                except Exception as e:
-                    self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
 
-        self.logger.info(
-            "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
-            services, resources
-        )
-        self.logger.info(
-            "Dynamic Grounding: Fetched docs for %d resources.",
-            len(resources)
-        )
-        if docs_context:
-            self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
-        
-        return {
-            "service_quotas_context": "",
-            "terraform_docs": docs_context
-        }
+        # Fetch from MCP exactly once for the life of this process. Every
+        # later call — next retry iteration, next job — reuses that first
+        # result as-is. No MCP calls, no re-looping, regardless of whether
+        # the resource list differs on a later iteration.
+        cached = _TERRAFORM_DOCS_CONTEXT_CACHE.get("value")
+        if cached is not None:
+            self.logger.info(
+                "Dynamic Grounding: reusing first-fetched Terraform docs "
+                "(process-cached, %d chars, no MCP calls made).",
+                len(cached),
+            )
+            return {
+                "service_quotas_context": "",
+                "terraform_docs": cached,
+            }
+
+        with _TERRAFORM_DOCS_CONTEXT_LOCK:
+            # Re-check inside the lock in case another thread/job populated
+            # the cache while this call was waiting.
+            cached = _TERRAFORM_DOCS_CONTEXT_CACHE.get("value")
+            if cached is not None:
+                return {
+                    "service_quotas_context": "",
+                    "terraform_docs": cached,
+                }
+
+            docs_context = ""
+            if resources:
+                docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
+                for res_type in resources:
+                    if res_type in self._docs_cache:
+                        docs_context += self._docs_cache[res_type]
+                        continue
+                    if not res_type.startswith("aws_"):
+                        continue
+
+                    try:
+                        markdown = self._run_mcp_terraform_docs(
+                            provider_name="aws",
+                            provider_namespace="hashicorp",
+                            service_slug=res_type,
+                            provider_document_type="resources"
+                        )
+
+                        if markdown:
+                            res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
+                        else:
+                            res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
+
+                        self._docs_cache[res_type] = res_ctx
+                        docs_context += res_ctx
+                    except Exception as e:
+                        self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
+
+            self.logger.info(
+                "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
+                services, resources
+            )
+            self.logger.info(
+                "Dynamic Grounding: Fetched docs for %d resources.",
+                len(resources)
+            )
+            if docs_context:
+                self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
+
+            # Cache whatever was fetched (even if empty/partial) so no
+            # iteration after this one ever calls MCP for docs again.
+            _TERRAFORM_DOCS_CONTEXT_CACHE["value"] = docs_context
+
+            return {
+                "service_quotas_context": "",
+                "terraform_docs": docs_context
+            }
 
 
     @staticmethod

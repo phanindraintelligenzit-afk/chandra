@@ -134,7 +134,7 @@ def _from_email(payload: dict[str, Any]) -> CloudRequest:
         source=RequestSource.EMAIL,
         external_id=_text(payload.get("message_id")) or None,
         title=_text(payload.get("subject"), default="Email request"),
-        description=_text(payload.get("body") or payload.get("text")),
+        description=_text(payload.get("body") or payload.get("text") or payload.get("message")),
         requester=_text(payload.get("from") or payload.get("sender")) or None,
         raw_payload=payload,
     )
