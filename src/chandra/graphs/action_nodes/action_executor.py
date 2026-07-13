@@ -72,6 +72,48 @@ def _instance_id_from_arn(arn: str) -> str:
     return arn.rsplit("/", 1)[-1]
 
 
+def _kms_key_id_from_arn(arn: str) -> str:
+    """arn:aws:kms:region:acct:key/KEY-ID  ->  KEY-ID"""
+    if ":key/" not in arn:
+        raise ValueError(f"Invalid KMS key ARN: {arn!r}")
+    return arn.rsplit("/", 1)[-1]
+
+
+def _eip_alloc_from_arn(arn: str) -> str:
+    """arn:aws:ec2:region:acct:address/eipalloc-xxx  ->  eipalloc-xxx"""
+    if ":address/" not in arn:
+        raise ValueError(f"Invalid Elastic IP ARN: {arn!r}")
+    return arn.rsplit("/", 1)[-1]
+
+
+def _region_scope_from_arn(arn: str) -> str:
+    """Account/region-scoped control (no per-resource id).
+
+    arn:aws:ec2:region:acct:ebs-encryption-by-default -> region
+
+    The remediation is an account-wide toggle keyed only by region, so we
+    surface the ARN's region field as the "resource id". The executor
+    method uses ``self.region`` for the actual call; this value exists so
+    the audit log and dispatch have a stable, human-meaningful handle.
+    """
+    parts = arn.split(":")
+    if len(parts) < 4 or not parts[3]:
+        raise ValueError(f"Invalid region-scoped ARN: {arn!r}")
+    return parts[3]
+
+
+def _identity_arn(arn: str) -> str:
+    """Pass the full ARN through unchanged.
+
+    Used by handlers whose remediation operates on the ARN directly (e.g.
+    the Resource Groups Tagging API, which tags any resource type by ARN),
+    so there is no single sub-id to extract.
+    """
+    if not arn or not arn.startswith("arn:"):
+        raise ValueError(f"Invalid ARN: {arn!r}")
+    return arn
+
+
 # ---------------------------------------------------------------------------
 # Detector-id -> handler registry
 # ---------------------------------------------------------------------------
@@ -104,6 +146,34 @@ def _fix_unattached_ebs_via(executor: ActionExecutor, resource_id: str, region: 
 
 def _fix_untagged_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._fix_untagged_instance(resource_id, region)
+
+
+def _release_unused_eip_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._release_unused_eip(resource_id, region)
+
+
+def _enable_s3_default_encryption_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._enable_s3_default_encryption(resource_id, region)
+
+
+def _enable_s3_versioning_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._enable_s3_versioning(resource_id, region)
+
+
+def _enable_ebs_encryption_default_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._enable_ebs_encryption_by_default(resource_id, region)
+
+
+def _enable_kms_rotation_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._enable_kms_key_rotation(resource_id, region)
+
+
+def _apply_mandatory_tags_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._apply_mandatory_tags(resource_id, region)
 
 
 _HANDLERS: dict[str, _Handler] = {
@@ -139,6 +209,57 @@ _HANDLERS: dict[str, _Handler] = {
         problem_type="untagged_instance",
         extract_resource_id=_instance_id_from_arn,
         run=_fix_untagged_via,
+    ),
+    # COST-003: unassociated Elastic IP. Releases the allocation so the
+    # hourly idle charge stops. Re-checks the association state first and
+    # refuses to release an EIP that has since been attached — releasing
+    # an in-use address would drop live traffic.
+    "COST-003-unused-eip": _Handler(
+        problem_type="unused_eip",
+        extract_resource_id=_eip_alloc_from_arn,
+        run=_release_unused_eip_via,
+    ),
+    # COMP-005: S3 bucket with no default encryption. Enables SSE-S3
+    # (AES256) at the bucket level. Idempotent and non-destructive — only
+    # affects how *new* objects are stored; existing objects are untouched.
+    "COMP-005-s3-default-enc": _Handler(
+        problem_type="s3_default_encryption",
+        extract_resource_id=_s3_bucket_from_arn,
+        run=_enable_s3_default_encryption_via,
+    ),
+    # COMP-008: account/region EBS encryption-by-default is off. Toggles
+    # it on for the finding's region. Idempotent and preventive — only
+    # affects *future* volumes; existing volumes are unchanged.
+    "COMP-008-ebs-default-enc-off": _Handler(
+        problem_type="ebs_encryption_by_default",
+        extract_resource_id=_region_scope_from_arn,
+        run=_enable_ebs_encryption_default_via,
+    ),
+    # COMP-009: resource missing mandatory tags. Applies placeholder
+    # values (``Environment=untagged``, ``Owner=chandra-auto-fix``,
+    # ``Project=unassigned``) via the Resource Groups Tagging API so the
+    # resource is attributable. Metadata-only; a human sets real values.
+    "COMP-009-missing-tags": _Handler(
+        problem_type="mandatory_tags",
+        extract_resource_id=_identity_arn,
+        run=_apply_mandatory_tags_via,
+    ),
+    # REL-002: business-critical S3 bucket with versioning disabled.
+    # Enables versioning. Idempotent and non-destructive — it only starts
+    # retaining new object versions from now on.
+    "REL-002-s3-versioning": _Handler(
+        problem_type="s3_versioning",
+        extract_resource_id=_s3_bucket_from_arn,
+        run=_enable_s3_versioning_via,
+    ),
+    # SEC-009: customer-managed KMS key without automatic rotation.
+    # Enables annual rotation. Idempotent, transparent to consumers, and
+    # AWS retains old key material so previously-encrypted data still
+    # decrypts.
+    "SEC-009-kms-rotation": _Handler(
+        problem_type="kms_key_rotation",
+        extract_resource_id=_kms_key_id_from_arn,
+        run=_enable_kms_rotation_via,
     ),
 }
 
@@ -179,6 +300,8 @@ class ActionExecutor:
         self.s3_client = factory.client("s3", region=region)
         self.iam_client = factory.client("iam", region=region)
         self.ec2_client = factory.client("ec2", region=region)
+        self.kms_client = factory.client("kms", region=region)
+        self.tagging_client = factory.client("resourcegroupstaggingapi", region=region)
 
     def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """
@@ -226,18 +349,26 @@ class ActionExecutor:
             if not isinstance(resource_id, str) or not resource_id:
                 raise ValueError(f"Missing resource_id for action {action_type}")
 
-            if problem_type == "public_s3":
-                self._fix_public_s3(resource_id, region)
-            elif problem_type == "open_security_group":
-                self._fix_open_sg(resource_id, region)
-            elif problem_type == "stale_iam_key":
-                self._disable_iam_key(resource_id, region)
-            elif problem_type == "unattached_ebs":
-                self._fix_unattached_ebs(resource_id, region)
-            elif problem_type == "untagged_instance":
-                self._fix_untagged_instance(resource_id, region)
-            else:
+            # problem_type -> bound remediation method. Kept as a table (not
+            # an if/elif chain) so adding a handler is one line and the
+            # dispatch stays flat.
+            dispatch: dict[str, Callable[[str, str], None]] = {
+                "public_s3": self._fix_public_s3,
+                "open_security_group": self._fix_open_sg,
+                "stale_iam_key": self._disable_iam_key,
+                "unattached_ebs": self._fix_unattached_ebs,
+                "untagged_instance": self._fix_untagged_instance,
+                "unused_eip": self._release_unused_eip,
+                "s3_default_encryption": self._enable_s3_default_encryption,
+                "s3_versioning": self._enable_s3_versioning,
+                "ebs_encryption_by_default": self._enable_ebs_encryption_by_default,
+                "kms_key_rotation": self._enable_kms_key_rotation,
+                "mandatory_tags": self._apply_mandatory_tags,
+            }
+            handler = dispatch.get(problem_type) if isinstance(problem_type, str) else None
+            if handler is None:
                 raise ValueError(f"Unknown problem type: {problem_type}")
+            handler(resource_id, region)
 
             message = f"Successfully executed {action_type} on {resource_id}"
             audit_entry = f"[{timestamp}] SUCCESS: {action_type} on {resource_id}"
@@ -338,6 +469,102 @@ class ActionExecutor:
                 {"Key": "Owner", "Value": "chandra-auto-fix"},
             ],
         )
+
+    def _release_unused_eip(self, allocation_id: str, region: str) -> None:
+        """Release an unassociated Elastic IP after re-checking association.
+
+        Releasing an EIP is irreversible (the address is returned to the
+        AWS pool). The detector flagged it as unassociated, but state can
+        change between detection and remediation, so we re-describe and
+        refuse to release anything that has since been attached to an
+        instance or network interface — releasing an in-use EIP would drop
+        live traffic. A missing allocation is treated as already-resolved.
+        """
+        logger.info("action.release_eip.inspect", allocation_id=allocation_id, region=region)
+        resp = self.ec2_client.describe_addresses(AllocationIds=[allocation_id])
+        addresses = resp.get("Addresses", [])
+        if not addresses:
+            raise ValueError(f"Elastic IP {allocation_id} not found (already released?)")
+        addr = addresses[0]
+        if addr.get("InstanceId") or addr.get("NetworkInterfaceId"):
+            raise ValueError(
+                f"Elastic IP {allocation_id} is now associated "
+                f"(instance={addr.get('InstanceId')}, eni={addr.get('NetworkInterfaceId')}); "
+                "refusing to release an address that is in use."
+            )
+        logger.info("action.release_eip.release", allocation_id=allocation_id, region=region)
+        self.ec2_client.release_address(AllocationId=allocation_id)
+
+    def _enable_s3_default_encryption(self, bucket_name: str, region: str) -> None:
+        """Enable SSE-S3 (AES256) default encryption on the bucket.
+
+        Idempotent and non-destructive: it sets the default applied to
+        *new* objects; existing objects are not rewritten. Re-running on an
+        already-encrypted bucket simply re-asserts the same configuration.
+        """
+        logger.info("action.s3_default_encryption", bucket=bucket_name, region=region)
+        self.s3_client.put_bucket_encryption(
+            Bucket=bucket_name,
+            ServerSideEncryptionConfiguration={
+                "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+            },
+        )
+
+    def _enable_s3_versioning(self, bucket_name: str, region: str) -> None:
+        """Enable versioning on a business-critical S3 bucket.
+
+        Idempotent and non-destructive: only affects retention of *future*
+        object versions. Nothing existing is deleted or overwritten.
+        """
+        logger.info("action.s3_versioning", bucket=bucket_name, region=region)
+        self.s3_client.put_bucket_versioning(
+            Bucket=bucket_name,
+            VersioningConfiguration={"Status": "Enabled"},
+        )
+
+    def _enable_ebs_encryption_by_default(self, scope: str, region: str) -> None:
+        """Enable account-level EBS encryption-by-default for this region.
+
+        Preventive and idempotent: it applies to *new* volumes only;
+        existing volumes are unchanged (COMP-004 covers those separately).
+        ``scope`` is the region surfaced from the ARN for audit clarity;
+        the API call itself is region-scoped via the client.
+        """
+        logger.info("action.ebs_encryption_by_default", scope=scope, region=region)
+        self.ec2_client.enable_ebs_encryption_by_default()
+
+    def _enable_kms_key_rotation(self, key_id: str, region: str) -> None:
+        """Enable automatic annual rotation on a customer-managed KMS key.
+
+        Idempotent and transparent: AWS retains prior key material, so data
+        encrypted before rotation still decrypts, and consumers referencing
+        the key id/alias are unaffected.
+        """
+        logger.info("action.kms_key_rotation", key_id=key_id, region=region)
+        self.kms_client.enable_key_rotation(KeyId=key_id)
+
+    def _apply_mandatory_tags(self, resource_arn: str, region: str) -> None:
+        """Apply placeholder values for mandatory tags via the Tagging API.
+
+        Works on any resource type by ARN. The placeholders
+        (``Environment=untagged``, ``Owner=chandra-auto-fix``,
+        ``Project=unassigned``) are deliberately distinct from real values
+        so a reviewer can spot auto-tagged resources and replace them.
+        Metadata-only — no runtime impact. Partial failures are surfaced by
+        the Tagging API's ``FailedResourcesMap``, which we raise on.
+        """
+        logger.info("action.mandatory_tags", resource_arn=resource_arn, region=region)
+        resp = self.tagging_client.tag_resources(
+            ResourceARNList=[resource_arn],
+            Tags={
+                "Environment": "untagged",
+                "Owner": "chandra-auto-fix",
+                "Project": "unassigned",
+            },
+        )
+        failed = resp.get("FailedResourcesMap", {})
+        if failed:
+            raise ValueError(f"Failed to tag {resource_arn}: {failed}")
 
 
 # ---------------------------------------------------------------------------
