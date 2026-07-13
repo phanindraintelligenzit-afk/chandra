@@ -185,7 +185,11 @@ class TestApprovalCenterDiscovery:
         assert any(r["job_id"] == job_id for r in filtered["requests"])
 
     def test_approve_resumes_to_completion(self, client: TestClient) -> None:
+        # dry_run=True keeps this a wiring test (approve → resume → terminal
+        # state) without invoking the real LLM ExecutionAgents path, which
+        # requires MODEL_NAME + Bedrock and is not available under test.
         payload = {
+            "dry_run": True,
             "issue": {
                 "key": "SEC-1002",
                 "fields": {
@@ -204,15 +208,21 @@ class TestApprovalCenterDiscovery:
             json={"approved": True, "approver": "phani", "comment": "go"},
         )
         assert approve.status_code == 202
-        body = _poll_request(client, job_id, {"completed"})
+        # A dry-run resume finishes in the terminal "dry_run" job state (the
+        # workflow itself completes); accept either terminal success status.
+        body = _poll_request(client, job_id, {"completed", "dry_run"})
         assert body["request"]["workflow_status"] in ("completed", "completed_with_issues")
 
     def test_approve_wrong_state_conflicts(self, client: TestClient) -> None:
         """Approving a job that is not awaiting approval must 409."""
         job_id = client.post(
             "/requests",
-            json={"source": "rest_api", "payload": {"title": "no approval needed here"}},
+            json={
+                "source": "rest_api",
+                "payload": {"title": "no approval needed here"},
+                "dry_run": True,
+            },
         ).json()["job_id"]
-        _poll_request(client, job_id, {"completed"})
+        _poll_request(client, job_id, {"completed", "dry_run"})
         conflict = client.post(f"/requests/{job_id}/approve", json={"approved": True})
         assert conflict.status_code == 409

@@ -94,6 +94,10 @@ ignore = ["PLR0913", "PLR2004"]
 "src/chandra/aws/client_factory.py" = ["PLW0603"]
 "src/chandra/db/session.py" = ["PLW0603"]
 "src/chandra/logging.py" = ["PLW0603"]
+# LLM prompt templates are long literal strings that can't be wrapped
+# without changing the prompt the model receives.
+"src/chandra/digital_worker/decision_engine.py" = ["E501"]
+"src/chandra/digital_worker/verifier.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -124,6 +128,25 @@ module = [
     "dotenv.*",
 ]
 ignore_missing_imports = true
+
+# The legacy root-level services (`digitalworker_agents/`, root `tools/`,
+# `copilot_agents/`) are the pre-`src/` drift CLAUDE.md is sunsetting; they
+# were never under the strict-typing contract. They only enter `mypy src`
+# scope because `src/chandra/digital_worker/graph.py` imports
+# `digitalworker_agents.aws_execution_agent` (Jira-KRA execution). Follow
+# the import for type info, but don't hold that untyped tree to strict mode
+# — otherwise a single cross-boundary import drags 260+ errors into the
+# `src/chandra` gate. `src.chandra.*` (incl. `src.chandra.tools`) is a
+# distinct module path and stays fully type-checked.
+[[tool.mypy.overrides]]
+module = [
+    "digitalworker_agents.*",
+    "copilot_agents.*",
+    "tools.aws_cloud_tools.*",
+    "tools.jira_tools.*",
+    "tools.langchain_tools",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

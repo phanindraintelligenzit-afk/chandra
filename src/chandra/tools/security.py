@@ -860,11 +860,11 @@ ALL_DETECTORS = (
     find_stale_access_keys,
     check_root_mfa,
     find_overly_permissive_iam,
-    # find_config_noncompliant_rules,   
-    # find_guardduty_threats,            
-    find_access_analyzer_findings,    
+    # find_config_noncompliant_rules,
+    # find_guardduty_threats,
+    find_access_analyzer_findings,
     find_kms_rotation_disabled,
-    # find_security_hub_findings,        
+    find_security_hub_findings,
 )
 
 

@@ -59,7 +59,8 @@
       "Bash(echo \"---EXIT: $?---\")",
       "Bash(CHANDRA_AUTO_APPROVE=1 uv run python run.py)",
       "Bash(echo \"---NO-APPROVE EXIT: $?---\")",
-      "Bash(echo \"---AUTO-APPROVE EXIT: $?---\")"
+      "Bash(echo \"---AUTO-APPROVE EXIT: $?---\")",
+      "mcp__Claude_Code_Remote__send_later"
     ]
   }
 }
