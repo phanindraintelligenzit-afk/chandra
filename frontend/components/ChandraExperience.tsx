@@ -2721,12 +2721,17 @@ export function ChandraExperience() {
   );
   const AGENT = agentName || "Chandra";
 
-  const hasIncident = selectedKRAs.includes("Incident Detection");
+  const hasIncident = selectedKRAs.includes("Active Incident Stream");
+  const hasCost = selectedKRAs.includes("Cost Monitoring Widget");
+  const hasInfrastructure = selectedKRAs.includes("Infrastructure Metrics Dashboard");
+  const hasCompliance = selectedKRAs.includes("Audit Findings");
+  const hasOperationalIntelligence = selectedKRAs.includes("Operational Intelligence Panel");
 
   return (
     <main className="bg-obsidian text-frost">
       <CommandHeader liveObservations={observations} liveSummary={liveSummary} sync={observationsSync} />
 
+      {hasCost ? (
       <section className="section-shell">
         <div className="section-inner">
           <CostMonitoring 
@@ -2738,7 +2743,9 @@ export function ChandraExperience() {
           />
         </div>
       </section>
+      ) : null}
 
+      {hasInfrastructure ? (
       <section className="section-shell">
         <div className="section-inner">
           <CloudWatchMonitoring 
@@ -2753,8 +2760,10 @@ export function ChandraExperience() {
           />
         </div>
       </section>
+      ) : null}
 
 
+      {hasOperationalIntelligence ? (
       <div className="px-5 md:px-10 mb-4 mx-auto max-w-[1480px]">
 
         <OperationalIntelligencePanel
@@ -2766,6 +2775,7 @@ export function ChandraExperience() {
           sync={observationsSync}
         />
       </div>
+      ) : null}
 
       <section className="section-shell">
         <div className="section-inner">
@@ -2843,11 +2853,13 @@ export function ChandraExperience() {
 
       <KRAMetricsReview activeKras={activeKras} liveEvaluations={liveKraEvaluations} />
 
+      {hasCompliance ? (
       <section className="section-shell">
         <div className="section-inner">
           <DetectorIssuesMonitoring issues={detectorIssues} />
         </div>
       </section>
+      ) : null}
 
       <section className="px-5 py-8 md:px-10">
         <div className="mx-auto max-w-[1480px] border-t border-white/10 pt-6">
