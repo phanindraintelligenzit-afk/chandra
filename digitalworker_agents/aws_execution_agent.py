@@ -714,18 +714,6 @@ class _PersistentMCPSession:
 
 _mcp_session = _PersistentMCPSession()
 
-# Process-wide cache: the AWS account grounding context is fetched from MCP
-# exactly once — by whichever job/thread gets there first — and reused for
-# every later call: every retry iteration of the pipeline, AND every
-# subsequent RunPipeline() call / ExecutionAgents instance in this process.
-# Call ExecutionAgents._gather_aws_context(force_refresh=True) if a caller
-# ever needs to intentionally bust this (e.g. a long-lived worker process
-# that wants fresh account state for a brand-new run).
-_AWS_CONTEXT_CACHE: Dict[str, Optional[str]] = {"value": None}
-_AWS_CONTEXT_CACHE_LOCK = threading.Lock()
-
-# Process-wide cache of Terraform resource docs, keyed by resource type (e.g.
-# "aws_instance"). Shared across ExecutionAgents instances so a doc fetched
 # once for one job/iteration is never re-fetched for another.
 _TERRAFORM_DOCS_CACHE: Dict[str, str] = {}
 
@@ -1350,9 +1338,11 @@ class ExecutionAgents:
         self.max_iterations = max_iterations
         self.job_id = job_id or "default"
         self._quotas_cache = {}
-        # Shared process-wide dict (see _TERRAFORM_DOCS_CACHE above): a doc
-        # fetched once for any job/iteration is reused by every other one.
-        self._docs_cache = _TERRAFORM_DOCS_CACHE
+        self._docs_cache = {}
+        self._aws_context_cache = {"value": None}
+        self._aws_context_cache_lock = threading.Lock()
+        self._terraform_docs_context_cache = {"value": None}
+        self._terraform_docs_context_lock = threading.Lock()
         self.logger = logging.getLogger(f"ExecutionAgents.{self.job_id}")
         self.logger.propagate = True
         
@@ -1466,9 +1456,8 @@ class ExecutionAgents:
             at a time (each paying its own subprocess round trip).
           - The aws_api AND terraform MCP servers are both initialised
             together, at once, on the very first call in this process.
-          - The composed result is cached at module (process) level. Every
-            later call — next retry iteration, next node, next RunPipeline()
-            invocation, next ExecutionAgents instance — reuses the FIRST
+          - The composed result is cached at the instance (job) level. Every
+            later call in this job's retry iteration reuses the FIRST
             fetched context instantly, with zero additional MCP calls.
 
         Pass force_refresh=True to intentionally bust the cache and re-fetch
@@ -1476,20 +1465,20 @@ class ExecutionAgents:
         unrelated run where account state may have changed).
         """
         if not force_refresh:
-            cached = _AWS_CONTEXT_CACHE.get("value")
+            cached = self._aws_context_cache.get("value")
             if cached:
                 self.logger.info(
                     "Dynamic Grounding: reusing first-fetched AWS context "
-                    "(process-cached, %d chars, no MCP calls made).",
+                    "(job-cached, %d chars, no MCP calls made).",
                     len(cached),
                 )
                 return cached
 
-        with _AWS_CONTEXT_CACHE_LOCK:
+        with self._aws_context_cache_lock:
             # Re-check inside the lock in case another thread/job populated
             # the cache while this call was waiting.
             if not force_refresh:
-                cached = _AWS_CONTEXT_CACHE.get("value")
+                cached = self._aws_context_cache.get("value")
                 if cached:
                     return cached
 
@@ -1500,7 +1489,7 @@ class ExecutionAgents:
                 return ""
 
             if ctx_str:
-                _AWS_CONTEXT_CACHE["value"] = ctx_str
+                self._aws_context_cache["value"] = ctx_str
                 self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
             return ctx_str
 
@@ -3177,15 +3166,15 @@ Rules:
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
 
-        # Fetch from MCP exactly once for the life of this process. Every
-        # later call — next retry iteration, next job — reuses that first
+        # Fetch from MCP exactly once for the life of this job. Every
+        # later call — next retry iteration — reuses that first
         # result as-is. No MCP calls, no re-looping, regardless of whether
         # the resource list differs on a later iteration.
-        cached = _TERRAFORM_DOCS_CONTEXT_CACHE.get("value")
+        cached = self._terraform_docs_context_cache.get("value")
         if cached is not None:
             self.logger.info(
                 "Dynamic Grounding: reusing first-fetched Terraform docs "
-                "(process-cached, %d chars, no MCP calls made).",
+                "(job-cached, %d chars, no MCP calls made).",
                 len(cached),
             )
             return {
@@ -3193,10 +3182,10 @@ Rules:
                 "terraform_docs": cached,
             }
 
-        with _TERRAFORM_DOCS_CONTEXT_LOCK:
+        with self._terraform_docs_context_lock:
             # Re-check inside the lock in case another thread/job populated
             # the cache while this call was waiting.
-            cached = _TERRAFORM_DOCS_CONTEXT_CACHE.get("value")
+            cached = self._terraform_docs_context_cache.get("value")
             if cached is not None:
                 return {
                     "service_quotas_context": "",
@@ -3244,7 +3233,7 @@ Rules:
 
             # Cache whatever was fetched (even if empty/partial) so no
             # iteration after this one ever calls MCP for docs again.
-            _TERRAFORM_DOCS_CONTEXT_CACHE["value"] = docs_context
+            self._terraform_docs_context_cache["value"] = docs_context
 
             return {
                 "service_quotas_context": "",
@@ -3379,7 +3368,7 @@ Rules:
         config = {"configurable": {"thread_id": tid}}
 
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
-        aws_ctx = self._gather_aws_context() if not answers else ""
+        aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")

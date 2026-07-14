@@ -23,6 +23,39 @@
         "Terraform successfully initialized, validated, and applied the configuration to deploy a t2"
       ],
       "lesson": "Define the AWS provider with explicit region and profile constraints to ensure consistent, reproducible deployments across environments."
+    },
+    {
+      "timestamp": "2026-07-14T12:28:34",
+      "action_name": "Grant EC2 IAM Permissions",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully created and attached a least-privilege EC2 IAM policy to the user **observation_agent** using Terraform"
+      ],
+      "lesson": "Always verify the IAM policy document includes the specific EC2 actions required for your use case before applying — overly restrictive permissions silently block API calls."
+    },
+    {
+      "timestamp": "2026-07-14T12:39:45",
+      "action_name": "Need ec2 permission",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully executed Terraform to provision EC2 permissions"
+      ],
+      "lesson": "Always verify IAM permissions are explicitly granted for the specific EC2 actions required before attempting to create or manage resources."
+    },
+    {
+      "timestamp": "2026-07-14T13:18:45",
+      "action_name": "Need ec2 permission",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "This Terraform automation successfully executed all four commands (init, validate, plan, apply) without errors or timeouts to grant EC2 permissions to an IAM role"
+      ],
+      "lesson": "Grant the IAM user or role the specific EC2 permissions (like `ec2:RunInstances`, `ec2:CreateTags`, `ec2:Describe*`) before attempting to create resources, rather than assuming default permissions are sufficient."
     }
   ]
 }
