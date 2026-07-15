@@ -100,6 +100,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const [logSearchQueries, setLogSearchQueries] = useState<Record<string, string>>({});
   const [maxIterations, setMaxIterations] = useState(5);
   const [timeoutMins, setTimeoutMins] = useState(5);
+  const dismissedJobIdsRef = useRef<Set<string>>(new Set());
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -123,6 +124,18 @@ export const WorkerActionExecutionCenter = forwardRef<
       setMaxIterations(settings.max_iterations);
       setTimeoutMins(Math.floor(settings.command_timeout / 60));
     }).catch(err => console.error("Failed to load digital worker settings", err));
+    
+    try {
+      const stored = localStorage.getItem("dw_dismissed_job_ids");
+      if (stored) {
+        const ids = JSON.parse(stored);
+        if (Array.isArray(ids)) {
+          dismissedJobIdsRef.current = new Set(ids);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load dismissed job IDs", e);
+    }
   }, []);
 
   useEffect(() => {
@@ -152,12 +165,15 @@ export const WorkerActionExecutionCenter = forwardRef<
     }
   }));
 
-  // Cleanup all intervals on unmount
+  // Cleanup all intervals/timeouts on unmount
   useEffect(() => {
     return () => {
-      pollIntervalsRef.current.forEach((interval) => clearInterval(interval));
+      pollIntervalsRef.current.forEach((timer) => clearTimeout(timer));
       pollIntervalsRef.current.clear();
-      if (logsIntervalRef.current) clearInterval(logsIntervalRef.current);
+      if (logsIntervalRef.current) {
+        clearTimeout(logsIntervalRef.current);
+        logsIntervalRef.current = null;
+      }
     };
   }, []);
 
@@ -167,8 +183,37 @@ export const WorkerActionExecutionCenter = forwardRef<
       try {
         const res = await listDigitalWorkerRequests();
         if (res && res.requests) {
-          // Discover jobs that are running or recently finished
-          const dwJobs = res.requests.filter(r => r.status === "running" || r.status === "completed" || r.status === "failed");
+          // Discover jobs that belong in the Worker Action Execution Center.
+          //
+          // Three phases to handle for a DW job that needs human approval:
+          //   Phase 2 — Initial running (classifying/planning):
+          //             status=running, requires_approval=false, decision_mode=null
+          //             → EXCLUDE: still processing, hasn't reached the approval gate yet
+          //   Phase 3 — Awaiting human decision:
+          //             status=awaiting_approval, requires_approval=true
+          //             → EXCLUDE: belongs in Human Approval Center only
+          //   Phase 4 — Post-approval execution:
+          //             status=running, requires_approval=false, approved_by_human=true
+          //             → INCLUDE: user clicked Approve, execution is live
+          //
+          // Auto-execute jobs (no approval needed):
+          //   decision_mode="auto_execute" or completed/failed → always include
+          const dwJobs = res.requests.filter(r => {
+            // Must be in a trackable state
+            if (r.requires_approval) return false;
+            if (r.status !== "running" && r.status !== "completed" && r.status !== "failed") return false;
+            // Completed/failed jobs always surface (post-execution summary)
+            if (r.status === "completed" || r.status === "failed") return true;
+            // For running jobs, apply smart gating:
+            // - decision_mode is null → still in early processing (Phase 2) → exclude
+            // - decision_mode is auto_execute → no approval needed → include
+            // - decision_mode is await_approval + approved_by_human → approved (Phase 4) → include
+            // - decision_mode is await_approval + NOT approved → still pre-approval → exclude
+            if (!r.decision_mode) return false;
+            if (r.decision_mode.toLowerCase() === "auto_execute") return true;
+            if (r.decision_mode.toLowerCase() === "await_approval") return r.approved_by_human === true;
+            return true;
+          });
           
           setExecutingActions(current => {
             // Create sets of both job IDs and action IDs to accurately detect duplicates
@@ -202,7 +247,7 @@ export const WorkerActionExecutionCenter = forwardRef<
               }
 
               const actionId = `dw-${job.job_id}`;
-              if (!currentJobIds.has(job.job_id) && !currentActionIds.has(actionId)) {
+              if (!currentJobIds.has(job.job_id) && !currentActionIds.has(actionId) && !dismissedJobIdsRef.current.has(job.job_id)) {
                 newActions.push({
                   id: actionId,
                   actionName: job.title || "Webhook Task",
@@ -251,15 +296,29 @@ export const WorkerActionExecutionCenter = forwardRef<
             return current;
           });
         }
-      } catch (e) {
+      } catch (e: any) {
+        // AbortError = 8 s poll timed out (backend busy with a running job).
+        // Swallow silently — next poll cycle (5 s) will retry automatically.
+        if (e?.name === "AbortError") return;
         console.error("Failed to fetch background digital worker jobs:", e);
       }
     };
     
-    // Initial fetch, then poll every 5 seconds
-    pollBackgroundJobs();
-    const interval = setInterval(pollBackgroundJobs, 5000);
-    return () => clearInterval(interval);
+    // Initial fetch, then schedule next fetch after completion
+    let timeoutId: NodeJS.Timeout;
+    let isMounted = true;
+    const runPoll = async () => {
+      await pollBackgroundJobs();
+      if (isMounted) {
+        timeoutId = setTimeout(runPoll, 5000);
+      }
+    };
+    runPoll();
+    
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+    };
   }, []);
 
   // Scroll the logs container (not the page) to bottom when logs update for the open action
@@ -274,51 +333,66 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
   const stopPolling = (actionId: string) => {
-    const interval = pollIntervalsRef.current.get(actionId);
-    if (interval) {
-      clearInterval(interval);
+    const timer = pollIntervalsRef.current.get(actionId);
+    if (timer) {
+      clearTimeout(timer);
       pollIntervalsRef.current.delete(actionId);
     }
   };
 
   const startLogsPolling = () => {
     if (logsIntervalRef.current) return;
-    logsIntervalRef.current = setInterval(async () => {
+    
+    // Set to a dummy value so we know it's active
+    logsIntervalRef.current = setTimeout(() => {}, 0) as any;
+    
+    const runLogsPoll = async () => {
       try {
         cachedLogsRef.current = await fetchBackendLogs(1000, 0);
       } catch (error) {
         console.error("Failed to fetch logs:", error);
+      } finally {
+        if (logsIntervalRef.current !== null) {
+          logsIntervalRef.current = setTimeout(runLogsPoll, 1000);
+        }
       }
-    }, 1000);
+    };
+    runLogsPoll();
   };
 
   const startPolling = (actionId: string, jobId: string, startedAt: number, jiraKey: string) => {
     startLogsPolling();
-    stopPolling(actionId);
-
-    const interval = setInterval(async () => {
+    const runJobPoll = async () => {
       try {
         const jobStatus = await getJobStatus(jobId);
         const allLogs = cachedLogsRef.current;
 
         const startTimeSecs = Math.floor(startedAt / 1000);
-        // Upper bound: completed time + 30s buffer, or now + 30s if still running
         const nowSecs = Math.floor(Date.now() / 1000);
 
-        // Build jiraKey match variants: "DEV-742" → also match "DEV 742" and "DEV742"
-        const jiraLower = jiraKey ? jiraKey.toLowerCase() : "";        // "dev-742"
-        const jiraSpaced = jiraLower ? jiraLower.replace("-", " ") : "";// "dev 742"
+        const jiraLower = jiraKey ? jiraKey.toLowerCase() : "";
+        const jiraSpaced = jiraLower ? jiraLower.replace("-", " ") : "";
         const hasValidJira = jiraKey && jiraKey !== "DEV-000" && jiraKey.length > 3;
         const jobIdLower = jobId ? jobId.toLowerCase() : "";
 
         let actionLogs = allLogs.filter((log) => {
           if (!jobIdLower) return false;
-          // Explicit thread-local jobId match or message match
           if (log.job_id && log.job_id.toLowerCase() === jobIdLower) return true;
-          
-          const text = `${log.message} ${log.logger}`.toLowerCase();
-          if (text.includes(jobIdLower)) return true;
+          const msg = (log.message || "").toLowerCase();
+          if (msg.includes(jobIdLower)) return true;
 
+          if (hasValidJira) {
+             if (msg.includes(jiraLower) || msg.includes(jiraSpaced) || msg.includes(jiraLower.replace("-", ""))) {
+                return true;
+             }
+          }
+
+          if (log.timestamp) {
+             const endTimeSecs = (jobStatus.status === "completed" || jobStatus.status === "failed") && jobStatus.completed_at
+                ? Math.floor(jobStatus.completed_at) + 30
+                : nowSecs + 30;
+             return log.timestamp >= startTimeSecs && log.timestamp <= endTimeSecs;
+          }
           return false;
         });
 
@@ -380,7 +454,19 @@ export const WorkerActionExecutionCenter = forwardRef<
                   // Fallback for poorly formed backend responses that return 202 but forget the questions array
                   const fallbackQuestions = finalStatus === "awaiting_input" ? ["Please provide the required input to proceed."] : [];
                   const extractedQuestions = (result?.questions && result.questions.length > 0) ? result.questions : fallbackQuestions;
-                  
+
+                  // Pull LLM summary from all possible result shapes:
+                  // • result.summary                    → PipelineResponse / KRA orchestrate path
+                  // • result.output.execution.detail    → DW graph path (ExecutionOutcome.detail)
+                  // • result.detail                     → direct detail fallback
+                  // • jobStatus.message                 → last-resort human-readable status
+                  const llmSummary =
+                    result?.summary ||
+                    (result?.output as any)?.execution?.detail ||
+                    result?.detail ||
+                    jobStatus.message ||
+                    "";
+
                   const updated: ExecutingAction = {
                     ...a,
                     status: finalStatus,
@@ -390,7 +476,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                     errorMessage: errorMsg,
                     progress: 100,
                     jobMessage: jobStatus.message,
-                    summary: result?.summary || "",
+                    summary: llmSummary,
                     questions: extractedQuestions,
                     sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
                   };
@@ -424,13 +510,22 @@ export const WorkerActionExecutionCenter = forwardRef<
             )
           );
           scrollLogsToBottom(actionId);
+          
+          if (pollIntervalsRef.current.has(actionId)) {
+            pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 5000));
+          }
         }
-      } catch (error) {
-        console.error(`Failed to poll job ${jobId}:`, error);
+      } catch (error: any) {
+        if (error?.name !== "AbortError") {
+          console.error(`Failed to poll job ${jobId}:`, error);
+        }
+        if (pollIntervalsRef.current.has(actionId)) {
+          pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 5000));
+        }
       }
-    }, 2000);
+    };
 
-    pollIntervalsRef.current.set(actionId, interval);
+    pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 5000));
   };
 
 
@@ -597,6 +692,15 @@ export const WorkerActionExecutionCenter = forwardRef<
 
   const removeAction = (id: string) => {
     stopPolling(id);
+    const actionToRemove = executingActionsRef.current.find(a => a.id === id);
+    if (actionToRemove?.jobId) {
+      dismissedJobIdsRef.current.add(actionToRemove.jobId);
+      try {
+        localStorage.setItem("dw_dismissed_job_ids", JSON.stringify(Array.from(dismissedJobIdsRef.current)));
+      } catch (e) {
+        console.error("Failed to save dismissed job IDs", e);
+      }
+    }
     setExecutingActions((current) => current.filter((a) => a.id !== id));
     if (expandedId === id) setExpandedId(null);
   };
@@ -891,7 +995,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleExecuteAction(action);
-                                  setExecutingActions((current) => current.filter((a) => a.id !== action.id));
+                                  removeAction(action.id);
                                 }}
                                 className="flex items-center gap-2 rounded border border-signal/30 bg-signal/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-signal hover:bg-signal/20 transition"
                               >

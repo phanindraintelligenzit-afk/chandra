@@ -364,14 +364,21 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
         
         # Register the actual LangGraph worker thread ID into the backend job store
         # so that the /orchestrate/stop endpoint can correctly kill this thread.
+        # Also stamp decision_mode="auto_execute" so the Worker Action Execution
+        # Center can distinguish this job from a pre-approval running job
+        # (which has decision_mode=null while the graph is still classifying).
         import threading
         import sys
-        if "fastapi_app" in sys.modules:
-            fastapi_app = sys.modules["fastapi_app"]
-            if hasattr(fastapi_app, "_job_store_lock") and hasattr(fastapi_app, "_job_store"):
-                with fastapi_app._job_store_lock:
-                    if dw_job_id in fastapi_app._job_store:
+        fastapi_app = sys.modules.get("fastapi_app") or sys.modules.get("__main__")
+        if fastapi_app and hasattr(fastapi_app, "_job_store_lock") and hasattr(fastapi_app, "_job_store"):
+            with fastapi_app._job_store_lock:
+                if dw_job_id in fastapi_app._job_store:
                         fastapi_app._job_store[dw_job_id]["thread_id"] = threading.get_ident()
+                        # Only stamp auto_execute if this job wasn't approved by a human
+                        # (post-approval resume also calls execute_automation but must
+                        # keep decision_mode="await_approval" for the WAEC filter)
+                        if not fastapi_app._job_store[dw_job_id].get("approved_by_human"):
+                            fastapi_app._job_store[dw_job_id]["decision_mode"] = "auto_execute"
         
         # Run it synchronously
         response = orchestrator.RunPipeline(

@@ -56,6 +56,61 @@
         "This Terraform automation successfully executed all four commands (init, validate, plan, apply) without errors or timeouts to grant EC2 permissions to an IAM role"
       ],
       "lesson": "Grant the IAM user or role the specific EC2 permissions (like `ec2:RunInstances`, `ec2:CreateTags`, `ec2:Describe*`) before attempting to create resources, rather than assuming default permissions are sufficient."
+    },
+    {
+      "timestamp": "2026-07-15T11:37:02",
+      "action_name": "Need ec2 permission",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform successfully initialized, validated, and applied the configuration to create an EC2 least-privilege IAM policy and attach it to user `observation_agent`"
+      ],
+      "lesson": "When requesting EC2 permissions, ensure the IAM policy includes both `ec2:RunInstances` and `ec2:CreateTags` permissions together, as tagging requires separate authorization from instance creation."
+    },
+    {
+      "timestamp": "2026-07-15T12:25:48",
+      "action_name": "Need ec2 Permission",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully executed Terraform to provision EC2 permissions for IAM user `test-user-siva`"
+      ],
+      "lesson": "Always define the `execution_mode` in your aws_ecs_service resource explicitly — omitting it causes permission errors when AWS tries to use Fargate (default) instead of EC2 launch type."
+    },
+    {
+      "timestamp": "2026-07-15T14:58:03",
+      "action_name": "Need s3 full access",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully initialized Terraform, validated the configuration, and executed a plan to create two IAM resources for granting S3 full access to user `test-user-siva`"
+      ],
+      "lesson": "When requesting S3 full access, always attach the AWS-managed policy `AmazonS3FullAccess` to the IAM role rather than attempting to craft a custom policy with broad permissions."
+    },
+    {
+      "timestamp": "2026-07-15T16:17:30",
+      "action_name": "Need required iam permissions",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully executed Terraform to provision required IAM permissions for AWS user \"test-user-siva\""
+      ],
+      "lesson": "When IAM permissions are required, attach the specific policy (e.g., `arn:aws:iam::aws:policy/AmazonEC2FullAccess`) to the execution role or user before running the action rather than assuming default permissions suffice."
+    },
+    {
+      "timestamp": "2026-07-15T17:06:17",
+      "action_name": "Need required iam permissions",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform successfully initialized, validated, planned, and applied the IAM configuration to provision required permissions for Digital Worker execution"
+      ],
+      "lesson": "Pre-verify that the IAM principal has the required permissions before attempting the action to avoid authorization failures."
     }
   ]
 }

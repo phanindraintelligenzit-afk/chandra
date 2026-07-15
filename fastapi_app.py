@@ -52,7 +52,10 @@ _max_logs = 2000
 
 # Job tracking for long-running orchestrations
 _job_store: Dict[str, Dict[str, Any]] = {}
-_job_store_lock = threading.Lock()
+# Use RLock (reentrant) so background worker threads that already hold the
+# lock can re-enter it without deadlocking the FastAPI HTTP threads that
+# serve GET /requests and GET /jobs/status while a job is running.
+_job_store_lock = threading.RLock()
 _thread_pool = ThreadPoolExecutor(max_workers=8)
 
 _thread_local = threading.local()
@@ -369,7 +372,7 @@ def put_custom_kras(payload: CustomKrasPayload):
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 @app.get("/logs")
-def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
+async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
     """Get recent backend logs (last 2000 stored in memory)"""
     start = max(0, len(_log_buffer) - limit - offset)
     end = max(0, len(_log_buffer) - offset)
@@ -1132,7 +1135,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
 
 @app.get("/orchestrate/status/{job_id}", response_model=JobStatusResponse)
 
-def get_orchestrate_status(job_id: str):
+async def get_orchestrate_status(job_id: str):
     """Poll the status of a submitted orchestration job."""
     with _job_store_lock:
         if job_id not in _job_store:
@@ -1462,6 +1465,10 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["progress"] = 80
             _job_store[job_id]["message"] = "Resuming after approval decision..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
+            # Flag that this job was explicitly approved by a human so the
+            # Worker Action Execution Center can distinguish it from the
+            # initial "running" phase (before the approval gate is reached).
+            _job_store[job_id]["approved_by_human"] = True
 
         final_state = _digital_worker.invoke(
             Command(resume=approval.model_dump()),
@@ -1566,9 +1573,10 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "priority": approval.get("priority") or classification.get("priority"),
         "risk_level": risk.get("level"),
         "risk_score": risk.get("score"),
-        "decision_mode": approval.get("decision_mode") or out_decision.get("mode"),
+        "decision_mode": approval.get("decision_mode") or out_decision.get("mode") or job.get("decision_mode"),
         "reason": approval.get("reason") or out_decision.get("reason"),
         "requires_approval": job.get("status") == "awaiting_approval",
+        "approved_by_human": job.get("approved_by_human", False),
         "workflow_status": output.get("status"),
         "submitted_at": job.get("submitted_at"),
         "started_at": job.get("started_at"),
@@ -1725,26 +1733,28 @@ def update_digital_worker_settings(settings: DigitalWorkerSettings):
 
 
 @app.get("/requests")
-def list_cloud_requests(status: Optional[str] = Query(default=None)):
+async def list_cloud_requests(status: Optional[str] = Query(default=None)):
     """List Digital Worker requests for the Human Approval Center.
 
     Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
     ``completed``, ``failed``). Results are newest-first. This is the
     discovery endpoint the approval center polls — no job_id needed.
     """
+    # Acquire the lock once for both the item list and the counts so the
+    # HTTP thread holds it for the shortest possible time (single acquisition
+    # instead of two, reducing contention with background worker threads).
     with _job_store_lock:
         items = [
             _dw_request_summary(job_id, job)
             for job_id, job in _job_store.items()
             if job.get("kind") == "digital_worker" and (status is None or job.get("status") == status)
         ]
-    items.sort(key=lambda row: row.get("submitted_at") or 0, reverse=True)
-    counts: Dict[str, int] = {}
-    with _job_store_lock:
+        counts: Dict[str, int] = {}
         for job in _job_store.values():
             if job.get("kind") == "digital_worker":
                 key = str(job.get("status"))
                 counts[key] = counts.get(key, 0) + 1
+    items.sort(key=lambda row: row.get("submitted_at") or 0, reverse=True)
     return JSONResponse(status_code=200, content={
         "status": "ok",
         "count": len(items),

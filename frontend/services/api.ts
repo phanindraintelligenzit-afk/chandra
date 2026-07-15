@@ -719,10 +719,14 @@ export async function fetchBackendLogs(
     const response = await request<LogsResponse>(`/logs?limit=${limit}&offset=${offset}`, {
       method: "GET",
       signal: options.signal
-    });
+    }, 8_000);
     return response?.logs ?? [];
-  } catch (error) {
-    console.error("Failed to fetch backend logs:", error);
+  } catch (e: any) {
+    // AbortError means the 8 s discovery poll timed out (backend is busy
+    // running a job). Swallow it silently — the next poll cycle (5 s)
+    // will try again once the backend is free.
+    if (e?.name === "AbortError") return [];
+    console.error("Failed to fetch background digital worker jobs:", e);
     return [];
   }
 }
@@ -837,6 +841,7 @@ export type DigitalWorkerRequestSummary = {
   decision_mode: string | null;
   reason: string | null;
   requires_approval: boolean;
+  approved_by_human?: boolean;
   workflow_status?: string | null;
   submitted_at: number | null;
   started_at: number | null;
@@ -957,7 +962,9 @@ export async function listDigitalWorkerRequests(
   return request<DigitalWorkerListResponse>(`/requests${qs}`, {
     method: "GET",
     signal: options.signal
-  }, 30_000);
+  // 8 s is enough for a simple in-memory read; keeps the discovery poll
+  // responsive even when a long-running execution holds the job-store lock.
+  }, 8_000);
 }
 
 /** Full detail for one Digital Worker request (approval payload + result). */

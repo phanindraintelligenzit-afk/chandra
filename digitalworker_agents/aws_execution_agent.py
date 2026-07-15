@@ -888,6 +888,7 @@ async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
             f"aws ec2 describe-key-pairs --region {region}",
             f"aws route53 list-hosted-zones --region {region}",
             "aws iam list-roles",
+            "aws iam list-users",
             "aws iam list-instance-profiles",
             "aws s3api list-buckets",
             *ami_commands,
@@ -911,12 +912,7 @@ async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
         # ---- Round 1: fire ALL independent commands concurrently, no cap ----
         results = await _mcp_run_aws_commands_parallel_async(commands, log=log)
 
-        # ---- Round 2: role policies for roles attached to instance profiles ----
-        # `list-instance-profiles` already embeds each profile's attached Role
-        # object (name/ARN), so that link needs no extra call. What it does NOT
-        # include is what permissions that role actually grants — for that we
-        # need one more call per role. Only fetched for roles actually attached
-        # to an instance profile (i.e. usable by EC2), to keep this bounded.
+        # ---- Round 2: permissions for ALL users and ALL non-service roles ----
         instance_profiles_result = results.get("aws iam list-instance-profiles")
         profile_role_map = {}  # instance_profile_name -> role_name or None
         if instance_profiles_result:
@@ -925,12 +921,25 @@ async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
                 roles_on_profile = p.get("Roles") or []
                 profile_role_map[prof_name] = roles_on_profile[0].get("RoleName") if roles_on_profile else None
 
-        roles_needing_policies = sorted({r for r in profile_role_map.values() if r})
+        iam_roles = results.get("aws iam list-roles")
+        role_objs = [
+            r for r in (iam_roles.get("Roles") or [])
+            if not r.get("Path", "/").startswith("/aws-service-role/")
+        ] if iam_roles else []
+        
+        iam_users = results.get("aws iam list-users")
+        user_objs = iam_users.get("Users") or [] if iam_users else []
+
+        roles_needing_policies = sorted({r.get("RoleName") for r in role_objs if r.get("RoleName")}.union({r for r in profile_role_map.values() if r}))
+        users_needing_policies = sorted({u.get("UserName") for u in user_objs if u.get("UserName")})
 
         policy_commands = []
         for role_name in roles_needing_policies:
             policy_commands.append(f"aws iam list-attached-role-policies --role-name {role_name}")
             policy_commands.append(f"aws iam list-role-policies --role-name {role_name}")
+        for user_name in users_needing_policies:
+            policy_commands.append(f"aws iam list-attached-user-policies --user-name {user_name}")
+            policy_commands.append(f"aws iam list-user-policies --user-name {user_name}")
 
         if policy_commands:
             results.update(await _mcp_run_aws_commands_parallel_async(policy_commands, log=log))
@@ -1099,20 +1108,45 @@ async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
         else:
             lines.append("  Public Route53 Zones: (none found)")
 
-        iam_roles = results.get("aws iam list-roles")
-        role_objs = [
-            r for r in (iam_roles.get("Roles") or [])
-            if not r.get("Path", "/").startswith("/aws-service-role/")
-        ] if iam_roles else []
         if role_objs:
-            lines.append(f"  Existing IAM Roles in account ({len(role_objs)}, name-collision + ARN reference — see Instance Profiles below for role->permissions detail):")
+            lines.append(f"  Existing IAM Roles in account ({len(role_objs)}):")
             for r in role_objs:
+                r_name = r.get("RoleName")
                 lines.append(
-                    f"    {r.get('RoleName')}  ARN={r.get('Arn')}  "
+                    f"    {r_name}  ARN={r.get('Arn')}  "
                     f"(ID={r.get('RoleId')}, Path={r.get('Path')}, Created={r.get('CreateDate')})"
                 )
+                attached = results.get(f"aws iam list-attached-role-policies --role-name {r_name}") or {}
+                managed_policies = [ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])]
+                inline = results.get(f"aws iam list-role-policies --role-name {r_name}") or {}
+                inline_policies = inline.get("PolicyNames") or []
+                
+                if managed_policies:
+                    lines.append(f"      Managed Policies: {', '.join(managed_policies)}")
+                if inline_policies:
+                    lines.append(f"      Inline Policies: {', '.join(inline_policies)}")
         else:
-            lines.append("  Existing IAM Roles: (none found or unavailable — use name_prefix regardless)")
+            lines.append("  Existing IAM Roles: (none found)")
+
+        if user_objs:
+            lines.append(f"  Existing IAM Users in account ({len(user_objs)}):")
+            for u in user_objs:
+                u_name = u.get("UserName")
+                lines.append(
+                    f"    {u_name}  ARN={u.get('Arn')}  "
+                    f"(ID={u.get('UserId')}, Path={u.get('Path')}, Created={u.get('CreateDate')})"
+                )
+                attached = results.get(f"aws iam list-attached-user-policies --user-name {u_name}") or {}
+                managed_policies = [ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])]
+                inline = results.get(f"aws iam list-user-policies --user-name {u_name}") or {}
+                inline_policies = inline.get("PolicyNames") or []
+                
+                if managed_policies:
+                    lines.append(f"      Managed Policies: {', '.join(managed_policies)}")
+                if inline_policies:
+                    lines.append(f"      Inline Policies: {', '.join(inline_policies)}")
+        else:
+            lines.append("  Existing IAM Users: (none found)")
 
         instance_profiles_list = instance_profiles_result.get("InstanceProfiles") or [] if instance_profiles_result else []
         if instance_profiles_list:
@@ -1573,8 +1607,11 @@ Determine:
 1. needs_clarification — True ONLY when critical information is TRULY missing and CANNOT be
    resolved dynamically (e.g. the user must choose between multiple existing VPCs and we have no
    way to pick the right one, or must choose between two non-default options that materially
-   change cost/behavior). Do NOT ask about IDs, names, or regions that can be resolved via AWS
-   data sources or sensible defaults — that applies regardless of resource type.
+   change cost/behavior). 
+   CRITICAL SECURITY EXCEPTION: For IAM/security requests, if the specific target identity (user/role) 
+   or the exact scope of permissions is vague (e.g. "need ec2 permission"), you MUST set this to True 
+   to ask the user for clarification. NEVER guess target users or grant overly broad permissions based on vague queries.
+   Otherwise, do NOT ask about IDs, names, or regions that can be resolved via AWS data sources.
 
 2. dynamic_resolutions — every value that the generator MUST resolve dynamically instead of
    hardcoding, specific to what THIS action provisions. Think about what would break if this ran
@@ -1603,8 +1640,8 @@ Determine:
 9. reasoning — Brief justification. If agent memory above contains lessons for this action,
    incorporate them.
 
-Be conservative with clarification requests: if the generator can figure it out from AWS data
-sources or sensible defaults, do NOT ask the user."""
+Generally be conservative with clarification requests (use sensible defaults when possible), but be AGGRESSIVELY 
+cautious regarding IAM and security: ALWAYS ask the user if target identities or permissions are underspecified."""
 
         try:
             structured_llm = self.Llm.with_structured_output(ActionAnalysis)
@@ -2842,7 +2879,7 @@ Rules:
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
             summary = response.content
-            self.logger.info("✓ LLM summary generated")
+            self.logger.info("✓ LLM summary generated:\n%s", summary)
         except Exception as exc:
             self.logger.warning("LLM summary failed, using fallback: %s", exc)
             timed_out_cmds = [r for r in results if r.get("timed_out")]
@@ -3365,7 +3402,10 @@ Rules:
                 "that returned status='needs_clarification'."
             )
 
-        config = {"configurable": {"thread_id": tid}}
+        config = {
+            "configurable": {"thread_id": tid},
+            "recursion_limit": self.max_iterations * 30 + 50
+        }
 
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
         aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
