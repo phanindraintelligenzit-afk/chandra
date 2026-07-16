@@ -50,6 +50,7 @@ class ChandraState(TypedDict, total=False):
     run_id: str
     account_id: str
     regions: list[str]
+    selected_kras: list[str]
     # Seeded by ``onboard_account`` from ``Settings.sns_topic_arn`` (env
     # ``SNS_TOPIC_ARN``). The escalation node reads this to publish to
     # the right topic in every entry point (CLI, FastAPI, harness).

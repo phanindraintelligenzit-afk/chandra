@@ -367,34 +367,12 @@ export const WorkerActionExecutionCenter = forwardRef<
         const jobStatus = await getJobStatus(jobId);
         const allLogs = cachedLogsRef.current;
 
-        const startTimeSecs = Math.floor(startedAt / 1000);
-        const nowSecs = Math.floor(Date.now() / 1000);
+        const jobIdLower = jobId ? jobId.toLowerCase().trim() : "";
 
-        const jiraLower = jiraKey ? jiraKey.toLowerCase() : "";
-        const jiraSpaced = jiraLower ? jiraLower.replace("-", " ") : "";
-        const hasValidJira = jiraKey && jiraKey !== "DEV-000" && jiraKey.length > 3;
-        const jobIdLower = jobId ? jobId.toLowerCase() : "";
-
-        let actionLogs = allLogs.filter((log) => {
-          if (!jobIdLower) return false;
-          if (log.job_id && log.job_id.toLowerCase() === jobIdLower) return true;
-          const msg = (log.message || "").toLowerCase();
-          if (msg.includes(jobIdLower)) return true;
-
-          if (hasValidJira) {
-             if (msg.includes(jiraLower) || msg.includes(jiraSpaced) || msg.includes(jiraLower.replace("-", ""))) {
-                return true;
-             }
-          }
-
-          if (log.timestamp) {
-             const endTimeSecs = (jobStatus.status === "completed" || jobStatus.status === "failed") && jobStatus.completed_at
-                ? Math.floor(jobStatus.completed_at) + 30
-                : nowSecs + 30;
-             return log.timestamp >= startTimeSecs && log.timestamp <= endTimeSecs;
-          }
-          return false;
-        });
+        // Match only by exact job_id (case-insensitive, trimmed).
+        let actionLogs = allLogs.filter((log) =>
+          log.job_id?.toLowerCase().trim() === jobIdLower
+        );
 
         const jobDone =
           jobStatus.status === "completed" ||
@@ -411,13 +389,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           try {
             const finalLogs = await fetchBackendLogs(2000, 0);
             cachedLogsRef.current = finalLogs;
-            actionLogs = finalLogs.filter((log: any) => {
-              if (!jobIdLower) return false;
-              if (log.job_id && log.job_id.toLowerCase() === jobIdLower) return true;
-              const text = `${log.message} ${log.logger}`.toLowerCase();
-              if (text.includes(jobIdLower)) return true;
-              return false;
-            });
+            // Same exact job_id match for the final log burst.
+            actionLogs = finalLogs.filter((log: any) =>
+              log.job_id?.toLowerCase().trim() === jobIdLower
+            );
           } catch (e) {
             console.error("Failed to fetch final logs", e);
           }

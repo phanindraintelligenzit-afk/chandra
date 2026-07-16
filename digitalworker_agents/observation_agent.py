@@ -13,7 +13,7 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_aws import ChatBedrockConverse
+# from langchain_aws import ChatBedrockConverse
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -135,8 +135,12 @@ class AwsObservabilityAgent:
         self.Kras = self._build_kras_str(kras)
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(model="gpt-5.4-mini")
+            # self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
+            self.Llm = ChatOpenAI(
+                base_url=os.getenv("OPENAI_API_BASE"),
+                api_key=os.getenv("OPENAI_API_KEY"),
+                model=os.getenv("OPENAI_MODEL_NAME"),
+            )
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:

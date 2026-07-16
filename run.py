@@ -21,7 +21,8 @@ import boto3
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from langchain_aws import ChatBedrockConverse  # noqa: F401  (forces import ordering)
+# from langchain_aws import ChatBedrockConverse  # noqa: F401  (forces import ordering)
+from langchain_openai import ChatOpenAI  # noqa: F401
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -85,6 +86,7 @@ def main() -> None:
         "dry_run": False,
         "raw_findings": {},
         "errors": [],
+        "selected_kras": ["cost", "security", "compliance", "performance", "reliability"],
     }
     config = {"configurable": {"thread_id": run_id}}
 

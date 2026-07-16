@@ -114,10 +114,13 @@ def kra_supervisor(state: ChandraState) -> dict[str, Any]:
 
     Routing is handled by _route_kra_workers conditional edge.
     """
+    selected = state.get("selected_kras", [])
+    active_kras = [k for k in selected if k in KRAS_TO_RUN]
+
     logger.info(
         "graph.kra_supervisor",
         run_id=state["run_id"],
-        kras=list(KRAS_TO_RUN),
+        kras=active_kras,
     )
     return {}
 
@@ -134,7 +137,11 @@ def _route_kra_workers(state: ChandraState) -> list[Send]:
         "account_id": state["account_id"],
         "regions": list(state.get("regions", [])),
     }
-    return [Send(f"observe_{kra}", projection) for kra in KRAS_TO_RUN]
+
+    selected = state.get("selected_kras", [])
+    active_kras = [k for k in selected if k in KRAS_TO_RUN]
+
+    return [Send(f"observe_{kra}", projection) for kra in active_kras]
 
 
 # ---------------------------------------------------------------------------
