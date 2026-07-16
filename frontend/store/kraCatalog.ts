@@ -28,17 +28,17 @@ export type KraAgentPayload = {
 };
 
 export const predefinedKraCatalog: KraDefinition[] = [
-  { id: "Infrastructure Metrics Dashboard", desc: "Display real-time CloudWatch telemetry graphs for CPU, Network, and Disk." },
-  { id: "Active Incident Stream", desc: "Enable the real-time incident detection and automated triage feed." },
-  { id: "Cost Monitoring Widget", desc: "Enable the AWS Cost Explorer breakdown and anomaly tracking widget." },
-  { id: "Audit Findings", desc: "Display active Security Hub findings and compliance violations table." },
-  { id: "Operational Intelligence Panel", desc: "Display a global executive summary of live alerts, observations, and security posture." }
+  { id: "Cost Optimization", desc: "Identify then terminate idle instances, unattached volumes, or unused IPs to reduce cloud spend." },
+  { id: "Security Hardening", desc: "Proactively detect then fix vulnerabilities like exposed storage buckets or overly permissive access rules." },
+  { id: "Compliance Enforcement", desc: "Continuously monitor then enforce regulatory compliance by ensuring encryption plus audit logging remain active." },
+  { id: "Performance Tuning", desc: "Analyze telemetry to right-size compute resources while optimizing database performance in real-time." },
+  { id: "Reliability Assurance", desc: "Ensure fault tolerance by automatically enforcing Multi-AZ deployments, data versioning, alongside backups." }
 ];
 
 export const predefinedKraIds = predefinedKraCatalog.map((kra) => kra.id);
 
 export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
-  "Infrastructure Metrics Dashboard": {
+  "Performance Tuning": {
     subtitle: "Infrastructure Health",
     value: "72% CPU",
     detail: "Fleet utilization and uptime are stable.",
@@ -49,7 +49,7 @@ export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
     automation: 76,
     score: 92
   },
-  "Active Incident Stream": {
+  "Reliability Assurance": {
     subtitle: "Incident Detection",
     value: "5 active alerts",
     detail: "Priority incidents are surfaced in real time.",
@@ -60,7 +60,7 @@ export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
     automation: 72,
     score: 89
   },
-  "Cost Monitoring Widget": {
+  "Cost Optimization": {
     subtitle: "Cost Optimization",
     value: "$182K saved",
     detail: "FinOps recommendations are active.",
@@ -71,7 +71,7 @@ export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
     automation: 81,
     score: 93
   },
-  "Audit Findings": {
+  "Compliance Enforcement": {
     subtitle: "Audit & Compliance",
     value: "95.4% coverage",
     detail: "Evidence and controls remain aligned.",
@@ -82,7 +82,7 @@ export const predefinedKraMetrics: Record<string, KraOperationalMetric> = {
     automation: 84,
     score: 90
   },
-  "Operational Intelligence Panel": {
+  "Security Hardening": {
     subtitle: "Global Summary",
     value: "All Systems Nominal",
     detail: "High-level overview of active alerts and insights.",

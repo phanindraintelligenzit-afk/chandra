@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import uuid
+import boto3
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -70,17 +71,17 @@ def main() -> None:
     graph = build_graph(checkpointer=MemorySaver())
     run_id = str(uuid.uuid4())
 
+    try:
+        sts = boto3.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+    except Exception as e:
+        logger.error(f"Failed to fetch AWS account ID from credentials: {e}")
+        account_id = "UNKNOWN"
+
     inputs = {
         "run_id": run_id,
-        "account_id": "827295473120",
-        "regions": ["us-east-1"],
-        # ``dry_run=False`` actually invokes the boto3 mutating API for any
-        # detector with a registered handler. Currently only SEC-001/002/003
-        # have handlers, and those detectors are critical/high (routed to
-        # ``pending_writes``), so they don't reach ``action_executor``. The
-        # COST/PERF/REL detectors that DO reach action_executor have no
-        # handlers and are skipped regardless. Set dry_run=False only on
-        # the synthetic account, never on prod.
+        "account_id": account_id,
+        "regions": [os.getenv("AWS_DEFAULT_REGION", "us-east-1")],
         "dry_run": False,
         "raw_findings": {},
         "errors": [],
@@ -110,14 +111,7 @@ def main() -> None:
                 "decisions via the FE approval center."
             )
             return
-
-        # Auto-approve: one ApprovalDecision per pending write. Matches the
-        # resume contract in approval_node:
-        #     return {"approvals": [ApprovalDecision(**d) for d in payload]}
-        # Pass plain dicts (not pydantic models) — LangGraph preserves the
-        # type on the round trip, so passing ApprovalDecision would arrive
-        # back as ApprovalDecision, and ``**d`` would fail with
-        # "argument after ** must be a mapping, not ApprovalDecision".
+        
         now = datetime.now(timezone.utc)
         decisions = [
             {

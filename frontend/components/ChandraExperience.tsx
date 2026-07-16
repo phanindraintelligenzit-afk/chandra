@@ -2721,11 +2721,11 @@ export function ChandraExperience() {
   );
   const AGENT = agentName || "Chandra";
 
-  const hasIncident = selectedKRAs.includes("Active Incident Stream");
-  const hasCost = selectedKRAs.includes("Cost Monitoring Widget");
-  const hasInfrastructure = selectedKRAs.includes("Infrastructure Metrics Dashboard");
-  const hasCompliance = selectedKRAs.includes("Audit Findings");
-  const hasOperationalIntelligence = selectedKRAs.includes("Operational Intelligence Panel");
+  const hasIncident = true;
+  const hasCost = true;
+  const hasInfrastructure = true;
+  const hasCompliance = true;
+  const hasOperationalIntelligence = true;
 
   return (
     <main className="bg-obsidian text-frost">
