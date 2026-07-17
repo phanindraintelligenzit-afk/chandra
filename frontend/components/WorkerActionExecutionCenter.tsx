@@ -25,6 +25,7 @@ type ExecutingAction = {
   errorMessage?: string;
   progress?: number;
   jobMessage?: string;
+  originalJobId?: string;
   summary?: string;
   questions?: string[];
   sandboxPath?: string;
@@ -89,7 +90,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   { 
     actions?: any[]; 
     onActionApproved?: (action: any) => void;
-    onActionCompleted?: (kraCode: string | undefined, actionId: string) => void;
+    onActionCompleted?: (kraCode: string | undefined, actionId: string, originalJobId?: string) => void;
     onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
     onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[]}[]) => void;
   }
@@ -474,7 +475,7 @@ export const WorkerActionExecutionCenter = forwardRef<
           if (finalStatus === "completed") {
             // ✅ Read callbacks from refs — always latest props, not stale closure
             if (onActionApprovedRef.current && currentAction) onActionApprovedRef.current({ ...currentAction, status: "completed", progress: 100 });
-            if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire, actionId);
+            if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire, actionId, currentAction?.originalJobId);
           }
         } else {
           setExecutingActions((current) =>
@@ -617,7 +618,8 @@ export const WorkerActionExecutionCenter = forwardRef<
       errorMessage: "",
       progress: 0,
       jobMessage: "Submitting job...",
-      resourceId: resourceId
+      resourceId: resourceId,
+      originalJobId: action.id
     } as ExecutingAction;
 
     setExecutingActions((current) => [executing, ...current]);

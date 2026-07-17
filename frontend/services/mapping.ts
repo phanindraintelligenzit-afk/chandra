@@ -107,6 +107,17 @@ export function buildKraPayload(
 ): KraPayloadEntry[] {
   const payload: KraPayloadEntry[] = [];
 
+  selectedPredefined.forEach((kraName) => {
+    const defIndex = predefinedKraCatalog.findIndex(d => d.id === kraName);
+    if (defIndex !== -1) {
+       payload.push({
+         code: formatKraCode(defIndex + 1),
+         name: predefinedKraCatalog[defIndex].id,
+         description: predefinedKraCatalog[defIndex].desc
+       });
+    }
+  });
+
   customKras.forEach((kra, index) => {
     payload.push({
       code: formatKraCode(KRA_CODE_OFFSET + index + 1),

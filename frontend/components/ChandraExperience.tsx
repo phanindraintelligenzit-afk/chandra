@@ -2694,7 +2694,54 @@ export function ChandraExperience() {
   const liveKraEvaluations = useMemo(
     () => {
       const base = observations?.kra_status ? deriveKraEvaluations(observations.kra_status, customKras) : [];
+      
+      const KRA_CODE_MAP: Record<string, string> = {
+        "Cost Optimization": "KRA-01",
+        "Security Hardening": "KRA-02",
+        "Compliance Enforcement": "KRA-03",
+        "Performance Tuning": "KRA-04",
+        "Reliability Assurance": "KRA-05"
+      };
+
+      predefinedKras.forEach(kraName => {
+        const code = KRA_CODE_MAP[kraName];
+        if (code) {
+           const relevant = predefinedApprovals.filter(a => a.kraCode === code);
+           const total = relevant.length;
+           const completed = relevant.filter(a => locallyCompletedActions.has(a.id)).length;
+           
+           let percentage = 100;
+           let status = "HEALTHY";
+           if (total > 0) {
+              percentage = Math.round((completed / total) * 100);
+              if (percentage < 50) status = "RED";
+              else if (percentage < 100) status = "AMBER";
+           }
+           
+           const evalData = {
+             code,
+             name: kraName,
+             description: `Deterministic AWS checks for ${kraName}.`,
+             status,
+             achievement: total === 0 ? "No issues found." : `Remediated ${completed} of ${total} issues.`,
+             completedPercentage: percentage,
+             note: "Live deterministic AWS checks.",
+             tone: status === "HEALTHY" ? "text-emerald-300" : status === "AMBER" ? "text-amber" : "text-signal",
+             isCustom: false
+           };
+
+           const existingIndex = base.findIndex(b => b.code === code);
+           if (existingIndex !== -1) {
+              base[existingIndex] = evalData;
+           } else {
+              base.push(evalData);
+           }
+        }
+      });
+
       return base.map(evalData => {
+        if (!evalData.isCustom) return evalData; // Predefined KRAs are already accurately calculated
+
         const normalizedCode = evalData.code
           .toUpperCase()
           .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
@@ -2751,7 +2798,7 @@ export function ChandraExperience() {
         return evalData;
       });
     },
-    [observations, customKras, locallyCompletedActions]
+    [observations?.kra_status, observations?.actions, customKras, locallyCompletedActions, predefinedKras, predefinedApprovals]
   );
   const costBreakdown = useMemo(() => deriveCostBreakdown(costMetrics ?? null), [costMetrics]);
   const liveCostCards = useMemo<LiveCostCard[]>(() => {
@@ -2887,14 +2934,14 @@ export function ChandraExperience() {
               setPendingHitlRequests(pendingRequests);
             }}
 
-            onActionCompleted={(rawKraCode, actionId) => {
-              if (rawKraCode && actionId) {
+            onActionCompleted={(rawKraCode, actionId, originalJobId) => {
+              if (rawKraCode && originalJobId) {
                 const normalized = rawKraCode
                   .toUpperCase()
                   .replace(/^KRA[.\-_]?0*(\d+)$/, (_, n) => `KRA-${n.padStart(2, "0")}`);
                 setLocallyCompletedActions(prev => {
                   const next = new Map(prev);
-                  next.set(actionId, normalized);
+                  next.set(originalJobId, normalized);
                   return next;
                 });
               }
