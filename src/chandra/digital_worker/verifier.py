@@ -81,18 +81,18 @@ def _generate_verification_code(
 ) -> str:
     """Ask Bedrock to write the Python verification script."""
     try:
-        # from langchain_aws import ChatBedrockConverse
-        from langchain_openai import ChatOpenAI
+        from langchain_aws import ChatBedrockConverse
+        # from langchain_openai import ChatOpenAI
         import os
-        # llm = ChatBedrockConverse(
-        #     model_id=settings.bedrock_model_id,
-        #     region_name=settings.aws_default_region,
-        # )
-        llm = ChatOpenAI(
-            base_url=os.getenv("OPENAI_API_BASE"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model=os.getenv("OPENAI_MODEL_NAME"),
+        llm = ChatBedrockConverse(
+            model_id=settings.bedrock_model_id,
+            region_name=settings.aws_default_region,
         )
+        # llm = ChatOpenAI(
+        #     base_url=os.getenv("OPENAI_API_BASE"),
+        #     api_key=os.getenv("OPENAI_API_KEY"),
+        #     model=os.getenv("OPENAI_MODEL_NAME"),
+        # )
         
         payload = {
             "request": request.model_dump(mode="json", exclude={"raw_payload"}),

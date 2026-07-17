@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from dotenv import load_dotenv
-# from langchain_aws import ChatBedrockConverse
-from langchain_openai import ChatOpenAI
+from langchain_aws import ChatBedrockConverse
+# from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -1395,12 +1395,12 @@ class ExecutionAgents:
                     "MODEL_NAME environment variable is not set. "
                     "Add MODEL_NAME=<bedrock-model-id> to your .env file."
                 )
-            # self.Llm = ChatBedrockConverse(model_id=model_name)
-            self.Llm = ChatOpenAI(
-                base_url=os.getenv("OPENAI_API_BASE"),
-                api_key=os.getenv("OPENAI_API_KEY"),
-                model=os.getenv("OPENAI_MODEL_NAME"),
-            )
+            self.Llm = ChatBedrockConverse(model_id=model_name)
+            # self.Llm = ChatOpenAI(
+            #     base_url=os.getenv("OPENAI_API_BASE"),
+            #     api_key=os.getenv("OPENAI_API_KEY"),
+            #     model=os.getenv("OPENAI_MODEL_NAME"),
+            # )
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()
