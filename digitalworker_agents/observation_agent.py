@@ -135,12 +135,8 @@ class AwsObservabilityAgent:
         self.Kras = self._build_kras_str(kras)
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            from src.chandra.llm import get_llm  # noqa: PLC0415
+            self.Llm = get_llm()
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:

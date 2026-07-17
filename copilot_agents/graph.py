@@ -142,13 +142,8 @@ def should_continue(state: AgentState) -> str:
 # ── Build the graph ───────────────────────────────────────────────────────────
 def build_graph():
     # Initialize LLM here (not at module level) so import errors don't crash FastAPI
-    llm = ChatBedrockConverse(model=os.getenv("MODEL_NAME"))
-    # llm = ChatOpenAI(
-    #     base_url=os.getenv("OPENAI_API_BASE"),
-    #     api_key=os.getenv("OPENAI_API_KEY"),
-    #     model=os.getenv("OPENAI_MODEL_NAME"),
-    # )
-    llm_with_tools = llm.bind_tools(tools)
+    from src.chandra.llm import get_llm_with_tools  # noqa: PLC0415
+    llm_with_tools = get_llm_with_tools(tools)
 
     # Define call_llm as a closure so it captures the local llm_with_tools
     def call_llm_node(state: AgentState) -> AgentState:

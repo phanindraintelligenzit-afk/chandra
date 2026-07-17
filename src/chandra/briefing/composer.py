@@ -93,32 +93,13 @@ def deterministic_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
 
 
 def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
-    """Ask Bedrock to re-rank findings. Falls back deterministically on error."""
+    """Ask the configured LLM to re-rank findings. Falls back deterministically on error."""
     if not findings:
         return []
 
     try:
-        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,
-        )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        logger.warning("llm.openai_unavailable_fallback_to_deterministic")
-        return deterministic_rank(findings)
-
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-            # temperature=0.0,
-            # max_tokens=2048,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        from src.chandra.llm import get_llm  # noqa: PLC0415
+        llm = get_llm()
         analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
         payload = [
@@ -144,7 +125,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         import json_repair
-        
+
         parsed = json_repair.loads(text)
         ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
     except Exception as exc:
@@ -196,29 +177,11 @@ def compose_executive_summary(
     analyzed: list[AnalyzedFinding],
     scorecard: dict[str, int] | Scorecard,
 ) -> list[str]:
-    """Three-bullet exec summary. LLM-generated when Bedrock is reachable."""
+    """Three-bullet exec summary. LLM-generated when a provider is reachable."""
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
-        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,
-        )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        return _deterministic_summary(analyzed, score_dict)
-
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-            # temperature=0.2,
-            # max_tokens=512,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        from src.chandra.llm import get_llm  # noqa: PLC0415
+        llm = get_llm()
         briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
         top = [
@@ -310,26 +273,8 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         }
     """
     try:
-        # Lazy import, matching llm_rank / compose_executive_summary: the
-        # composer must degrade to deterministic output when Bedrock's SDK
-        # is absent from the runtime.
-        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        logger.warning("llm.openai_unavailable_fallback_to_deterministic")
-        return None
-
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        from src.chandra.llm import get_llm  # noqa: PLC0415
+        llm = get_llm()
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
         cb = UsageCapture()
         response = llm.invoke(
@@ -341,7 +286,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
         import json_repair
-        
+
         parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:
             logger.warning("llm.request_analysis_malformed_fallback_to_deterministic")

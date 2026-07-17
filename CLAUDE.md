@@ -68,7 +68,22 @@ Today's read-only analytics surface. Renders the latest briefing, findings explo
 ## Hard architectural rules (do not violate without explicit signoff from Phani)
 
 - **LangGraph is the only orchestration framework.** No LangChain `AgentExecutor`. No `create_react_agent`. Use `StateGraph` + `Send(...)` for fan-out. The canonical topology lives in `src/chandra/graphs/chandra_graph.py:build_graph`.
-- **Amazon Bedrock is the only LLM provider** — specifically `langchain_aws.ChatBedrockConverse` with Sonnet 4.5. Do not import `openai`, `anthropic` direct SDK, or any other provider.
+- **`src/chandra/llm` is the LLM abstraction layer.** Every LLM call in the
+  codebase goes through `src.chandra.llm.get_llm()` (or `get_llm_with_tools()`
+  for tool-calling agents). The factory supports three backends:
+  `bedrock` (default, `langchain_aws.ChatBedrockConverse`),
+  `openai` (any OpenAI-compatible server — vLLM, Ollama, llama.cpp),
+  and `ollama` (native `ChatOllama`). Set `LLM_PROVIDER` in `.env` to switch.
+  **Do not import `ChatBedrockConverse` or `ChatOpenAI` directly** — always
+  use the factory so a single env-var change switches the entire runtime.
+- **Amazon Bedrock is the original (and default) LLM provider** — the
+  `llm` factory with `LLM_PROVIDER=bedrock` calls
+  `langchain_aws.ChatBedrockConverse` with Sonnet 4.5. The commented-out
+  `ChatOpenAI` blocks that used to sit in every agent have been replaced by
+  the factory.
+- **`chandra.briefing.composer` still follows the same invariant** — it's the
+  only canonical-pipeline module that may call the LLM. Detector modules
+  MUST NOT import `langchain_aws` or the `llm` factory.
 - **Read-only by default.** Detectors never call mutating AWS APIs. Write actions go through `action_executor_node` (auto-fix for low-risk `auto_fixed` writes — `dry_run=True` by default) + the `escalation` queue (publishes high-risk `pending_writes` to SNS) + `approval_node` (interrupts for human approval when `pending_writes` is non-empty).
 - **`chandra.briefing.composer` is the only module that may call Bedrock.** Detector modules MUST NOT import `langchain_aws`.
 - **`decision_router`, `action_executor`, and `escalation` are deterministic.** They sit between the LLM-powered `analyze` and the LLM-powered `compose_briefing`. If a future change introduces an LLM call into any of these three, it is a rule violation — surface it on the ticket.

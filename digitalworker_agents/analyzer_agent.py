@@ -75,12 +75,8 @@ class AnalyzerAgent:
     def __init__(self):
         logger.info("Initialising AnalyzerAgent")
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            from src.chandra.llm import get_llm  # noqa: PLC0415
+            self.Llm = get_llm()
             self.Graph = self._build_graph()
             logger.info("AnalyzerAgent initialised successfully")
         except Exception as exc:

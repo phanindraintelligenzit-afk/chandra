@@ -30,11 +30,39 @@ class Settings(BaseSettings):
     aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
     aws_default_region: str = Field(default="us-east-1", alias="AWS_DEFAULT_REGION")
 
+    # ── LLM provider ────────────────────────────────────────────────────────
+    # One of: bedrock, openai, ollama
+    llm_provider: str = Field(default="bedrock", alias="LLM_PROVIDER")
+
+    # Model name used by the active provider.
+    # Bedrock:  anthropic.claude-sonnet-4-5-20250929-v1:0
+    # OpenAI:   Qwen/Qwen2.5-32B-Coder-Instruct, gpt-4o, etc.
+    # Ollama:   qwen2.5-coder:32b
+    llm_model: str = Field(
+        default="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        alias="LLM_MODEL",
+    )
+
+    # Sampling temperature (0.0 = deterministic, 0.7 = creative)
+    llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE")
+
+    # Max output tokens
+    llm_max_tokens: int = Field(default=4096, alias="LLM_MAX_TOKENS")
+
+    # ― Bedrock-specific ―
     bedrock_model_id: str = Field(
         default="anthropic.claude-sonnet-4-5-20250929-v1:0",
         alias="BEDROCK_MODEL_ID",
     )
 
+    # ― OpenAI-compatible endpoint ―
+    openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ― Ollama-specific ―
+    ollama_base_url: str | None = Field(default=None, alias="OLLAMA_BASE_URL")
+
+    # ── Postgres ─────────────────────────────────────────────────────────────
     postgres_url: str = Field(
         default="postgresql+psycopg://chandra:chandra@localhost:5432/chandra",
         alias="POSTGRES_URL",

@@ -1389,22 +1389,12 @@ class ExecutionAgents:
             
         self.logger.info("Initialising ExecutionAgents (max_iterations=%d, job_id=%s)", max_iterations, self.job_id)
         try:
-            model_name = os.getenv("MODEL_NAME")
-            if not model_name:
-                raise ValueError(
-                    "MODEL_NAME environment variable is not set. "
-                    "Add MODEL_NAME=<bedrock-model-id> to your .env file."
-                )
-            self.Llm = ChatBedrockConverse(model_id=model_name)
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            from src.chandra.llm import get_llm  # noqa: PLC0415
+            self.Llm = get_llm()
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()
-            self.logger.info("ExecutionAgents initialised successfully with model %s", model_name)
+            self.logger.info("ExecutionAgents initialised successfully")
         except Exception as exc:
             self.logger.exception("Failed to initialise ExecutionAgents: %s", exc)
             raise
