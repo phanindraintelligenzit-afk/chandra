@@ -35,7 +35,7 @@ from digitalworker_agents.analyzer_agent import AnalyzerAgent, AnalyzerPipelineR
 from digitalworker_agents.aws_execution_agent import ExecutionAgents, PipelineResponse
 from tools.aws_cloud_tools.cost_explorer import AWSCostExplorerFetcher
 from tools.aws_cloud_tools.metrics_fetcher import CloudWatchMetricsFetcher
-from tools.aws_cloud_tools.tool_findings import run_all_detectors
+from tools.aws_cloud_tools.tool_findings import run_all_detectors, run_predefined_kra_detectors
 from copilot_agents.graph import build_graph, chat as copilot_chat
 from src.chandra.digital_worker.graph import build_digital_worker_graph
 from src.chandra.digital_worker.intake import SUPPORTED_SOURCES
@@ -397,6 +397,28 @@ def get_detector_issues():
         "poll_url": f"/jobs/status/{job_id}"
     })
 
+class PredefinedKraRequest(BaseModel):
+    selected_kras: List[str] = Field(default_factory=list, description="List of KRA codes/names to run detectors for")
+
+@app.post("/getPredefinedKraIssues")
+def get_predefined_kra_issues(request: PredefinedKraRequest):
+    """Submit detector scan as an async job for selected KRAs."""
+    job_id = str(uuid.uuid4())
+    logger.info("POST /getPredefinedKraIssues → async job_id=%s, kras=%s", job_id, request.selected_kras)
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": "pending", "progress": 0,
+            "message": f"Queued: detector scan for {request.selected_kras}",
+            "result": None, "error": None,
+            "started_at": None, "completed_at": None,
+        }
+    _thread_pool.submit(_run_predefined_kra_task, job_id, request.selected_kras)
+    return JSONResponse(status_code=202, content={
+        "job_id": job_id, "status": "accepted",
+        "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
+        "poll_url": f"/jobs/status/{job_id}"
+    })
+
 class CostMetricsRequest(BaseModel):
     days_lookback: int = Field(default=7, ge=1, le=365, description="Number of days to look back")
     granularity: str = Field(default="DAILY", description="Cost granularity: DAILY or MONTHLY")
@@ -585,6 +607,54 @@ def _run_detector_task(job_id: str):
         _thread_local.job_id = None
 
 
+def _run_predefined_kra_task(job_id: str, selected_kras: List[str]):
+    """Background worker for /getPredefinedKraIssues."""
+    import time
+    start_time = time.time()
+    _thread_local.job_id = job_id
+    try:
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["started_at"] = start_time
+            _job_store[job_id]["progress"] = 10
+            _job_store[job_id]["message"] = f"Running detectors for {selected_kras}..."
+            _job_store[job_id]["thread_id"] = threading.get_ident()
+
+        findings = _run_async(run_predefined_kra_detectors(selected_kras))
+        if isinstance(findings, dict):
+            total_issues = sum(len(g) for g in findings.values())
+            output = findings
+        else:
+            total_issues = len(findings)
+            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
+
+        elapsed = time.time() - start_time
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "completed"
+            _job_store[job_id]["progress"] = 100
+            _job_store[job_id]["result"] = {"status": "success", "output": output}
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Found {total_issues} issues in {elapsed:.1f}s"
+
+        logger.info("PREDEFINED KRA JOB [%s] found %d issues in %.1fs", job_id, total_issues, elapsed)
+
+    except (InterruptedError, SystemExit):
+        logger.info("PREDEFINED KRA JOB [%s] was stopped by the user", job_id)
+        with _job_store_lock:
+            if _job_store[job_id].get("status") != "stopped":
+                _job_store[job_id]["status"] = "stopped"
+                _job_store[job_id]["completed_at"] = time.time()
+    except Exception as exc:
+        logger.exception("PREDEFINED KRA JOB [%s] failed", job_id)
+        with _job_store_lock:
+            _job_store[job_id]["status"] = "failed"
+            _job_store[job_id]["error"] = str(exc)
+            _job_store[job_id]["completed_at"] = time.time()
+            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+    finally:
+        _thread_local.job_id = None
+
+
 def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
     """Background worker for /getCloudWatchMetrics."""
     import time
@@ -634,6 +704,9 @@ class ActionInput(BaseModel):
     kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
     priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
     steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
+    detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
+    resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
+    region: Optional[str] = Field(default="us-east-1", description="Target region for predefined KRA actions")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1181,7 +1254,68 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
 
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
 
-        # Run the actual orchestration
+        # Check if this is a predefined KRA remediation
+        if request.action.detectorId and request.action.resourceArn:
+            from src.chandra.graphs.action_nodes.action_executor import action_executor_node
+            from src.chandra.graphs.state import ChandraState
+            from src.chandra.briefing.schemas import ProposedWrite
+
+            logger.info("ORCHESTRATION TASK [%s] routing to action_executor_node for predefined KRA %s", job_id, request.action.detectorId)
+            pw = ProposedWrite(
+                action=f"remediate_{request.action.detectorId}",
+                target_arn=request.action.resourceArn,
+                region=request.action.region or "us-east-1",
+                payload={},
+                requested_by="supervisor",
+                justification=request.action.actionDescription,
+                risk_level="low",
+                severity="medium",
+                summary=request.action.actionName
+            )
+            state = ChandraState(auto_fixed=[pw], dry_run=False, run_id=job_id)
+            try:
+                res = action_executor_node(state)
+                results = res.get("action_results", [])
+                output_msg = ""
+                if results:
+                    r = results[0]
+                    # Parse status, message from ActionResult or dict
+                    status_val = r.status if hasattr(r, "status") else r.get("status", "unknown")
+                    msg_val = r.message if hasattr(r, "message") else r.get("message", "")
+                    output_msg = f"Status: {status_val.upper()}. {msg_val}"
+                    
+                    final_status = status_val.lower()
+                    if final_status == "failure":
+                        final_status = "failed"
+                    elif final_status == "success":
+                        final_status = "completed"
+                else:
+                    output_msg = "No action results returned."
+                    final_status = "completed"
+
+                # Update job with result
+                with _job_store_lock:
+                    if _job_store[job_id].get("status") == "stopped":
+                        return
+                    _job_store[job_id]["status"] = final_status if final_status in ["completed", "skipped", "failed", "running"] else "completed"
+                    _job_store[job_id]["progress"] = 100
+                    _job_store[job_id]["message"] = output_msg
+                    _job_store[job_id]["result"] = {"status": status_val, "output": res}
+                    _job_store[job_id]["completed_at"] = time.time()
+                
+                logger.info("ORCHESTRATION TASK [%s] action_executor_node completed", job_id)
+                return
+
+            except Exception as e:
+                logger.exception("ORCHESTRATION TASK [%s] action_executor_node failed", job_id)
+                with _job_store_lock:
+                    _job_store[job_id]["status"] = "failed"
+                    _job_store[job_id]["error"] = str(e)
+                    _job_store[job_id]["completed_at"] = time.time()
+                    _job_store[job_id]["message"] = f"Failed: {str(e)[:200]}"
+                return
+
+        # Run the standard LLM orchestration
         orchestrator = ExecutionAgents(max_iterations=request.max_iterations, job_id=job_id)
 
         action_dict = request.action.model_dump()

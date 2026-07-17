@@ -1,0 +1,2 @@
+1. Provide user freedom to use his own LLM
+2. add userName and creds authentication in onboard page

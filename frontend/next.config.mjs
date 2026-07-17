@@ -9,8 +9,8 @@ const nextConfig = {
   ...(isCiExport ? { output: "export" } : {}),
   trailingSlash: true,
   skipTrailingSlashRedirect: true,
-  basePath: pagesPath,
-  assetPrefix: pagesPath,
+  basePath: pagesPath || undefined,
+  assetPrefix: pagesPath || undefined,
   env: {
     NEXT_PUBLIC_BASE_PATH: pagesPath,
     NEXT_PUBLIC_API_URL: apiUrl

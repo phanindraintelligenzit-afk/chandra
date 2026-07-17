@@ -25,6 +25,7 @@ import {
   type DigitalWorkerRequestSummary,
   type DigitalWorkerStatus
 } from "../services/api";
+import { Search } from "lucide-react";
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -66,6 +67,8 @@ export type UnifiedRequest = {
   requires_approval: boolean;
   submitted_at: number | null;
   kraData?: any;
+  resourceId?: string | null;
+  action?: string | null;
 };
 
 function Badge({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -150,8 +153,8 @@ function RequestDetailPanel({ req }: { req: UnifiedRequest }) {
             </h5>
             <ol className="flex flex-col gap-1.5">
               {steps.map((step, idx) => (
-                <li key={idx} className="rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-sm text-frost/85">
-                  <span className="mr-2 text-frost/50">{idx + 1}.</span>
+                <li key={idx} className="rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-sm text-frost/85 whitespace-pre-wrap font-mono">
+                  <span className="mr-2 text-frost/50 font-sans">{idx + 1}.</span>
                   {step}
                 </li>
               ))}
@@ -259,7 +262,7 @@ function RequestCard({
   req: UnifiedRequest;
   onDecision: (req: UnifiedRequest, approved: boolean) => Promise<void>;
 }) {
-  const [expanded, setExpanded] = useState(req.requires_approval);
+  const [expanded, setExpanded] = useState(false);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<null | "approve" | "reject">(null);
 
@@ -291,14 +294,19 @@ function RequestCard({
                 {req.kraData?.kraCode || req.external_id}
               </span>
             )}
-            {req.risk_level && (
-              <span className="border border-orange-400/30 bg-orange-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-orange-300">
-                RISK {req.risk_level} {req.risk_score ? `· ${req.risk_score}` : ""}
+            {req.resourceId && (
+              <span className="border border-indigo-400/30 bg-indigo-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-indigo-300 truncate max-w-[200px]" title={req.resourceId}>
+                {req.resourceId.split(':').pop() || req.resourceId}
               </span>
             )}
             {req.priority && (
               <span className="border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-frost/80">
                 {req.priority}
+              </span>
+            )}
+            {req.action && (
+              <span className="border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-emerald-300 truncate max-w-[250px]" title={req.action}>
+                ACT: {req.action.replace(/^remediate_/, "")}
               </span>
             )}
           </div>
@@ -324,26 +332,20 @@ function RequestCard({
           )}
 
           {req.reason && (
-             <p className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-[0.68rem] text-frost/70 uppercase">
+             <div className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-[0.68rem] text-frost/70 uppercase">
                <span className="text-frost/50">REASON: </span>
                {req.reason}
-             </p>
-          )}
-          
-          {isPending && (
-             <div className="mt-4 flex flex-wrap items-center gap-2">
-               <input
-                 value={comment}
-                 onChange={(e) => setComment(e.target.value)}
-                 placeholder="OPTIONAL DECISION NOTE…"
-                 className="min-w-0 flex-1 rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-frost/85 outline-none placeholder:text-frost/40 focus:border-white/30 uppercase"
-               />
-               <button onClick={() => decide(true)} disabled={busy !== null} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition disabled:opacity-50">{busy === "approve" ? "APPROVING…" : "Approve"}</button>
-               <button onClick={() => decide(false)} disabled={busy !== null} className="rounded-md border border-signal/30 bg-signal/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition disabled:opacity-50">{busy === "reject" ? "REJECTING…" : "Reject"}</button>
              </div>
           )}
-
+          
           {expanded && <RequestDetailPanel req={req} />}
+          
+          {isPending && (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button onClick={() => decide(true)} disabled={busy !== null} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition disabled:opacity-50">{busy === "approve" ? "APPROVING…" : "Approve"}</button>
+              <button onClick={() => decide(false)} disabled={busy !== null} className="rounded-md border border-signal/30 bg-signal/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition disabled:opacity-50">{busy === "reject" ? "REJECTING…" : "Reject"}</button>
+            </div>
+          )}
         </div>
         
         <button
@@ -369,6 +371,10 @@ export function HumanApprovalCenter({
   const [requests, setRequests] = useState<DigitalWorkerRequestSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState<DigitalWorkerStatus | "all">("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [kraFilter, setKraFilter] = useState("all");
+  const [severityFilter, setSeverityFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const filterRef = useRef(filter);
@@ -414,6 +420,8 @@ export function HumanApprovalCenter({
             severity: row.severity,
             kraCode: row.kraCode || "",
             steps: row.steps || [],
+            detectorId: row.detectorId,
+            region: row.region,
             note: `${row.note} Approved by supervisor.`
           }, true);
         }
@@ -435,7 +443,7 @@ export function HumanApprovalCenter({
       source: "KRA",
       title: kra.incident,
       external_id: kra.kraCode,
-      category: "Security",
+      category: kra.category || "",
       platform: kra.account,
       priority: kra.severity,
       risk_level: kra.severity === "P1" ? "critical" : kra.severity === "P2" ? "high" : "medium",
@@ -443,8 +451,10 @@ export function HumanApprovalCenter({
       decision_mode: "AWAIT_APPROVAL",
       reason: kra.note,
       requires_approval: kra.state === "Awaiting Review",
-      submitted_at: Date.parse(new Date().toDateString() + " " + kra.requested) / 1000 || Date.now() / 1000,
+      submitted_at: (kra.requested ? (new Date(kra.requested).getTime() / 1000) : null) || Date.now() / 1000,
       kraData: kra,
+      resourceId: kra.resourceId,
+      action: kra.action,
     }));
 
     const filteredJira = requests.filter(req => {
@@ -468,15 +478,61 @@ export function HumanApprovalCenter({
       reason: req.reason,
       requires_approval: req.status === "awaiting_approval",
       submitted_at: req.submitted_at,
+      action: req.action || null,
     }));
 
     const all = [...kras, ...filteredJira];
     
-    // Apply local filter since unifiedRequests handles both now
+    // Apply local filters
     const currentStatus = filterRef.current;
-    const matched = currentStatus === "all" ? all : all.filter(r => r.status === currentStatus);
+    let matched = currentStatus === "all" ? all : all.filter(r => r.status === currentStatus);
+    
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      matched = matched.filter(r => 
+        (r.title && r.title.toLowerCase().includes(q)) || 
+        (r.reason && r.reason.toLowerCase().includes(q)) || 
+        (r.message && r.message.toLowerCase().includes(q))
+      );
+    }
+
+    if (kraFilter !== "all") {
+      matched = matched.filter(r => 
+        (r.kraData?.kraCode === kraFilter) || 
+        (r.category === kraFilter)
+      );
+    }
+
+    if (severityFilter !== "all") {
+      matched = matched.filter(r => 
+        (r.priority && r.priority.toLowerCase() === severityFilter.toLowerCase())
+      );
+    }
+
+    if (sourceFilter !== "all") {
+      matched = matched.filter(r => {
+        const src = r.isKra ? "kra" : (r.source ? r.source.toLowerCase() : "jira");
+        return src === sourceFilter;
+      });
+    }
+
     return matched.sort((a, b) => (b.submitted_at || 0) - (a.submitted_at || 0));
-  }, [kraApprovals, requests, kraActionNames]);
+  }, [kraApprovals, requests, kraActionNames, searchQuery, kraFilter, severityFilter, sourceFilter]);
+
+  const availableKras = useMemo(() => {
+    const set = new Set<string>();
+    kraApprovals.forEach(k => { if (k.kraCode) set.add(k.kraCode); });
+    requests.forEach(r => { if (r.category) set.add(r.category); });
+    return Array.from(set).filter(Boolean).sort();
+  }, [kraApprovals, requests]);
+
+  const availableSources = useMemo(() => {
+    const set = new Set<string>([
+      "kra", "jira", "slack", "teams", "email"
+    ]);
+    requests.forEach(r => { if (r.source) set.add(r.source.toLowerCase()); });
+    return Array.from(set).sort();
+  }, [requests]);
 
   const awaitingCount = unifiedRequests.filter(r => r.status === "awaiting_approval").length;
   const runningCount = unifiedRequests.filter(r => r.status === "running" || r.status === "pending").length;
@@ -511,20 +567,69 @@ export function HumanApprovalCenter({
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        {filters.map((f) => (
-          <button
-            key={f.key}
-            onClick={() => setFilter(f.key)}
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              filter === f.key
-                ? "border-white/30 bg-white/10 text-frost/90"
-                : "border-white/10 text-frost/60 hover:bg-white/5"
-            }`}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap gap-2">
+          {filters.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`rounded-full border px-3 py-1 text-xs transition ${
+                filter === f.key
+                  ? "border-white/30 bg-white/10 text-frost/90"
+                  : "border-white/10 text-frost/60 hover:bg-white/5"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative">
+            <input 
+              type="text" 
+              placeholder="Search approvals..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-48 rounded-lg border border-white/10 bg-black/40 py-1.5 pl-8 pr-3 text-xs text-frost/90 placeholder:text-frost/40 focus:border-white/30 outline-none transition"
+            />
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-frost/40 h-3.5 w-3.5" />
+          </div>
+          
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="rounded-lg border border-white/10 bg-black/40 py-1.5 px-3 text-xs text-frost/90 focus:border-white/30 outline-none transition uppercase tracking-wider"
           >
-            {f.label}
-          </button>
-        ))}
+            <option value="all">ALL SOURCES</option>
+            {availableSources.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+
+          <select
+            value={severityFilter}
+            onChange={(e) => setSeverityFilter(e.target.value)}
+            className="rounded-lg border border-white/10 bg-black/40 py-1.5 px-3 text-xs text-frost/90 focus:border-white/30 outline-none transition uppercase tracking-wider"
+          >
+            <option value="all">ALL SEVERITIES</option>
+            <option value="critical">CRITICAL</option>
+            <option value="high">HIGH</option>
+            <option value="medium">MEDIUM</option>
+            <option value="low">LOW</option>
+          </select>
+
+          <select
+            value={kraFilter}
+            onChange={(e) => setKraFilter(e.target.value)}
+            className="rounded-lg border border-white/10 bg-black/40 py-1.5 px-3 text-xs text-frost/90 focus:border-white/30 outline-none transition uppercase tracking-wider"
+          >
+            <option value="all">ALL KRAS</option>
+            {availableKras.map(k => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {error && (

@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import { HumanApprovalCenter } from "./HumanApprovalCenter";
 import {
@@ -2465,6 +2465,76 @@ export function ChandraExperience() {
     };
   }, []);
 
+  const [predefinedApprovals, setPredefinedApprovals] = useState<ApprovalRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const KRA_MAP: Record<string, string> = {
+      "Cost Optimization": "cost",
+      "Security Hardening": "security",
+      "Compliance Enforcement": "compliance",
+      "Performance Tuning": "performance",
+      "Reliability Assurance": "reliability"
+    };
+
+    const backendKraCodeMap: Record<string, string> = {
+      "cost": "KRA-01",
+      "security": "KRA-02",
+      "compliance": "KRA-03",
+      "performance": "KRA-04",
+      "reliability": "KRA-05"
+    };
+
+    const backendKras = selectedKRAs
+      .map(kra => KRA_MAP[kra])
+      .filter(Boolean);
+
+    if (backendKras.length === 0) return;
+
+    fetchPredefinedKraIssues(backendKras)
+      .then(res => {
+        if (cancelled || !res) return;
+        const newApprovals: ApprovalRow[] = [];
+        
+        Object.values(res).flat().forEach((issue) => {
+          const kraCode = backendKraCodeMap[issue.kra] || "KRA-XX";
+          newApprovals.push({
+            id: `${issue.detector_id}-${Math.random().toString(36).substring(7)}`,
+            incident: issue.title,
+            severity: (issue.severity.toUpperCase() || "MEDIUM") as any,
+            state: "Awaiting Review",
+            reviewer: agentName || "Chandra",
+            requested: new Date().toISOString(),
+            decided: "",
+            note: issue.recommendation,
+            account: "Global",
+            confidence: 90,
+            requestedBy: "Detector",
+            lockState: "LOCKED",
+            emailStatus: "NONE",
+            pendingReason: issue.recommendation,
+            kraCode: kraCode,
+            resourceId: issue.resource_arn || undefined,
+            detectorId: issue.detector_id,
+            region: issue.region || "us-east-1",
+            action: `remediate_${issue.detector_id}`,
+            category: issue.kra.toUpperCase(),
+            steps: issue.evidence
+              ? [JSON.stringify(issue.evidence, null, 2)]
+              : []
+          });
+        });
+        
+        setPredefinedApprovals(newApprovals);
+      })
+      .catch(err => {
+        if (!cancelled) console.error("fetchPredefinedKraIssues failed:", err);
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedKRAs, agentName]);
+
   const [costDays, setCostDays] = useState(7);
   const isFirstCostFetchRef = useRef(true);
   const observationsInitRef = useRef(false);
@@ -2780,9 +2850,25 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <HumanApprovalCenter 
-            kraCards={approvalsAsRow} 
-            kraActionNames={new Set(approvalsAsRow.map(r => r.incident.toLowerCase().trim()))}
-            onAutoApproved={handleExecuteAction}
+            kraCards={[...approvalsAsRow, ...predefinedApprovals]} 
+            kraActionNames={new Set([...approvalsAsRow, ...predefinedApprovals].map(r => r.incident.toLowerCase().trim()))}
+            onAutoApproved={(action, approved) => {
+              if (approved) {
+                // If it's a predefined approval, mark it as executing in the UI state
+                setPredefinedApprovals(prev => prev.map(a => 
+                  a.id === action.actionId || a.incident === action.actionName
+                    ? { ...a, state: "Approved" as any, decided: new Date().toISOString() }
+                    : a
+                ));
+                handleExecuteAction(action);
+              } else {
+                 setPredefinedApprovals(prev => prev.map(a => 
+                  a.id === action.actionId || a.incident === action.actionName
+                    ? { ...a, state: "Rejected" as any, decided: new Date().toISOString() }
+                    : a
+                ));
+              }
+            }}
           />
         </div>
       </section>

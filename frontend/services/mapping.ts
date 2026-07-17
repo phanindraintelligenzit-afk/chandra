@@ -26,8 +26,10 @@ export type LiveOpsEvent = {
   reviewer: string;
   lockState: string;
   escalation: string;
-  region: string;
-  resourceId: string;
+  kraCode?: string;
+  resourceId?: string;
+  detectorId?: string;
+  region?: string;
 };
 
 export type LiveIncident = LiveOpsEvent & {
@@ -54,6 +56,11 @@ export type LiveApprovalRow = {
   pendingReason: string;
   kraCode: string;
   steps: string[];
+  resourceId?: string;
+  detectorId?: string;
+  region?: string;
+  category?: string;
+  action?: string;
 };
 
 export type LiveCostCard = {

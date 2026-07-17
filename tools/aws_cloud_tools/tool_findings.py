@@ -152,4 +152,91 @@ async def run_all_detectors():
 # if __name__ == "__main__":
 #     asyncio.run(run_all_detectors())
 #     logger.info("Script finished successfully")
+
+async def run_predefined_detectors_async(ctx: DetectorContext, selected_kras: list[str]) -> list:
+    """Creates concurrent tasks for selected modules and gathers the results."""
+    # Ensure we only use valid modules that exist
+    valid_modules = ["compliance", "security", "reliability", "performance", "cost"]
+    modules = [kra for kra in selected_kras if kra in valid_modules]
     
+    # Create a list of concurrent tasks
+    tasks = [run_module(mod, ctx) for mod in modules]
+    
+    # Wait for all tasks to complete in parallel
+    results = await asyncio.gather(*tasks)
+    
+    # Flatten the list of lists into a single list of findings
+    all_findings = [finding for module_findings in results for finding in module_findings]
+    return all_findings
+
+
+async def run_predefined_kra_detectors(selected_kras: list[str]):
+    account_id = os.getenv("SYNTHETIC_ACCOUNT_ID")
+    if not account_id:
+        logger.error("SYNTHETIC_ACCOUNT_ID not found in .env")
+        sys.exit(1)
+
+    logger.info("Using Account ID: %s", account_id)
+
+    ctx = DetectorContext(
+        run_id=str(uuid4()),
+        account_id=account_id,
+        regions=[os.getenv("AWS_DEFAULT_REGION")],
+        factory=AwsClientFactory(fast=True)
+    )
+
+    findings = await run_predefined_detectors_async(ctx, selected_kras)
+
+    # --- DEDUPLICATION LOGIC ---
+    seen = set()
+    deduped_findings = []
+    for finding in findings:
+        if hasattr(finding, "title"):
+            title = getattr(finding, "title")
+            arn = getattr(finding, "resource_arn", "")
+        elif isinstance(finding, dict):
+            title = finding.get("title", "")
+            arn = finding.get("resource_arn", "")
+        else:
+            title = str(finding)
+            arn = ""
+            
+        safe_title = str(title).lower().strip() if title else ""
+        safe_arn = str(arn).lower().strip() if arn else ""
+        
+        key = (safe_title, safe_arn)
+        if key not in seen:
+            seen.add(key)
+            deduped_findings.append(finding)
+    
+    findings = deduped_findings
+
+    logger.info("Total unique findings across selected KRAs: %d", len(findings))
+
+    # --- ROBUST JSON EXPORT LOGIC ---
+    if findings:
+        grouped_findings = defaultdict(list)
+        for finding in findings:
+            if hasattr(finding, "model_dump"):
+                finding_dict = finding.model_dump()
+            elif hasattr(finding, "dict"):
+                finding_dict = finding.dict()
+            elif hasattr(finding, "__dataclass_fields__"):
+                finding_dict = asdict(finding)
+            elif isinstance(finding, dict):
+                finding_dict = finding
+            else:
+                finding_dict = vars(finding)
+                
+            kra_key = finding_dict.get("kra", "unknown") if isinstance(finding_dict, dict) else getattr(finding, "kra", "unknown")
+            
+            # --- NOT filtering out the evidence field ---
+            # finding_dict.pop("evidence", None)
+            
+            grouped_findings[kra_key].append(finding_dict)
+
+        logger.info("Successfully grouped findings by KRA")
+        return grouped_findings
+    else:
+        logger.info("No findings generated to save.")
+        return {}

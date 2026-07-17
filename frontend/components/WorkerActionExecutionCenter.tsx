@@ -16,7 +16,7 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   jiraUrl?: string;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped" | "skipped";
   jobId: string;
   threadId: string;
   startedAt: number;
@@ -45,7 +45,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     destroying: "border-red-500/40 bg-red-500/12 text-red-400",
     destroyed: "border-gray-500/40 bg-gray-500/12 text-gray-400",
     stopping: "border-red-400/40 bg-red-400/12 text-red-300",
-    stopped: "border-red-400/40 bg-red-400/12 text-red-300"
+    stopped: "border-red-400/40 bg-red-400/12 text-red-300",
+    skipped: "border-slate-400/40 bg-slate-400/12 text-slate-300"
   };
   const icons: Record<string, JSX.Element> = {
     pending: <Clock size={12} />,
@@ -57,7 +58,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     destroying: <Loader2 size={12} className="animate-spin" />,
     destroyed: <Trash2 size={12} />,
     stopping: <Loader2 size={12} className="animate-spin" />,
-    stopped: <StopCircle size={12} />
+    stopped: <StopCircle size={12} />,
+    skipped: <Octagon size={12} />
   };
 
   const displayLabel =
@@ -258,7 +260,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                   steps: [],
                   jiraKey: job.external_id || job.job_id.substring(0,8),
                   jiraUrl: job.external_id ?? undefined,
-                  status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : "failed"),
+                  status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : (job.status === "skipped" ? "skipped" : "failed")),
                   jobId: job.job_id,
                   threadId: job.job_id,
                   startedAt: job.started_at ? job.started_at * 1000 : Date.now(),
@@ -378,6 +380,7 @@ export const WorkerActionExecutionCenter = forwardRef<
           jobStatus.status === "completed" ||
           jobStatus.status === "failed" ||
           jobStatus.status === "stopped" ||
+          jobStatus.status === "skipped" ||
           jobStatus.status === "not_found";
 
         if (jobDone) {
@@ -410,6 +413,8 @@ export const WorkerActionExecutionCenter = forwardRef<
             else finalStatus = "failed";
           } else if (jobStatus.status === "failed") {
             finalStatus = "failed";
+          } else if (jobStatus.status === "skipped") {
+            finalStatus = "skipped";
           }
 
           const errorMsg =
@@ -580,12 +585,14 @@ export const WorkerActionExecutionCenter = forwardRef<
     }
     const actionName = action.actionName || action.incident || "Unnamed Action";
 
-    // Safety-net dedup: skip if an active entry with the same jiraKey+actionName already exists
+    // Safety-net dedup: skip if an active entry with the same jiraKey, actionName, and resourceId already exists
+    const resourceId = action.resourceId || "";
     const isDuplicate = executingActions.some(
       (a) =>
         (a.status === "pending" || a.status === "running") &&
         a.jiraKey === jiraKey &&
-        a.actionName === actionName
+        a.actionName === actionName &&
+        (a as any).resourceId === resourceId
     );
     if (isDuplicate) {
       console.warn(`[WorkerCenter] Skipping duplicate submission for ${jiraKey} - ${actionName}`);
@@ -609,8 +616,9 @@ export const WorkerActionExecutionCenter = forwardRef<
       logs: [],
       errorMessage: "",
       progress: 0,
-      jobMessage: "Submitting job..."
-    };
+      jobMessage: "Submitting job...",
+      resourceId: resourceId
+    } as ExecutingAction;
 
     setExecutingActions((current) => [executing, ...current]);
 
@@ -622,7 +630,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           steps: executing.steps,
           service: executing.service || "AWS",
           kraCode: executing.kraCode,
-          priorityLevel: executing.priorityLevel
+          priorityLevel: executing.priorityLevel,
+          detectorId: action.detectorId,
+          resourceArn: action.region === "us-east-1" ? action.resourceId : action.resourceId, // dummy check to pass resourceId
+          region: action.region || "us-east-1"
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: timeoutMins * 60,

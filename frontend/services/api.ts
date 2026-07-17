@@ -103,6 +103,7 @@ export type DetectorIssue = {
   title: string;
   recommendation: string;
   detector_id: string;
+  evidence?: Record<string, any>;
 };
 
 export type DetectorIssuesOutput = Record<string, DetectorIssue[]>;
@@ -617,6 +618,36 @@ export async function fetchDetectorIssues(
   activeDetectorIssuesRequest = promise;
   return promise;
 }
+export async function fetchPredefinedKraIssues(
+  selectedKras: string[],
+  options: { signal?: AbortSignal } = {}
+): Promise<DetectorIssuesOutput> {
+  const jobResp = await request<Record<string, unknown>>(
+    `/getPredefinedKraIssues?t=${Date.now()}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selected_kras: selectedKras }),
+      signal: options.signal
+    },
+    30_000
+  );
+
+  if (!jobResp.job_id) {
+    return ((jobResp as any).output ?? jobResp) as DetectorIssuesOutput;
+  }
+
+  const output = await pollJobStatus(
+    jobResp.job_id as string,
+    (raw) => {
+      const data = raw as Record<string, unknown>;
+      return ((data?.output ?? data) as DetectorIssuesOutput);
+    },
+    3000,
+    900_000
+  );
+  return output;
+}
 
 export async function analyzeActions(
   actions: ActionItem[],
@@ -739,6 +770,9 @@ export type OrchestrateRequest = {
     service?: string;
     kraCode?: string;
     priorityLevel?: string;
+    detectorId?: string;
+    resourceArn?: string;
+    region?: string;
   };
   sandbox_path?: string;
   reference_folder?: string;
