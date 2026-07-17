@@ -98,32 +98,55 @@ The single source of truth for node names and edges is
 `src/chandra/graphs/chandra_graph.py:build_graph`. Fan-out uses LangGraph's
 `Send(...)` from the `kra_supervisor`.
 
+```mermaid
+flowchart TD
+    START([START]) --> onboard
+    onboard[onboard_account] --> ingest[ingest_observations]
+    ingest --> supervisor[kra_supervisor]
+
+    supervisor -->|Send| cost[observe_cost]
+    supervisor -->|Send| sec[observe_security]
+    supervisor -->|Send| comp[observe_compliance]
+    supervisor -->|Send| perf[observe_performance]
+    supervisor -->|Send| reli[observe_reliability]
+
+    cost --> analyze[analyze]
+    sec --> analyze
+    comp --> analyze
+    perf --> analyze
+    reli --> analyze
+
+    analyze --> router[decision_router]
+    router -->|auto_fixed| executor[action_executor]
+    router -.->|pending_writes| escalate[escalation]
+
+    executor --> brief[compose_briefing]
+    escalate --> brief
+
+    brief -->|pending_writes empty| persist[(persist)]
+    brief -.->|pending_writes non-empty| approval[approval_node]
+
+    approval --> persist
+    persist --> END([END])
+
+    style cost fill:#1e3a1e,stroke:#fbbf24,color:#fbbf24
+    style sec fill:#3e1a2e,stroke:#fb7185,color:#fb7185
+    style comp fill:#2e1a4e,stroke:#a78bfa,color:#a78bfa
+    style perf fill:#1a2e4e,stroke:#22d3ee,color:#22d3ee
+    style reli fill:#1a3e2e,stroke:#34d399,color:#34d399
+    style executor fill:#1a3e2e,stroke:#34d399,color:#34d399
+    style escalate fill:#3e1a2e,stroke:#fb7185,color:#fb7185
+    style approval fill:#3e1a2e,stroke:#fb7185,color:#fb7185
+    style persist fill:#2e1a4e,stroke:#a78bfa,color:#a78bfa
+    style onboard fill:#1e293b,stroke:#94a3b8,color:#94a3b8
+    style ingest fill:#1e293b,stroke:#94a3b8,color:#94a3b8
+    style supervisor fill:#1e293b,stroke:#94a3b8,color:#94a3b8
+    style analyze fill:#1e293b,stroke:#94a3b8,color:#94a3b8
+    style router fill:#1e293b,stroke:#94a3b8,color:#94a3b8
+    style brief fill:#1e293b,stroke:#94a3b8,color:#94a3b8
 ```
-START
-  └─► onboard_account
-        └─► ingest_observations
-              └─► kra_supervisor ── Send(...) per KRA ──┐
-                     ├─► observe_cost                   │
-                     ├─► observe_security               │
-                     ├─► observe_compliance             │
-                     ├─► observe_performance            │
-                     └─► observe_reliability            │
-                                       ↓
-                                  analyze        (LLM: rank + dedup — Bedrock)
-                                       ↓
-                              decision_router  (deterministic split → pending_writes + auto_fixed)
-                                       ↓
-                              action_executor  (consumes auto_fixed; dry_run=True by default)
-                                       ↓
-                                  escalation    (publishes pending_writes to SNS)
-                                       ↓
-                              compose_briefing (LLM: narrative — Bedrock)
-                                       ↓
-                       conditional: pending_writes non-empty
-                                       ├─► approval_node  (HITL interrupt)
-                                       │       └─► persist  → END
-                                       └─► persist        → END
-```
+
+> 🔗 For a full interactive architecture diagram, see [`docs/architecture-diagram.html`](docs/architecture-diagram.html) — open in any browser.
 
 **Hard separation:** `decision_router`, `action_executor`, and `escalation` are deterministic. They sit between the LLM-powered `analyze` and the LLM-powered `compose_briefing`. If a future change introduces an LLM call into any of these three, it is a rule violation.
 
