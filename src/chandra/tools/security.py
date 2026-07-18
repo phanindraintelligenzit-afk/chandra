@@ -864,7 +864,7 @@ ALL_DETECTORS = (
     # find_guardduty_threats,            
     find_access_analyzer_findings,    
     find_kms_rotation_disabled,
-    find_security_hub_findings,        
+    # find_security_hub_findings,        
 )
 
 

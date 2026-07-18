@@ -17,6 +17,7 @@ Nothing in the codebase reads the old keys.
 
 from __future__ import annotations
 
+import json as _json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -114,6 +115,71 @@ def _identity_arn(arn: str) -> str:
     return arn
 
 
+def _iam_policy_arn_passthrough(arn: str) -> str:
+    """Pass IAM managed policy ARN through unchanged (SEC-005).
+
+    arn:aws:iam::acct:policy/name -> arn:aws:iam::acct:policy/name
+    """
+    if ":policy/" not in arn:
+        raise ValueError(f"Invalid IAM managed policy ARN: {arn!r}")
+    return arn
+
+
+def _rds_instance_arn_passthrough(arn: str) -> str:
+    """Pass RDS DB instance ARN through unchanged (REL-001, PERF-002).
+
+    arn:aws:rds:region:acct:db:identifier -> same
+    """
+    if ":db:" not in arn:
+        raise ValueError(f"Invalid RDS DB instance ARN: {arn!r}")
+    return arn
+
+
+def _lambda_function_arn_passthrough(arn: str) -> str:
+    """Pass Lambda function ARN through unchanged (PERF-007).
+
+    arn:aws:lambda:region:acct:function:name -> same
+    """
+    if ":function:" not in arn:
+        raise ValueError(f"Invalid Lambda function ARN: {arn!r}")
+    return arn
+
+
+def _config_rule_arn_passthrough(arn: str) -> str:
+    """Pass Config rule ARN through unchanged (COMP-007).
+
+    arn:aws:config:region:acct:config-rule/name -> same
+    Also accepts plain rule names (non-ARN strings) for compatibility.
+    """
+    if not arn:
+        raise ValueError(f"Empty Config rule identifier: {arn!r}")
+    return arn
+
+
+def _account_scope_from_arn(arn: str) -> str:
+    """Extract AWS account ID from an ARN (COMP-002, COMP-006, REL-003, REL-004).
+
+    arn:aws:...:account-id:... -> account-id
+    """
+    parts = arn.split(":")
+    if len(parts) < 5 or not parts[4]:
+        raise ValueError(f"Cannot extract account ID from ARN: {arn!r}")
+    return parts[4]
+
+
+def _lenient_resource_id(arn: str) -> str:
+    """Accept any non-empty string as a resource identifier (SEC-006).
+
+    SEC-006 findings may surface a plain resource ID (not a full ARN) as their
+    target_arn when Config does not surface a full ARN for the resource type.
+    We accept both ARNs and bare IDs so the handler always receives something
+    actionable to match against Config compliance records.
+    """
+    if not arn:
+        raise ValueError(f"Empty resource identifier: {arn!r}")
+    return arn
+
+
 # ---------------------------------------------------------------------------
 # Detector-id -> handler registry
 # ---------------------------------------------------------------------------
@@ -126,6 +192,23 @@ class _Handler:
     problem_type: str
     extract_resource_id: Callable[[str], str]
     run: Callable[[ActionExecutor, str, str], None]
+
+
+@dataclass(frozen=True)
+class _ObservationOnlyHandler:
+    """Marks a detector as observation-only — no automated AWS remediation is possible.
+
+    The action_executor_node emits status="skipped" with skip_reason as the message.
+    No AWS API call is made for these detectors.
+    """
+
+    problem_type: str
+    skip_reason: str
+
+
+# ---------------------------------------------------------------------------
+# Via shims — existing (11)
+# ---------------------------------------------------------------------------
 
 
 def _fix_public_s3_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
@@ -176,7 +259,121 @@ def _apply_mandatory_tags_via(executor: ActionExecutor, resource_id: str, region
     executor._apply_mandatory_tags(resource_id, region)
 
 
-_HANDLERS: dict[str, _Handler] = {
+# ---------------------------------------------------------------------------
+# Via shims — new (16)
+# ---------------------------------------------------------------------------
+
+
+def _remove_wildcard_iam_statements_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._remove_wildcard_iam_statements(resource_id, region)
+
+
+def _archive_guardduty_finding_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._archive_guardduty_finding(resource_id, region)
+
+
+def _archive_access_analyzer_finding_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._archive_access_analyzer_finding(resource_id, region)
+
+
+def _notify_security_hub_finding_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._notify_security_hub_finding(resource_id, region)
+
+
+def _enable_cloudtrail_multi_region_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._enable_cloudtrail_multi_region(resource_id, region)
+
+
+def _enable_config_recorder_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._enable_config_recorder(resource_id, region)
+
+
+def _create_default_backup_plan_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._create_default_backup_plan(resource_id, region)
+
+
+def _trigger_config_rule_remediation_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._trigger_config_rule_remediation(resource_id, region)
+
+
+def _enable_rds_multi_az_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._enable_rds_multi_az(resource_id, region)
+
+
+def _create_default_dlm_policy_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._create_default_dlm_policy(resource_id, region)
+
+
+def _stop_idle_ec2_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._stop_idle_ec2(resource_id, region)
+
+
+def _stop_idle_rds_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
+    executor._stop_idle_rds(resource_id, region)
+
+
+def _fix_ec2_instance_type_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._fix_ec2_instance_type(resource_id, region)
+
+
+def _update_lambda_memory_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._update_lambda_memory(resource_id, region)
+
+
+def _trigger_config_resource_remediation_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._trigger_config_resource_remediation(resource_id, region)
+
+
+def _create_encrypted_rds_replacement_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._create_encrypted_rds_replacement(resource_id, region)
+
+
+def _create_encrypted_ebs_replacement_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._create_encrypted_ebs_replacement(resource_id, region)
+
+
+def _migrate_ec2_to_asg_via(
+    executor: ActionExecutor, resource_id: str, region: str
+) -> None:
+    executor._migrate_ec2_to_asg(resource_id, region)
+
+
+# ---------------------------------------------------------------------------
+# _HANDLERS registry — all 34 detectors
+# ---------------------------------------------------------------------------
+
+_HANDLERS: dict[str, _Handler | _ObservationOnlyHandler] = {
+    # ── Existing auto-remediable (11) ─────────────────────────────────────
     "SEC-001-public-s3": _Handler(
         problem_type="public_s3",
         extract_resource_id=_s3_bucket_from_arn,
@@ -192,36 +389,11 @@ _HANDLERS: dict[str, _Handler] = {
         extract_resource_id=_iam_key_id_from_arn,
         run=_disable_iam_key_via,
     ),
-    # COST-002: unattached EBS volumes. Delete after verifying the
-    # volume is in the ``available`` state (i.e. nothing is attached);
-    # refuses otherwise. The volume's data is gone — use snapshot +
-    # copy if you need a recovery path.
-    "COST-002-unattached-ebs": _Handler(
-        problem_type="unattached_ebs",
-        extract_resource_id=_volume_id_from_arn,
-        run=_fix_unattached_ebs_via,
+    "SEC-009-kms-rotation": _Handler(
+        problem_type="kms_key_rotation",
+        extract_resource_id=_kms_key_id_from_arn,
+        run=_enable_kms_rotation_via,
     ),
-    # COST-004: untagged billable resources. Adds placeholder tags
-    # ``Environment=untagged`` and ``Owner=chandra-auto-fix`` so the
-    # instance shows up under cost allocation. A human should replace
-    # the placeholders with real values.
-    "COST-004-untagged-billable": _Handler(
-        problem_type="untagged_instance",
-        extract_resource_id=_instance_id_from_arn,
-        run=_fix_untagged_via,
-    ),
-    # COST-003: unassociated Elastic IP. Releases the allocation so the
-    # hourly idle charge stops. Re-checks the association state first and
-    # refuses to release an EIP that has since been attached — releasing
-    # an in-use address would drop live traffic.
-    "COST-003-unused-eip": _Handler(
-        problem_type="unused_eip",
-        extract_resource_id=_eip_alloc_from_arn,
-        run=_release_unused_eip_via,
-    ),
-    # COMP-005: S3 bucket with no default encryption. Enables SSE-S3
-    # (AES256) at the bucket level. Idempotent and non-destructive — only
-    # affects how *new* objects are stored; existing objects are untouched.
     "COMP-005-s3-default-enc": _Handler(
         problem_type="s3_default_encryption",
         extract_resource_id=_s3_bucket_from_arn,
@@ -236,30 +408,225 @@ _HANDLERS: dict[str, _Handler] = {
         run=_enable_ebs_encryption_default_via,
     ),
     # COMP-009: resource missing mandatory tags. Applies placeholder
-    # values (``Environment=untagged``, ``Owner=chandra-auto-fix``,
-    # ``Project=unassigned``) via the Resource Groups Tagging API so the
-    # resource is attributable. Metadata-only; a human sets real values.
+    # values via the Resource Groups Tagging API so the resource is
+    # attributable. Metadata-only; a human sets real values.
     "COMP-009-missing-tags": _Handler(
         problem_type="mandatory_tags",
         extract_resource_id=_identity_arn,
         run=_apply_mandatory_tags_via,
     ),
     # REL-002: business-critical S3 bucket with versioning disabled.
-    # Enables versioning. Idempotent and non-destructive — it only starts
-    # retaining new object versions from now on.
+    # Enables versioning. Idempotent and non-destructive.
     "REL-002-s3-versioning": _Handler(
         problem_type="s3_versioning",
         extract_resource_id=_s3_bucket_from_arn,
         run=_enable_s3_versioning_via,
     ),
-    # SEC-009: customer-managed KMS key without automatic rotation.
-    # Enables annual rotation. Idempotent, transparent to consumers, and
-    # AWS retains old key material so previously-encrypted data still
-    # decrypts.
-    "SEC-009-kms-rotation": _Handler(
-        problem_type="kms_key_rotation",
-        extract_resource_id=_kms_key_id_from_arn,
-        run=_enable_kms_rotation_via,
+    # COST-002: unattached EBS volumes. Delete after verifying the
+    # volume is in the ``available`` state; refuses otherwise.
+    "COST-002-unattached-ebs": _Handler(
+        problem_type="unattached_ebs",
+        extract_resource_id=_volume_id_from_arn,
+        run=_fix_unattached_ebs_via,
+    ),
+    # COST-003: unassociated Elastic IP. Releases the allocation.
+    # Re-checks association state first and refuses if attached.
+    "COST-003-unused-eip": _Handler(
+        problem_type="unused_eip",
+        extract_resource_id=_eip_alloc_from_arn,
+        run=_release_unused_eip_via,
+    ),
+    # COST-004: untagged billable resources. Adds placeholder tags so
+    # the instance shows up under cost allocation.
+    "COST-004-untagged-billable": _Handler(
+        problem_type="untagged_instance",
+        extract_resource_id=_instance_id_from_arn,
+        run=_fix_untagged_via,
+    ),
+
+    # ── New auto-remediable (16) ───────────────────────────────────────────
+
+    # SEC-005: Remove Action:* + Resource:* Allow statements from the IAM
+    # managed policy. Creates a new restricted default version and deletes
+    # the old wildcard version. WARNING: may remove permissions applications
+    # depend on — review the diff after execution.
+    "SEC-005-wildcard-iam": _Handler(
+        problem_type="wildcard_iam",
+        extract_resource_id=_iam_policy_arn_passthrough,
+        run=_remove_wildcard_iam_statements_via,
+    ),
+    # SEC-007: Archive active GuardDuty findings for the resource in this
+    # region. Archived findings are suppressed from the active view but
+    # retained for audit purposes.
+    "SEC-007-guardduty": _Handler(
+        problem_type="guardduty_finding",
+        extract_resource_id=_identity_arn,
+        run=_archive_guardduty_finding_via,
+    ),
+    # SEC-008: Archive the IAM Access Analyzer finding for the reported
+    # resource ARN, suppressing it from the active findings view.
+    "SEC-008-access-analyzer": _Handler(
+        problem_type="access_analyzer_finding",
+        extract_resource_id=_identity_arn,
+        run=_archive_access_analyzer_finding_via,
+    ),
+    # SEC-010: Update Security Hub findings for the resource to workflow
+    # status NOTIFIED — acknowledges review without suppressing the finding.
+    "SEC-010-security-hub": _Handler(
+        problem_type="security_hub_finding",
+        extract_resource_id=_identity_arn,
+        run=_notify_security_hub_finding_via,
+    ),
+    # COMP-002: Create and start a multi-region, log-file-validated
+    # CloudTrail trail. Creates the S3 delivery bucket if needed.
+    "COMP-002-no-cloudtrail": _Handler(
+        problem_type="cloudtrail_multi_region",
+        extract_resource_id=_account_scope_from_arn,
+        run=_enable_cloudtrail_multi_region_via,
+    ),
+    # COMP-003: Create a default Config recorder + delivery channel and
+    # start recording in the region. Creates S3 bucket for delivery.
+    "COMP-003-no-config-recorder": _Handler(
+        problem_type="config_recorder",
+        extract_resource_id=_region_scope_from_arn,
+        run=_enable_config_recorder_via,
+    ),
+    # COMP-006: Create a default daily AWS Backup plan (7-day retention)
+    # at the account level targeting resources tagged Backup=daily.
+    "COMP-006-no-backup-protection": _Handler(
+        problem_type="no_backup_protection",
+        extract_resource_id=_account_scope_from_arn,
+        run=_create_default_backup_plan_via,
+    ),
+    # COMP-007: Trigger Config auto-remediation execution for the
+    # NON_COMPLIANT rule. Requires a remediation action to be pre-configured
+    # on the Config rule; no-ops gracefully if none is configured.
+    "COMP-007-config-rule-noncompliant": _Handler(
+        problem_type="config_rule_noncompliant",
+        extract_resource_id=_config_rule_arn_passthrough,
+        run=_trigger_config_rule_remediation_via,
+    ),
+    # REL-001: Enable Multi-AZ on a single-AZ prod RDS instance.
+    # WARNING: causes a brief automatic failover (~60s). Only runs on
+    # instances in the ``available`` state.
+    "REL-001-rds-single-az": _Handler(
+        problem_type="rds_single_az",
+        extract_resource_id=_rds_instance_arn_passthrough,
+        run=_enable_rds_multi_az_via,
+    ),
+    # REL-003: Create a default DLM EBS snapshot lifecycle policy (daily
+    # at 05:00 UTC, 7-day retention) targeting volumes tagged Backup=daily.
+    "REL-003-no-dlm": _Handler(
+        problem_type="no_dlm_policy",
+        extract_resource_id=_account_scope_from_arn,
+        run=_create_default_dlm_policy_via,
+    ),
+    # REL-004: Create a default regional AWS Backup plan (same policy as
+    # COMP-006 but the finding is region-scoped rather than account-wide).
+    "REL-004-no-backup-plan": _Handler(
+        problem_type="no_backup_plan",
+        extract_resource_id=_account_scope_from_arn,
+        run=_create_default_backup_plan_via,
+    ),
+    # COST-001: Stop an idle EC2 instance (CPU < 5% over 14 days). Tags
+    # the instance with StoppedBy=chandra-auto-fix before stopping.
+    # Only stops instances in the ``running`` state.
+    "COST-001-idle-ec2": _Handler(
+        problem_type="idle_ec2",
+        extract_resource_id=_instance_id_from_arn,
+        run=_stop_idle_ec2_via,
+    ),
+    # PERF-002: Stop an idle RDS instance (CPU < 10% AND connections < 5
+    # over 14 days). AWS auto-restarts stopped RDS after 7 days.
+    "PERF-002-rds-idle": _Handler(
+        problem_type="rds_idle",
+        extract_resource_id=_rds_instance_arn_passthrough,
+        run=_stop_idle_rds_via,
+    ),
+    # PERF-003: Stop → change to Compute Optimizer recommended type (or
+    # next-smaller same-family type if CO unavailable) → start.
+    # WARNING: causes downtime for the stop/start cycle (~2-5 min).
+    "PERF-003-oversized-ec2": _Handler(
+        problem_type="oversized_ec2",
+        extract_resource_id=_instance_id_from_arn,
+        run=_fix_ec2_instance_type_via,
+    ),
+    # PERF-006: Same stop/resize/start as PERF-003 but driven by Compute
+    # Optimizer's OVER_PROVISIONED recommendation directly.
+    "PERF-006-co-ec2": _Handler(
+        problem_type="co_ec2_over_provisioned",
+        extract_resource_id=_instance_id_from_arn,
+        run=_fix_ec2_instance_type_via,
+    ),
+    # PERF-007: Update Lambda function memory to Compute Optimizer's top
+    # recommendation. No downtime — applies to new invocations immediately.
+    "PERF-007-co-lambda": _Handler(
+        problem_type="lambda_over_provisioned",
+        extract_resource_id=_lambda_function_arn_passthrough,
+        run=_update_lambda_memory_via,
+    ),
+
+    # ── Observation-only (7 — technically impossible or destructive) ───────
+
+    # SEC-004: AWS has no API to enroll MFA on the root account.
+    "SEC-004-root-mfa": _ObservationOnlyHandler(
+        problem_type="root_mfa",
+        skip_reason=(
+            "AWS has no API to enroll MFA on the root account — "
+            "this must be done manually in the AWS console."
+        ),
+    ),
+    # SEC-006: Find all Config rules where this resource is NON_COMPLIANT and
+    # trigger StartRemediationExecution for each. Requires remediation actions
+    # to be pre-configured on each rule; rules without one are skipped gracefully.
+    "SEC-006-config-noncompliant": _Handler(
+        problem_type="config_noncompliant_resource",
+        extract_resource_id=_lenient_resource_id,
+        run=_trigger_config_resource_remediation_via,
+    ),
+    # COMP-001: Create an encrypted RDS snapshot, copy it with the default
+    # aws/rds KMS key, and restore a NEW instance named <original>-encrypted.
+    # The original instance is NOT deleted — it is tagged for manual cutover.
+    # WARNING: takes several minutes; new instance has a different endpoint.
+    "COMP-001-rds-unencrypted": _Handler(
+        problem_type="rds_unencrypted",
+        extract_resource_id=_rds_instance_arn_passthrough,
+        run=_create_encrypted_rds_replacement_via,
+    ),
+    # COMP-004: Snapshot an unencrypted EBS volume, copy the snapshot with
+    # encryption enabled, and create a new encrypted volume from it.
+    # If the volume is already detached (available), also deletes the original.
+    # If in-use, the original is tagged for manual swap.
+    "COMP-004-ebs-unencrypted": _Handler(
+        problem_type="ebs_unencrypted_volume",
+        extract_resource_id=_volume_id_from_arn,
+        run=_create_encrypted_ebs_replacement_via,
+    ),
+    # PERF-001: Create a Launch Template from the instance's current config,
+    # create an Auto Scaling Group, and attach the existing instance to it.
+    # Sets MinSize=1, MaxSize=3, DesiredCapacity=1 as baseline defaults.
+    "PERF-001-no-asg": _Handler(
+        problem_type="no_autoscaling_group",
+        extract_resource_id=_instance_id_from_arn,
+        run=_migrate_ec2_to_asg_via,
+    ),
+    # PERF-004: X-Ray error rates are application-level — no AWS control
+    # plane API can fix application code errors.
+    "PERF-004-xray-error-rate": _ObservationOnlyHandler(
+        problem_type="xray_error_rate",
+        skip_reason=(
+            "Application-level X-Ray error rates require developer investigation. "
+            "No AWS control plane API can fix application code errors."
+        ),
+    ),
+    # PERF-005: X-Ray latency is application-level — no AWS control plane
+    # API can fix application performance issues.
+    "PERF-005-xray-latency": _ObservationOnlyHandler(
+        problem_type="xray_latency",
+        skip_reason=(
+            "Application-level X-Ray latency requires developer investigation. "
+            "No AWS control plane API can fix application performance issues."
+        ),
     ),
 }
 
@@ -297,11 +664,33 @@ class ActionExecutor:
         self.dry_run = dry_run
         self.region = region
         factory = get_default_factory()
+        # Core clients (existing)
         self.s3_client = factory.client("s3", region=region)
         self.iam_client = factory.client("iam", region=region)
         self.ec2_client = factory.client("ec2", region=region)
         self.kms_client = factory.client("kms", region=region)
         self.tagging_client = factory.client("resourcegroupstaggingapi", region=region)
+        # New clients for additional handlers
+        self.sts_client = factory.client("sts", region=region)
+        self.guardduty_client = factory.client("guardduty", region=region)
+        self.accessanalyzer_client = factory.client("accessanalyzer", region=region)
+        self.securityhub_client = factory.client("securityhub", region=region)
+        self.cloudtrail_client = factory.client("cloudtrail", region=region)
+        self.config_client = factory.client("config", region=region)
+        self.backup_client = factory.client("backup", region=region)
+        self.dlm_client = factory.client("dlm", region=region)
+        self.rds_client = factory.client("rds", region=region)
+        self.lambda_client = factory.client("lambda", region=region)
+        self.co_client = factory.client("compute-optimizer", region=region)
+        self.asg_client = factory.client("autoscaling", region=region)
+
+    def _get_account_id(self) -> str:
+        """Return the current AWS account ID via STS GetCallerIdentity."""
+        try:
+            return self.sts_client.get_caller_identity()["Account"]
+        except Exception as exc:
+            logger.warning("action._get_account_id.failed", error=str(exc))
+            return "unknown"
 
     def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """
@@ -353,6 +742,7 @@ class ActionExecutor:
             # an if/elif chain) so adding a handler is one line and the
             # dispatch stays flat.
             dispatch: dict[str, Callable[[str, str], None]] = {
+                # Existing
                 "public_s3": self._fix_public_s3,
                 "open_security_group": self._fix_open_sg,
                 "stale_iam_key": self._disable_iam_key,
@@ -364,6 +754,27 @@ class ActionExecutor:
                 "ebs_encryption_by_default": self._enable_ebs_encryption_by_default,
                 "kms_key_rotation": self._enable_kms_key_rotation,
                 "mandatory_tags": self._apply_mandatory_tags,
+                # New
+                "wildcard_iam": self._remove_wildcard_iam_statements,
+                "guardduty_finding": self._archive_guardduty_finding,
+                "access_analyzer_finding": self._archive_access_analyzer_finding,
+                "security_hub_finding": self._notify_security_hub_finding,
+                "cloudtrail_multi_region": self._enable_cloudtrail_multi_region,
+                "config_recorder": self._enable_config_recorder,
+                "no_backup_protection": self._create_default_backup_plan,
+                "no_backup_plan": self._create_default_backup_plan,
+                "config_rule_noncompliant": self._trigger_config_rule_remediation,
+                "config_noncompliant_resource": self._trigger_config_resource_remediation,
+                "rds_single_az": self._enable_rds_multi_az,
+                "rds_unencrypted": self._create_encrypted_rds_replacement,
+                "ebs_unencrypted_volume": self._create_encrypted_ebs_replacement,
+                "no_autoscaling_group": self._migrate_ec2_to_asg,
+                "no_dlm_policy": self._create_default_dlm_policy,
+                "idle_ec2": self._stop_idle_ec2,
+                "rds_idle": self._stop_idle_rds,
+                "oversized_ec2": self._fix_ec2_instance_type,
+                "co_ec2_over_provisioned": self._fix_ec2_instance_type,
+                "lambda_over_provisioned": self._update_lambda_memory,
             }
             handler = dispatch.get(problem_type) if isinstance(problem_type, str) else None
             if handler is None:
@@ -393,6 +804,8 @@ class ActionExecutor:
                 "audit_log": audit_entry,
                 "error": str(e),
             }
+
+    # ── Existing remediation methods ──────────────────────────────────────
 
     def _fix_public_s3(self, bucket_name: str, region: str) -> None:
         """Make S3 bucket private by enabling Block Public Access (modern AWS standard)."""
@@ -566,6 +979,1147 @@ class ActionExecutor:
         if failed:
             raise ValueError(f"Failed to tag {resource_arn}: {failed}")
 
+    # ── New remediation methods ───────────────────────────────────────────
+
+    def _remove_wildcard_iam_statements(self, policy_arn: str, region: str) -> None:
+        """Remove Action:* + Resource:* Allow statements from an IAM managed policy.
+
+        Reads the current default policy version, strips every Allow statement
+        that has both Action:* and Resource:*, then creates a new policy version
+        with the sanitised document and sets it as the default. The old wildcard
+        version is deleted to stay within the 5-version limit.
+
+        WARNING: This removes broad permissions. Applications relying on these
+        permissions will lose access. Review the change after execution.
+        """
+        logger.info("action.remove_wildcard_iam", policy_arn=policy_arn)
+        resp = self.iam_client.get_policy(PolicyArn=policy_arn)
+        version_id = resp["Policy"]["DefaultVersionId"]
+        ver = self.iam_client.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)
+        doc = ver["PolicyVersion"]["Document"]
+
+        if isinstance(doc, str):
+            doc = _json.loads(doc)
+
+        def _is_wildcard_stmt(stmt: dict[str, Any]) -> bool:
+            if stmt.get("Effect") != "Allow":
+                return False
+            actions = stmt.get("Action", [])
+            resources = stmt.get("Resource", [])
+            has_wildcard_action = actions == "*" or (
+                isinstance(actions, list) and "*" in actions
+            )
+            has_wildcard_resource = resources == "*" or (
+                isinstance(resources, list) and "*" in resources
+            )
+            return has_wildcard_action and has_wildcard_resource
+
+        original_stmts = doc.get("Statement", [])
+        if isinstance(original_stmts, dict):
+            original_stmts = [original_stmts]
+        filtered_stmts = [s for s in original_stmts if not _is_wildcard_stmt(s)]
+
+        if len(filtered_stmts) == len(original_stmts):
+            logger.info("action.remove_wildcard_iam.no_change", policy_arn=policy_arn)
+            return
+
+        new_doc = {**doc, "Statement": filtered_stmts}
+        self.iam_client.create_policy_version(
+            PolicyArn=policy_arn,
+            PolicyDocument=_json.dumps(new_doc),
+            SetAsDefault=True,
+        )
+        # Clean up old version to stay within the 5-version limit.
+        self.iam_client.delete_policy_version(PolicyArn=policy_arn, VersionId=version_id)
+        removed = len(original_stmts) - len(filtered_stmts)
+        logger.info(
+            "action.remove_wildcard_iam.done",
+            policy_arn=policy_arn,
+            removed=removed,
+        )
+
+    def _archive_guardduty_finding(self, resource_arn: str, region: str) -> None:
+        """Archive active GuardDuty findings associated with the resource in this region.
+
+        Lists all GuardDuty detectors in the region, retrieves all active
+        (non-archived) findings, and archives them. Archived findings are
+        suppressed from the active view but retained for audit purposes.
+        """
+        logger.info("action.archive_guardduty", resource_arn=resource_arn, region=region)
+        detector_ids: list[str] = []
+        try:
+            paginator = self.guardduty_client.get_paginator("list_detectors")
+            for page in paginator.paginate():
+                detector_ids.extend(page.get("DetectorIds", []))
+        except Exception as exc:
+            raise ValueError(f"Failed to list GuardDuty detectors: {exc}") from exc
+
+        if not detector_ids:
+            logger.info("action.archive_guardduty.no_detectors", region=region)
+            return
+
+        archived_total = 0
+        for det_id in detector_ids:
+            finding_ids: list[str] = []
+            paginator = self.guardduty_client.get_paginator("list_findings")
+            for page in paginator.paginate(
+                DetectorId=det_id,
+                FindingCriteria={
+                    "Criterion": {"service.archived": {"Eq": ["false"]}}
+                },
+            ):
+                finding_ids.extend(page.get("FindingIds", []))
+
+            # ArchiveFindings accepts up to 50 IDs per call.
+            for i in range(0, len(finding_ids), 50):
+                batch = finding_ids[i : i + 50]
+                self.guardduty_client.archive_findings(
+                    DetectorId=det_id, FindingIds=batch
+                )
+                archived_total += len(batch)
+
+        logger.info(
+            "action.archive_guardduty.done",
+            region=region,
+            archived=archived_total,
+        )
+
+    def _archive_access_analyzer_finding(self, resource_arn: str, region: str) -> None:
+        """Archive IAM Access Analyzer ACTIVE findings for the target resource.
+
+        Iterates all analyzers in the region, filters for ACTIVE findings
+        whose resource matches the target ARN, and archives each one.
+        Archived findings are removed from the active findings view.
+        """
+        logger.info(
+            "action.archive_access_analyzer",
+            resource_arn=resource_arn,
+            region=region,
+        )
+        analyzers: list[dict[str, Any]] = []
+        for page in self.accessanalyzer_client.get_paginator("list_analyzers").paginate():
+            analyzers.extend(page.get("analyzers", []))
+
+        archived = 0
+        for analyzer in analyzers:
+            analyzer_arn = analyzer["arn"]
+            try:
+                for page in self.accessanalyzer_client.get_paginator(
+                    "list_findings"
+                ).paginate(
+                    analyzerArn=analyzer_arn,
+                    filter={
+                        "status": {"eq": ["ACTIVE"]},
+                        "resource": {"eq": [resource_arn]},
+                    },
+                ):
+                    for finding in page.get("findings", []):
+                        self.accessanalyzer_client.update_findings(
+                            analyzerArn=analyzer_arn,
+                            status="ARCHIVED",
+                            ids=[finding["id"]],
+                        )
+                        archived += 1
+            except Exception as exc:
+                logger.warning(
+                    "action.archive_access_analyzer.skip_analyzer",
+                    analyzer=analyzer_arn,
+                    error=str(exc),
+                )
+
+        logger.info(
+            "action.archive_access_analyzer.done",
+            resource_arn=resource_arn,
+            archived=archived,
+        )
+
+    def _notify_security_hub_finding(self, resource_arn: str, region: str) -> None:
+        """Update Security Hub ACTIVE findings for the resource to WorkflowStatus=NOTIFIED.
+
+        Fetches all ACTIVE, non-SUPPRESSED findings whose ResourceId matches
+        the target ARN and updates their workflow status to NOTIFIED —
+        acknowledging review without suppressing the finding from dashboards.
+        """
+        logger.info(
+            "action.notify_security_hub",
+            resource_arn=resource_arn,
+            region=region,
+        )
+        filters = {
+            "ResourceId": [{"Value": resource_arn, "Comparison": "EQUALS"}],
+            "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+            "WorkflowStatus": [{"Value": "SUPPRESSED", "Comparison": "NOT_EQUALS"}],
+        }
+        finding_identifiers: list[dict[str, str]] = []
+        for page in self.securityhub_client.get_paginator("get_findings").paginate(
+            Filters=filters
+        ):
+            for f in page.get("Findings", []):
+                finding_identifiers.append(
+                    {"Id": f["Id"], "ProductArn": f["ProductArn"]}
+                )
+
+        # BatchUpdateFindings accepts up to 100 identifiers per call.
+        for i in range(0, len(finding_identifiers), 100):
+            batch = finding_identifiers[i : i + 100]
+            self.securityhub_client.batch_update_findings(
+                FindingIdentifiers=batch,
+                Workflow={"Status": "NOTIFIED"},
+            )
+
+        logger.info(
+            "action.notify_security_hub.done",
+            resource_arn=resource_arn,
+            notified=len(finding_identifiers),
+        )
+
+    def _enable_cloudtrail_multi_region(self, account_id: str, region: str) -> None:
+        """Create and start a multi-region, log-file-validated CloudTrail trail (COMP-002).
+
+        Creates an S3 bucket named ``chandra-cloudtrail-<account_id>`` if it does
+        not already exist, attaches the required CloudTrail bucket policy, then
+        creates a trail named ``chandra-multi-region-trail`` and starts logging.
+        Idempotent: skips creation steps if the trail already exists.
+        """
+        logger.info(
+            "action.enable_cloudtrail",
+            account_id=account_id,
+            region=region,
+        )
+        trail_name = "chandra-multi-region-trail"
+        bucket_name = f"chandra-cloudtrail-{account_id}"
+
+        # Ensure S3 delivery bucket exists with the required CloudTrail policy.
+        try:
+            self.s3_client.head_bucket(Bucket=bucket_name)
+        except Exception:
+            try:
+                if region == "us-east-1":
+                    self.s3_client.create_bucket(Bucket=bucket_name)
+                else:
+                    self.s3_client.create_bucket(
+                        Bucket=bucket_name,
+                        CreateBucketConfiguration={"LocationConstraint": region},
+                    )
+            except Exception as exc:
+                # BucketAlreadyOwnedByYou is fine; other errors bubble up.
+                if "BucketAlreadyOwnedByYou" not in str(exc):
+                    raise
+
+            self.s3_client.put_bucket_policy(
+                Bucket=bucket_name,
+                Policy=_json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "AWSCloudTrailAclCheck",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "cloudtrail.amazonaws.com"},
+                            "Action": "s3:GetBucketAcl",
+                            "Resource": f"arn:aws:s3:::{bucket_name}",
+                        },
+                        {
+                            "Sid": "AWSCloudTrailWrite",
+                            "Effect": "Allow",
+                            "Principal": {"Service": "cloudtrail.amazonaws.com"},
+                            "Action": "s3:PutObject",
+                            "Resource": (
+                                f"arn:aws:s3:::{bucket_name}"
+                                f"/AWSLogs/{account_id}/*"
+                            ),
+                            "Condition": {
+                                "StringEquals": {
+                                    "s3:x-amz-acl": "bucket-owner-full-control"
+                                }
+                            },
+                        },
+                    ],
+                }),
+            )
+
+        # Create the trail (idempotent — TrailAlreadyExistsException is fine).
+        try:
+            self.cloudtrail_client.create_trail(
+                Name=trail_name,
+                S3BucketName=bucket_name,
+                IsMultiRegionTrail=True,
+                EnableLogFileValidation=True,
+                IncludeGlobalServiceEvents=True,
+            )
+        except self.cloudtrail_client.exceptions.TrailAlreadyExistsException:
+            logger.info(
+                "action.enable_cloudtrail.already_exists",
+                trail=trail_name,
+            )
+
+        self.cloudtrail_client.start_logging(Name=trail_name)
+        logger.info(
+            "action.enable_cloudtrail.done",
+            trail=trail_name,
+            bucket=bucket_name,
+        )
+
+    def _enable_config_recorder(self, scope: str, region: str) -> None:
+        """Create a Config recorder + delivery channel and start recording (COMP-003).
+
+        Uses ``default`` as both the recorder and delivery channel name.
+        Creates an S3 bucket named ``chandra-config-<account_id>-<region>``
+        for delivery if it does not already exist. Relies on the AWS Config
+        service-linked role (created automatically on first Config use).
+        Idempotent: re-running on an active recorder is a no-op.
+        """
+        logger.info("action.enable_config_recorder", scope=scope, region=region)
+        account_id = self._get_account_id()
+        bucket_name = f"chandra-config-{account_id}-{region}"
+
+        try:
+            if region == "us-east-1":
+                self.s3_client.create_bucket(Bucket=bucket_name)
+            else:
+                self.s3_client.create_bucket(
+                    Bucket=bucket_name,
+                    CreateBucketConfiguration={"LocationConstraint": region},
+                )
+        except Exception as exc:
+            if "BucketAlreadyOwnedByYou" not in str(exc) and "already exists" not in str(exc):
+                logger.warning(
+                    "action.enable_config_recorder.bucket_warning",
+                    error=str(exc),
+                )
+
+        role_arn = (
+            f"arn:aws:iam::{account_id}:role/aws-service-role/"
+            "config.amazonaws.com/AWSServiceRoleForConfig"
+        )
+        self.config_client.put_configuration_recorder(
+            ConfigurationRecorder={
+                "name": "default",
+                "roleARN": role_arn,
+                "recordingGroup": {
+                    "allSupported": True,
+                    "includeGlobalResourceTypes": True,
+                },
+            }
+        )
+        self.config_client.put_delivery_channel(
+            DeliveryChannel={
+                "name": "default",
+                "s3BucketName": bucket_name,
+            }
+        )
+        self.config_client.start_configuration_recorder(
+            ConfigurationRecorderName="default"
+        )
+        logger.info("action.enable_config_recorder.done", region=region)
+
+    def _create_default_backup_plan(self, account_id: str, region: str) -> None:
+        """Create a default daily AWS Backup plan with 7-day retention (COMP-006, REL-004).
+
+        Plan name: ``chandra-default-backup-plan``. Backs up all resources
+        tagged ``Backup=daily`` daily at 05:00 UTC, retaining snapshots for
+        7 days. Idempotent: skips creation if the plan already exists.
+        """
+        logger.info(
+            "action.create_backup_plan",
+            account_id=account_id,
+            region=region,
+        )
+        plan_name = "chandra-default-backup-plan"
+
+        existing_plans = self.backup_client.list_backup_plans().get(
+            "BackupPlansList", []
+        )
+        if any(p["BackupPlanName"] == plan_name for p in existing_plans):
+            logger.info("action.create_backup_plan.exists", name=plan_name)
+            return
+
+        resp = self.backup_client.create_backup_plan(
+            BackupPlan={
+                "BackupPlanName": plan_name,
+                "Rules": [
+                    {
+                        "RuleName": "DailyBackup",
+                        "TargetBackupVaultName": "Default",
+                        "ScheduleExpression": "cron(0 5 * * ? *)",
+                        "Lifecycle": {"DeleteAfterDays": 7},
+                    }
+                ],
+            }
+        )
+        plan_id = resp["BackupPlanId"]
+
+        self.backup_client.create_backup_selection(
+            BackupPlanId=plan_id,
+            BackupSelection={
+                "SelectionName": "AllTaggedResources",
+                "IamRoleArn": (
+                    f"arn:aws:iam::{account_id}:role/service-role/"
+                    "AWSBackupDefaultServiceRole"
+                ),
+                "ListOfTags": [
+                    {
+                        "ConditionType": "STRINGEQUALS",
+                        "ConditionKey": "Backup",
+                        "ConditionValue": "daily",
+                    }
+                ],
+            },
+        )
+        logger.info("action.create_backup_plan.done", plan_id=plan_id)
+
+    def _trigger_config_rule_remediation(self, rule_identifier: str, region: str) -> None:
+        """Trigger Config auto-remediation execution for a NON_COMPLIANT rule (COMP-007).
+
+        Calls ``StartRemediationExecution`` for the rule's non-compliant
+        resources. Requires a remediation action to be pre-configured on the
+        Config rule; no-ops gracefully if none is configured or no non-compliant
+        resources are found.
+        """
+        logger.info(
+            "action.trigger_config_remediation",
+            rule=rule_identifier,
+            region=region,
+        )
+        # Extract rule name from ARN if necessary.
+        rule_name = (
+            rule_identifier.rsplit("/", 1)[-1]
+            if "/" in rule_identifier
+            else rule_identifier
+        )
+
+        resource_keys: list[dict[str, str]] = []
+        try:
+            for page in self.config_client.get_paginator(
+                "get_compliance_details_by_config_rule"
+            ).paginate(
+                ConfigRuleName=rule_name,
+                ComplianceTypes=["NON_COMPLIANT"],
+            ):
+                for result in page.get("EvaluationResults", []):
+                    qualifier = (
+                        result.get("EvaluationResultIdentifier", {})
+                        .get("EvaluationResultQualifier", {})
+                    )
+                    resource_keys.append(
+                        {
+                            "resourceType": qualifier.get("ResourceType", ""),
+                            "resourceId": qualifier.get("ResourceId", ""),
+                        }
+                    )
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to get compliance details for rule {rule_name}: {exc}"
+            ) from exc
+
+        if not resource_keys:
+            logger.info(
+                "action.trigger_config_remediation.no_resources",
+                rule=rule_name,
+            )
+            return
+
+        # StartRemediationExecution accepts up to 25 resource keys per call.
+        self.config_client.start_remediation_execution(
+            ConfigRuleName=rule_name,
+            ResourceKeys=resource_keys[:25],
+        )
+        logger.info(
+            "action.trigger_config_remediation.done",
+            rule=rule_name,
+            resources=len(resource_keys[:25]),
+        )
+
+    def _enable_rds_multi_az(self, db_arn: str, region: str) -> None:
+        """Enable Multi-AZ on a single-AZ RDS instance (REL-001).
+
+        Extracts the DB instance identifier from the ARN and calls
+        ModifyDBInstance with ApplyImmediately=True. Checks that the instance
+        is in ``available`` state before modifying; refuses otherwise.
+
+        WARNING: Causes a brief automatic failover (~60 seconds).
+        """
+        logger.info("action.enable_rds_multi_az", db_arn=db_arn, region=region)
+        db_id = db_arn.rsplit(":", 1)[-1]
+        resp = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_id)
+        instances = resp.get("DBInstances", [])
+        if not instances:
+            raise ValueError(f"RDS instance {db_id} not found")
+        db = instances[0]
+        if db.get("MultiAZ"):
+            logger.info("action.enable_rds_multi_az.already_enabled", db=db_id)
+            return
+        db_status = db.get("DBInstanceStatus", "unknown")
+        if db_status != "available":
+            raise ValueError(
+                f"RDS {db_id} is in state {db_status!r}; "
+                "Multi-AZ can only be enabled on an 'available' instance."
+            )
+        self.rds_client.modify_db_instance(
+            DBInstanceIdentifier=db_id,
+            MultiAZ=True,
+            ApplyImmediately=True,
+        )
+        logger.info("action.enable_rds_multi_az.done", db=db_id)
+
+    def _create_default_dlm_policy(self, account_id: str, region: str) -> None:
+        """Create a default DLM EBS snapshot lifecycle policy (REL-003).
+
+        Policy: daily snapshots at 05:00 UTC, retain 7 snapshots, targeting
+        EBS volumes tagged ``Backup=daily``. Uses the default DLM execution
+        role (``AWSDataLifecycleManagerDefaultRole``). Idempotent: skips if
+        a chandra-managed DLM policy already exists in the region.
+        """
+        logger.info(
+            "action.create_dlm_policy",
+            account_id=account_id,
+            region=region,
+        )
+        existing = self.dlm_client.get_lifecycle_policies().get("Policies", [])
+        if any("chandra" in p.get("Description", "") for p in existing):
+            logger.info("action.create_dlm_policy.exists", region=region)
+            return
+
+        role_arn = (
+            f"arn:aws:iam::{account_id}:role/AWSDataLifecycleManagerDefaultRole"
+        )
+        self.dlm_client.create_lifecycle_policy(
+            ExecutionRoleArn=role_arn,
+            Description="chandra-auto: daily EBS snapshots, 7-snapshot retention",
+            State="ENABLED",
+            PolicyDetails={
+                "PolicyType": "EBS_SNAPSHOT_MANAGEMENT",
+                "ResourceTypes": ["VOLUME"],
+                "TargetTags": [{"Key": "Backup", "Value": "daily"}],
+                "Schedules": [
+                    {
+                        "Name": "DailySnapshots",
+                        "CreateRule": {
+                            "Interval": 24,
+                            "IntervalUnit": "HOURS",
+                            "Times": ["05:00"],
+                        },
+                        "RetainRule": {"Count": 7},
+                        "CopyTags": True,
+                    }
+                ],
+            },
+        )
+        logger.info("action.create_dlm_policy.done", region=region)
+
+    def _stop_idle_ec2(self, instance_id: str, region: str) -> None:
+        """Stop an idle EC2 instance (COST-001).
+
+        Tags the instance with ``StoppedBy=chandra-auto-fix`` and
+        ``StopReason=idle-cpu-under-5pct`` before stopping, providing a
+        clear audit trail and making it easy to identify auto-stopped
+        instances for manual review or restart.
+
+        Only stops instances in the ``running`` state; raises for all others.
+        """
+        logger.info("action.stop_idle_ec2", instance_id=instance_id, region=region)
+        resp = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = resp.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"EC2 instance {instance_id} not found")
+        state = reservations[0]["Instances"][0].get("State", {}).get("Name")
+        if state != "running":
+            raise ValueError(
+                f"Instance {instance_id} is in state {state!r}; "
+                "only 'running' instances are stopped."
+            )
+        self.ec2_client.create_tags(
+            Resources=[instance_id],
+            Tags=[
+                {"Key": "StoppedBy", "Value": "chandra-auto-fix"},
+                {"Key": "StopReason", "Value": "idle-cpu-under-5pct"},
+            ],
+        )
+        self.ec2_client.stop_instances(InstanceIds=[instance_id])
+        logger.info("action.stop_idle_ec2.done", instance_id=instance_id)
+
+    def _stop_idle_rds(self, db_arn: str, region: str) -> None:
+        """Stop an idle RDS instance (PERF-002).
+
+        Adds ``StoppedBy=chandra-auto-fix`` and ``StopReason=idle-cpu-and-connections``
+        tags to the instance before stopping. AWS automatically restarts stopped
+        RDS instances after 7 days.
+
+        Only stops instances in the ``available`` state; raises for all others.
+        """
+        logger.info("action.stop_idle_rds", db_arn=db_arn, region=region)
+        db_id = db_arn.rsplit(":", 1)[-1]
+        resp = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_id)
+        instances = resp.get("DBInstances", [])
+        if not instances:
+            raise ValueError(f"RDS instance {db_id} not found")
+        db_status = instances[0].get("DBInstanceStatus", "unknown")
+        if db_status != "available":
+            raise ValueError(
+                f"RDS {db_id} is in state {db_status!r}; "
+                "only 'available' instances can be stopped."
+            )
+        self.rds_client.add_tags_to_resource(
+            ResourceName=db_arn,
+            Tags=[
+                {"Key": "StoppedBy", "Value": "chandra-auto-fix"},
+                {"Key": "StopReason", "Value": "idle-cpu-and-connections"},
+            ],
+        )
+        self.rds_client.stop_db_instance(DBInstanceIdentifier=db_id)
+        logger.info("action.stop_idle_rds.done", db=db_id)
+
+    def _fix_ec2_instance_type(self, instance_id: str, region: str) -> None:
+        """Stop → change instance type → start an over-provisioned EC2 (PERF-003, PERF-006).
+
+        Queries Compute Optimizer for the recommended instance type. Falls back
+        to a conservative one-step downsize within the same family if Compute
+        Optimizer is not opted in or has no recommendation.
+
+        Tags the instance with ``ChandraResizedFrom`` and ``ChandraResizedBy``
+        for audit. Only resizes running or stopped instances; re-starts the
+        instance if it was running before the change.
+
+        WARNING: Causes downtime for the stop/start cycle (~2-5 minutes).
+        """
+        logger.info(
+            "action.fix_ec2_instance_type",
+            instance_id=instance_id,
+            region=region,
+        )
+
+        # 1. Try to get the Compute Optimizer recommendation.
+        recommended_type: str | None = None
+        try:
+            account_id = self._get_account_id()
+            instance_arn = (
+                f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
+            )
+            co_resp = self.co_client.get_ec2_instance_recommendations(
+                instanceArns=[instance_arn]
+            )
+            recs = co_resp.get("instanceRecommendations", [])
+            if recs and recs[0].get("recommendationOptions"):
+                recommended_type = recs[0]["recommendationOptions"][0].get(
+                    "instanceType"
+                )
+        except Exception as exc:
+            logger.warning(
+                "action.fix_ec2_instance_type.co_unavailable",
+                instance_id=instance_id,
+                error=str(exc),
+            )
+
+        # 2. Describe the instance to get current type and state.
+        resp = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = resp.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"EC2 instance {instance_id} not found")
+        inst = reservations[0]["Instances"][0]
+        current_type = inst.get("InstanceType", "")
+        state = inst.get("State", {}).get("Name", "")
+
+        if state not in ("running", "stopped"):
+            raise ValueError(
+                f"Instance {instance_id} is in state {state!r}; "
+                "can only resize 'running' or 'stopped' instances."
+            )
+
+        # 3. Fall back to a one-step downsize within the same family.
+        if recommended_type is None:
+            _DOWNSIZE_MAP = {
+                "nano": "nano",
+                "micro": "nano",
+                "small": "micro",
+                "medium": "small",
+                "large": "medium",
+                "xlarge": "large",
+                "2xlarge": "xlarge",
+                "4xlarge": "2xlarge",
+                "8xlarge": "4xlarge",
+                "12xlarge": "8xlarge",
+                "16xlarge": "12xlarge",
+                "24xlarge": "16xlarge",
+                "32xlarge": "24xlarge",
+            }
+            family, _, size = current_type.partition(".")
+            recommended_type = f"{family}.{_DOWNSIZE_MAP.get(size, size)}"
+
+        if recommended_type == current_type:
+            logger.info(
+                "action.fix_ec2_instance_type.no_change",
+                instance_id=instance_id,
+                type=current_type,
+            )
+            return
+
+        # 4. Stop if running.
+        was_running = state == "running"
+        if was_running:
+            self.ec2_client.stop_instances(InstanceIds=[instance_id])
+            waiter = self.ec2_client.get_waiter("instance_stopped")
+            waiter.wait(InstanceIds=[instance_id])
+
+        # 5. Change instance type.
+        self.ec2_client.modify_instance_attribute(
+            InstanceId=instance_id,
+            InstanceType={"Value": recommended_type},
+        )
+        self.ec2_client.create_tags(
+            Resources=[instance_id],
+            Tags=[
+                {"Key": "ChandraResizedFrom", "Value": current_type},
+                {"Key": "ChandraResizedBy", "Value": "chandra-auto-fix"},
+            ],
+        )
+
+        # 6. Restart if it was running before.
+        if was_running:
+            self.ec2_client.start_instances(InstanceIds=[instance_id])
+
+        logger.info(
+            "action.fix_ec2_instance_type.done",
+            instance_id=instance_id,
+            from_type=current_type,
+            to_type=recommended_type,
+        )
+
+    def _update_lambda_memory(self, function_arn: str, region: str) -> None:
+        """Update Lambda memory to Compute Optimizer's recommendation (PERF-007).
+
+        Queries Compute Optimizer for the top memory recommendation for the
+        function and applies it via UpdateFunctionConfiguration. No downtime —
+        Lambda applies the new memory configuration to subsequent invocations
+        immediately.
+
+        Raises if Compute Optimizer has no recommendation for the function.
+        """
+        logger.info(
+            "action.update_lambda_memory",
+            function_arn=function_arn,
+            region=region,
+        )
+        co_resp = self.co_client.get_lambda_function_recommendations(
+            functionArns=[function_arn]
+        )
+        recs = co_resp.get("lambdaFunctionRecommendations", [])
+        if not recs or not recs[0].get("memorySizeRecommendationOptions"):
+            raise ValueError(
+                f"No Compute Optimizer memory recommendation found for {function_arn}"
+            )
+
+        recommended_memory: int = recs[0]["memorySizeRecommendationOptions"][0][
+            "memorySize"
+        ]
+        current_memory: int = recs[0].get("currentMemorySize", 0)
+
+        if recommended_memory == current_memory:
+            logger.info(
+                "action.update_lambda_memory.no_change",
+                function_arn=function_arn,
+                memory_mb=current_memory,
+            )
+            return
+
+        self.lambda_client.update_function_configuration(
+            FunctionName=function_arn,
+            MemorySize=recommended_memory,
+        )
+        logger.info(
+            "action.update_lambda_memory.done",
+            function_arn=function_arn,
+            from_mb=current_memory,
+            to_mb=recommended_memory,
+        )
+
+    def _trigger_config_resource_remediation(self, resource_id: str, region: str) -> None:
+        """Trigger Config auto-remediation for every rule where this resource is NON_COMPLIANT.
+
+        Scans all Config rules in the region, finds rules where the given resource
+        ID or ARN is non-compliant, and calls StartRemediationExecution for each.
+        Rules that have no remediation action configured are silently skipped.
+        Raises only if no Config rules at all could be listed.
+        """
+        logger.info(
+            "action.trigger_config_resource_remediation",
+            resource_id=resource_id,
+            region=region,
+        )
+        rules: list[dict[str, Any]] = []
+        for page in self.config_client.get_paginator("describe_config_rules").paginate():
+            rules.extend(page.get("ConfigRules", []))
+
+        if not rules:
+            raise ValueError(f"No Config rules found in region {region}")
+
+        triggered = 0
+        for rule in rules:
+            rule_name = rule["ConfigRuleName"]
+            try:
+                for page in self.config_client.get_paginator(
+                    "get_compliance_details_by_config_rule"
+                ).paginate(
+                    ConfigRuleName=rule_name,
+                    ComplianceTypes=["NON_COMPLIANT"],
+                ):
+                    for result in page.get("EvaluationResults", []):
+                        qualifier = (
+                            result.get("EvaluationResultIdentifier", {})
+                            .get("EvaluationResultQualifier", {})
+                        )
+                        r_id = qualifier.get("ResourceId", "")
+                        r_arn = qualifier.get("ResourceArn", "")
+                        # Match if the resource_id appears in either field.
+                        if resource_id in (r_id, r_arn) or r_id in resource_id:
+                            try:
+                                self.config_client.start_remediation_execution(
+                                    ConfigRuleName=rule_name,
+                                    ResourceKeys=[
+                                        {
+                                            "resourceType": qualifier.get("ResourceType", ""),
+                                            "resourceId": r_id,
+                                        }
+                                    ],
+                                )
+                                triggered += 1
+                                logger.info(
+                                    "action.trigger_config_resource_remediation.triggered",
+                                    rule=rule_name,
+                                    resource=r_id,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "action.trigger_config_resource_remediation.skip",
+                                    rule=rule_name,
+                                    reason=str(exc),
+                                )
+            except Exception as exc:
+                logger.warning(
+                    "action.trigger_config_resource_remediation.rule_error",
+                    rule=rule_name,
+                    error=str(exc),
+                )
+
+        if triggered == 0:
+            raise ValueError(
+                f"No Config auto-remediation actions were configured or "
+                f"non-compliant matches found for resource: {resource_id}"
+            )
+        logger.info(
+            "action.trigger_config_resource_remediation.done",
+            resource_id=resource_id,
+            triggered=triggered,
+        )
+
+    def _create_encrypted_rds_replacement(self, db_arn: str, region: str) -> None:
+        """Create an encrypted RDS instance as a replacement for an unencrypted one (COMP-001).
+
+        Workflow:
+          1. Create a snapshot of the source instance.
+          2. Copy the snapshot with the aws/rds KMS key (creates an encrypted copy).
+          3. Restore a NEW DB instance named ``<original-id>-encrypted`` from the copy.
+          4. Tag the original instance as pending cutover.
+
+        The original instance is intentionally NOT deleted — it remains running until
+        a human updates the application endpoint and confirms the migration is complete.
+
+        WARNING: Takes several minutes (snapshot + copy + restore). The new instance
+        will have a different endpoint than the original.
+        """
+        logger.info(
+            "action.create_encrypted_rds_replacement",
+            db_arn=db_arn,
+            region=region,
+        )
+        db_id = db_arn.rsplit(":", 1)[-1]
+        timestamp_suffix = int(datetime.now().timestamp())
+        snapshot_id = f"chandra-snap-{db_id[:30]}-{timestamp_suffix}"
+        encrypted_snapshot_id = f"chandra-enc-{db_id[:30]}-{timestamp_suffix}"
+        new_db_id = f"{db_id[:40]}-encrypted"
+
+        # 1. Create snapshot of the source instance.
+        logger.info(
+            "action.create_encrypted_rds_replacement.snapshot",
+            snapshot_id=snapshot_id,
+        )
+        self.rds_client.create_db_snapshot(
+            DBSnapshotIdentifier=snapshot_id,
+            DBInstanceIdentifier=db_id,
+        )
+        waiter = self.rds_client.get_waiter("db_snapshot_available")
+        waiter.wait(DBSnapshotIdentifier=snapshot_id)
+
+        # 2. Copy the snapshot with KMS encryption.
+        logger.info(
+            "action.create_encrypted_rds_replacement.copy",
+            encrypted_snapshot_id=encrypted_snapshot_id,
+        )
+        self.rds_client.copy_db_snapshot(
+            SourceDBSnapshotIdentifier=snapshot_id,
+            TargetDBSnapshotIdentifier=encrypted_snapshot_id,
+            KmsKeyId="alias/aws/rds",
+            CopyTags=True,
+        )
+        waiter.wait(DBSnapshotIdentifier=encrypted_snapshot_id)
+
+        # 3. Restore a new encrypted instance from the encrypted snapshot.
+        logger.info(
+            "action.create_encrypted_rds_replacement.restore",
+            new_db_id=new_db_id,
+        )
+        self.rds_client.restore_db_instance_from_db_snapshot(
+            DBInstanceIdentifier=new_db_id,
+            DBSnapshotIdentifier=encrypted_snapshot_id,
+        )
+
+        # 4. Tag the original instance for human cutover.
+        self.rds_client.add_tags_to_resource(
+            ResourceName=db_arn,
+            Tags=[
+                {"Key": "ChandraStatus", "Value": "pending-encryption-cutover"},
+                {"Key": "ChandraEncryptedReplacement", "Value": new_db_id},
+                {"Key": "ChandraAutoFixedBy", "Value": "chandra-auto-fix"},
+            ],
+        )
+
+        logger.info(
+            "action.create_encrypted_rds_replacement.done",
+            original_db=db_id,
+            new_db=new_db_id,
+        )
+
+    def _create_encrypted_ebs_replacement(self, volume_id: str, region: str) -> None:
+        """Create an encrypted copy of an unencrypted EBS volume (COMP-004).
+
+        Workflow:
+          1. Create an EBS snapshot of the source volume.
+          2. Copy the snapshot with ``Encrypted=True`` (uses aws/ebs KMS key by default).
+          3. Create a new encrypted volume from the encrypted snapshot.
+          4a. If the source volume is ``available`` (unattached): delete the original.
+          4b. If the source volume is ``in-use``: tag the original for manual swap.
+
+        WARNING: Steps 1-3 create a new volume with a new volume ID. If the volume
+        is in-use, the application must be updated to use the new volume ID and
+        the old volume must be manually swapped/detached/deleted.
+        """
+        logger.info(
+            "action.create_encrypted_ebs_replacement",
+            volume_id=volume_id,
+            region=region,
+        )
+        # Describe source volume.
+        resp = self.ec2_client.describe_volumes(VolumeIds=[volume_id])
+        volumes = resp.get("Volumes", [])
+        if not volumes:
+            raise ValueError(f"EBS volume {volume_id} not found")
+        vol = volumes[0]
+        vol_state = vol.get("State", "")
+        az = vol["AvailabilityZone"]
+        vol_type = vol.get("VolumeType", "gp3")
+        vol_size = vol["Size"]
+
+        # 1. Create snapshot.
+        snap_resp = self.ec2_client.create_snapshot(
+            VolumeId=volume_id,
+            Description=f"chandra-enc: encrypted copy source for {volume_id}",
+            TagSpecifications=[
+                {
+                    "ResourceType": "snapshot",
+                    "Tags": [{"Key": "CreatedBy", "Value": "chandra-auto-fix"}],
+                }
+            ],
+        )
+        snapshot_id = snap_resp["SnapshotId"]
+        logger.info(
+            "action.create_encrypted_ebs_replacement.snapshot",
+            snapshot_id=snapshot_id,
+        )
+        snap_waiter = self.ec2_client.get_waiter("snapshot_completed")
+        snap_waiter.wait(SnapshotIds=[snapshot_id])
+
+        # 2. Copy snapshot with encryption.
+        copy_resp = self.ec2_client.copy_snapshot(
+            SourceRegion=region,
+            SourceSnapshotId=snapshot_id,
+            Description=f"chandra-enc: encrypted copy of {volume_id}",
+            Encrypted=True,
+        )
+        enc_snapshot_id = copy_resp["SnapshotId"]
+        logger.info(
+            "action.create_encrypted_ebs_replacement.copy",
+            enc_snapshot_id=enc_snapshot_id,
+        )
+        snap_waiter.wait(SnapshotIds=[enc_snapshot_id])
+
+        # 3. Create encrypted volume.
+        new_vol_resp = self.ec2_client.create_volume(
+            AvailabilityZone=az,
+            Encrypted=True,
+            SnapshotId=enc_snapshot_id,
+            VolumeType=vol_type,
+            Size=vol_size,
+            TagSpecifications=[
+                {
+                    "ResourceType": "volume",
+                    "Tags": [
+                        {"Key": "ChandraReplacementFor", "Value": volume_id},
+                        {"Key": "ChandraCreatedBy", "Value": "chandra-auto-fix"},
+                    ],
+                }
+            ],
+        )
+        new_vol_id = new_vol_resp["VolumeId"]
+        logger.info(
+            "action.create_encrypted_ebs_replacement.created",
+            new_vol_id=new_vol_id,
+        )
+
+        # 4. Handle original based on state.
+        if vol_state == "available":
+            # Unattached — safe to delete the original immediately.
+            self.ec2_client.delete_volume(VolumeId=volume_id)
+            logger.info(
+                "action.create_encrypted_ebs_replacement.deleted_original",
+                volume_id=volume_id,
+            )
+        else:
+            # In-use — tag original for manual swap; do NOT delete.
+            self.ec2_client.create_tags(
+                Resources=[volume_id],
+                Tags=[
+                    {"Key": "ChandraStatus", "Value": "pending-encryption-swap"},
+                    {"Key": "ChandraEncryptedReplacement", "Value": new_vol_id},
+                    {"Key": "ChandraAutoFixedBy", "Value": "chandra-auto-fix"},
+                ],
+            )
+
+        logger.info(
+            "action.create_encrypted_ebs_replacement.done",
+            original_volume=volume_id,
+            new_volume=new_vol_id,
+            original_deleted=vol_state == "available",
+        )
+
+    def _migrate_ec2_to_asg(self, instance_id: str, region: str) -> None:
+        """Create an Auto Scaling Group and attach the existing instance to it (PERF-001).
+
+        Workflow:
+          1. Describe the instance to capture its type, AMI, security groups,
+             subnet, and key pair.
+          2. Create a Launch Template named ``chandra-lt-<instance_id>`` from
+             the instance's live configuration.
+          3. Create an Auto Scaling Group named ``chandra-asg-<instance_id>``
+             with MinSize=1, MaxSize=3, DesiredCapacity=1 in the instance's subnet.
+          4. Attach the existing instance to the ASG so it is immediately managed.
+
+        The instance stays running throughout — there is no downtime.
+        """
+        logger.info(
+            "action.migrate_ec2_to_asg",
+            instance_id=instance_id,
+            region=region,
+        )
+        # 1. Describe instance.
+        resp = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = resp.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"EC2 instance {instance_id} not found")
+        inst = reservations[0]["Instances"][0]
+
+        image_id = inst.get("ImageId", "")
+        instance_type = inst.get("InstanceType", "")
+        key_name = inst.get("KeyName", "")
+        subnet_id = inst.get("SubnetId", "")
+        sg_ids = [sg["GroupId"] for sg in inst.get("SecurityGroups", [])]
+
+        if not image_id or not instance_type:
+            raise ValueError(
+                f"Instance {instance_id} is missing ImageId or InstanceType; "
+                "cannot create a Launch Template."
+            )
+
+        # 2. Create Launch Template.
+        lt_name = f"chandra-lt-{instance_id}"
+        lt_data: dict[str, Any] = {
+            "ImageId": image_id,
+            "InstanceType": instance_type,
+        }
+        if sg_ids:
+            lt_data["SecurityGroupIds"] = sg_ids
+        if key_name:
+            lt_data["KeyName"] = key_name
+
+        try:
+            lt_resp = self.ec2_client.create_launch_template(
+                LaunchTemplateName=lt_name,
+                LaunchTemplateData=lt_data,
+                TagSpecifications=[
+                    {
+                        "ResourceType": "launch-template",
+                        "Tags": [{"Key": "CreatedBy", "Value": "chandra-auto-fix"}],
+                    }
+                ],
+            )
+            lt_id = lt_resp["LaunchTemplate"]["LaunchTemplateId"]
+        except self.ec2_client.exceptions.ClientError as exc:
+            if "AlreadyExists" in str(exc):
+                # Re-use existing template if we already created one for this instance.
+                lt_resp = self.ec2_client.describe_launch_templates(
+                    LaunchTemplateNames=[lt_name]
+                )
+                lt_id = lt_resp["LaunchTemplates"][0]["LaunchTemplateId"]
+            else:
+                raise
+
+        logger.info(
+            "action.migrate_ec2_to_asg.lt_created",
+            lt_id=lt_id,
+            lt_name=lt_name,
+        )
+
+        # 3. Create Auto Scaling Group.
+        asg_name = f"chandra-asg-{instance_id}"
+        try:
+            self.asg_client.create_auto_scaling_group(
+                AutoScalingGroupName=asg_name,
+                LaunchTemplate={"LaunchTemplateId": lt_id, "Version": "$Latest"},
+                MinSize=1,
+                MaxSize=3,
+                DesiredCapacity=1,
+                VPCZoneIdentifier=subnet_id,
+                Tags=[
+                    {
+                        "ResourceId": asg_name,
+                        "ResourceType": "auto-scaling-group",
+                        "Key": "CreatedBy",
+                        "Value": "chandra-auto-fix",
+                        "PropagateAtLaunch": True,
+                    }
+                ],
+            )
+        except self.asg_client.exceptions.AlreadyExistsFault:
+            logger.info(
+                "action.migrate_ec2_to_asg.asg_exists",
+                asg_name=asg_name,
+            )
+
+        logger.info(
+            "action.migrate_ec2_to_asg.asg_created",
+            asg_name=asg_name,
+        )
+
+        # 4. Attach existing instance to the ASG.
+        self.asg_client.attach_instances(
+            InstanceIds=[instance_id],
+            AutoScalingGroupName=asg_name,
+        )
+
+        logger.info(
+            "action.migrate_ec2_to_asg.done",
+            instance_id=instance_id,
+            asg_name=asg_name,
+            lt_id=lt_id,
+        )
+
 
 # ---------------------------------------------------------------------------
 # LangGraph node — consumes auto_fixed, emits action_results
@@ -582,9 +2136,10 @@ def action_executor_node(state: ChandraState) -> dict[str, Any]:
     ``state["action_results"]`` — in input order, so audit logs are deterministic.
 
     Behaviour:
-      - Unknown detector id -> ``ActionResult(status="skipped", ...)``.
-      - ARN parse failure   -> ``ActionResult(status="failure", ...)``.
-      - Handler exception   -> ``ActionResult(status="failure", ...)``.
+      - Unknown detector id        -> ``ActionResult(status="skipped", ...)`` generic message.
+      - Observation-only handler   -> ``ActionResult(status="skipped", ...)`` with rich reason.
+      - ARN parse failure          -> ``ActionResult(status="failure", ...)``.
+      - Handler exception          -> ``ActionResult(status="failure", ...)``.
       - ``dry_run`` from ``state["dry_run"]`` (default ``True``); the
         ``ActionExecutor`` records the requested mode on every result so
         consumers don't have to infer it from ``status``.
@@ -611,6 +2166,7 @@ def action_executor_node(state: ChandraState) -> dict[str, Any]:
         detector_id = write.action.removeprefix("remediate_")
         handler = _HANDLERS.get(detector_id)
 
+        # ── Unknown detector — no handler registered at all ──────────────
         if handler is None:
             results.append(
                 ActionResult(
@@ -627,6 +2183,21 @@ def action_executor_node(state: ChandraState) -> dict[str, Any]:
             )
             continue
 
+        # ── Observation-only handler — emit skipped with rich reason ──────
+        if isinstance(handler, _ObservationOnlyHandler):
+            results.append(
+                ActionResult(
+                    action=write.action,
+                    target_arn=write.target_arn,
+                    region=write.region,
+                    status="skipped",
+                    message=handler.skip_reason,
+                    dry_run=dry_run,
+                )
+            )
+            continue
+
+        # ── Auto-remediable handler — extract resource id then execute ────
         try:
             resource_id = handler.extract_resource_id(write.target_arn)
         except ValueError as exc:
