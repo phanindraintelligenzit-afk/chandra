@@ -27,7 +27,14 @@ def client() -> Iterator[TestClient]:
 
 
 def _poll_request(
-    client: TestClient, job_id: str, wanted: set[str], timeout_s: float = 20.0
+    # 60s ceiling (not 20s): these poll the full Digital Worker graph to a
+    # terminal state, and a heavily-loaded CI runner can starve the worker
+    # thread well past 20s. Fast jobs still return as soon as they finish —
+    # this only raises the timeout, not the normal duration.
+    client: TestClient,
+    job_id: str,
+    wanted: set[str],
+    timeout_s: float = 60.0,
 ) -> dict[str, Any]:
     """Poll GET /requests/{job_id} until status is in ``wanted`` or timeout."""
     deadline = time.time() + timeout_s
