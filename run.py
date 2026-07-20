@@ -21,8 +21,7 @@ import boto3
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from langchain_aws import ChatBedrockConverse  # noqa: F401  (forces import ordering)
-# from langchain_openai import ChatOpenAI  # noqa: F401
+from src.chandra.llm import build_chat_model  # noqa: F401  (forces import ordering)
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 

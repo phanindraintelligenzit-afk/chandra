@@ -4,8 +4,7 @@ from typing import Annotated, Any, TypedDict
 import os
 from src.chandra.config import settings
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langgraph.checkpoint.memory import MemorySaver, logger
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -142,12 +141,7 @@ def should_continue(state: AgentState) -> str:
 # ── Build the graph ───────────────────────────────────────────────────────────
 def build_graph():
     # Initialize LLM here (not at module level) so import errors don't crash FastAPI
-    llm = ChatBedrockConverse(model=os.getenv("MODEL_NAME"))
-    # llm = ChatOpenAI(
-    #     base_url=os.getenv("OPENAI_API_BASE"),
-    #     api_key=os.getenv("OPENAI_API_KEY"),
-    #     model=os.getenv("OPENAI_MODEL_NAME"),
-    # )
+    llm = build_chat_model(model=os.getenv("MODEL_NAME"))
     llm_with_tools = llm.bind_tools(tools)
 
     # Define call_llm as a closure so it captures the local llm_with_tools

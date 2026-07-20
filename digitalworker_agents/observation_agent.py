@@ -13,8 +13,7 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -135,12 +134,11 @@ class AwsObservabilityAgent:
         self.Kras = self._build_kras_str(kras)
         logger.info("Initialising AwsObservabilityAgent for region=%s", region)
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            # MODEL_NAME is an optional override; when unset, the factory
+            # falls back to the configured provider's model (BEDROCK_MODEL_ID /
+            # OPENAI_MODEL_NAME / OLLAMA_MODEL). No hard requirement — a
+            # missing env var must not crash the workflow.
+            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
             self.Graph = self.BuildGraph()
             logger.info("Agent initialised successfully")
         except Exception as exc:

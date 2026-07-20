@@ -37,6 +37,13 @@ class Settings(BaseSettings):
         alias="BEDROCK_MODEL_ID",
     )
 
+    llm_provider: str | None = Field(default="bedrock", alias="LLM_PROVIDER")
+    openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_model_name: str | None = Field(default=None, alias="OPENAI_MODEL_NAME")
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
+    ollama_model: str | None = Field(default=None, alias="OLLAMA_MODEL")
+
     postgres_url: str = Field(
         default="postgresql+psycopg://chandra:chandra@localhost:5432/chandra",
         alias="POSTGRES_URL",
