@@ -101,13 +101,12 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
             ChatBedrockConverse,
         )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
+        # from langchain_openai import ChatOpenAI
     except ImportError:
         logger.warning("llm.openai_unavailable_fallback_to_deterministic")
         return deterministic_rank(findings)
 
     try:
-        import os
         llm = ChatBedrockConverse(
             model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
@@ -202,12 +201,11 @@ def compose_executive_summary(
         from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
             ChatBedrockConverse,
         )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
+        # from langchain_openai import ChatOpenAI
     except ImportError:
         return _deterministic_summary(analyzed, score_dict)
 
     try:
-        import os
         llm = ChatBedrockConverse(
             model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
@@ -314,13 +312,12 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         # composer must degrade to deterministic output when Bedrock's SDK
         # is absent from the runtime.
         from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
+        # from langchain_openai import ChatOpenAI
     except ImportError:
         logger.warning("llm.openai_unavailable_fallback_to_deterministic")
         return None
 
     try:
-        import os
         llm = ChatBedrockConverse(
             model_id=settings.bedrock_model_id,
             region_name=settings.aws_default_region,
