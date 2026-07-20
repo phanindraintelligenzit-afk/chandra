@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 SUPPORTED_PROVIDERS = ("bedrock", "openai", "openai_compatible", "vllm", "ollama")
 
 
-def build_chat_model(model: str | None = None, **kwargs: Any) -> Any:
+def build_chat_model(model: str | None = None, provider: str | None = None, **kwargs: Any) -> Any:
     """Return a LangChain chat model for the configured provider.
 
     Parameters
@@ -47,10 +47,15 @@ def build_chat_model(model: str | None = None, **kwargs: Any) -> Any:
         ``OLLAMA_MODEL``). The root agents pass their legacy
         ``MODEL_NAME`` env var here so their behavior is unchanged under
         the default provider.
+    provider:
+        Optional backend override. When omitted, ``LLM_PROVIDER`` selects
+        it. The provider classes in ``chandra.llm.providers`` pass this so
+        a ``VLLMProvider`` builds a vLLM client regardless of the ambient
+        ``LLM_PROVIDER`` value.
     kwargs:
         Passed through to the underlying client (temperature, callbacks…).
     """
-    provider = (settings.llm_provider or "bedrock").strip().lower()
+    provider = (provider or settings.llm_provider or "bedrock").strip().lower()
 
     if provider == "bedrock":
         from langchain_aws import ChatBedrockConverse  # noqa: PLC0415  # lazy: provider-specific
