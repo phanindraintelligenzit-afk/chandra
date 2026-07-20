@@ -515,7 +515,7 @@ export async function fetchCostMetrics(
 let activeCwMetricsRequests: Record<string, Promise<CloudWatchMetricsOutput> | undefined> = {};
 
 export async function fetchCloudWatchMetrics(
-  region: string = "us-east-1",
+  region: string = process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
   hoursLookback: number = 6,
   period: number = 1200,
   options: { signal?: AbortSignal } = {}
@@ -569,10 +569,10 @@ export async function fetchCloudWatchMetrics(
 export async function fetchAWSRegions(options: { signal?: AbortSignal } = {}): Promise<string[]> {
   try {
     const res = await request<{ regions: string[] }>("/aws/regions", options);
-    return res.regions || ["us-east-1"];
+    return res.regions || [process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"];
   } catch (error) {
-    console.error("Failed to fetch regions, falling back to us-east-1", error);
-    return ["us-east-1"];
+    console.error(`Failed to fetch regions, falling back to ${process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"}`, error);
+    return [process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"];
   }
 }
 

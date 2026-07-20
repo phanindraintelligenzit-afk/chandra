@@ -639,8 +639,8 @@ export const WorkerActionExecutionCenter = forwardRef<
           kraCode: executing.kraCode,
           priorityLevel: executing.priorityLevel,
           detectorId: executing.detectorId,
-          resourceArn: executing.region === "us-east-1" ? executing.resourceId : executing.resourceId, // dummy check to pass resourceId
-          region: executing.region || "us-east-1"
+          resourceArn: executing.region === (process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1") ? executing.resourceId : executing.resourceId, // dummy check to pass resourceId
+          region: executing.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: timeoutMins * 60,

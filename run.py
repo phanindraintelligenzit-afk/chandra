@@ -82,7 +82,7 @@ def main() -> None:
     inputs = {
         "run_id": run_id,
         "account_id": account_id,
-        "regions": [os.getenv("AWS_DEFAULT_REGION", "us-east-1")],
+        "regions": [os.getenv("AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "us-east-1"))],
         "dry_run": False,
         "raw_findings": {},
         "errors": [],

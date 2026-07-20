@@ -15,6 +15,8 @@ Detector IDs:
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 from typing import Any
 
@@ -260,7 +262,7 @@ def check_s3_default_encryption(ctx: DetectorContext) -> list[Finding]:
                     severity="high",
                     resource_arn=arn,
                     resource_type="AWS::S3::Bucket",
-                    region="us-east-1",
+                    region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                     title=f"S3 bucket {name} has no default encryption configured",
                     evidence=evidence,
                     recommendation=(

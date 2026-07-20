@@ -435,7 +435,7 @@ async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 class CloudWatchMetricsRequest(BaseModel):
-    region: str = Field(default="us-east-1", description="AWS region to fetch metrics from")
+    region: str = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="AWS region to fetch metrics from")
     last_hours: int = Field(default=12, description="Hours to look back")
     period: int = Field(default=1200, description="Period in seconds")
     timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
@@ -706,7 +706,7 @@ class ActionInput(BaseModel):
     steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
-    region: Optional[str] = Field(default="us-east-1", description="Target region for predefined KRA actions")
+    region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1264,7 +1264,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             pw = ProposedWrite(
                 action=f"remediate_{request.action.detectorId}",
                 target_arn=request.action.resourceArn or getattr(request.action, "resourceId", "") or "unknown-arn",
-                region=request.action.region or "us-east-1",
+                region=request.action.region or os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                 payload={},
                 requested_by="supervisor",
                 justification=request.action.actionDescription,

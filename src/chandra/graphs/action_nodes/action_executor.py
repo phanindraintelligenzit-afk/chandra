@@ -17,6 +17,8 @@ Nothing in the codebase reads the old keys.
 
 from __future__ import annotations
 
+import os
+
 import json as _json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -758,7 +760,7 @@ class ActionExecutor:
     the LangGraph path.
     """
 
-    def __init__(self, dry_run: bool = True, region: str = "us-east-1"):
+    def __init__(self, dry_run: bool = True, region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")):
         """
         Args:
             dry_run: If True, show what would happen without doing it.
@@ -804,7 +806,7 @@ class ActionExecutor:
                 {
                   "action_type": "remediate_SEC-001-public-s3",
                   "resource_id": "bucket-name",
-                  "region": "us-east-1",
+                  "region": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                   "problem_type": "public_s3"
                 }
 
@@ -819,7 +821,7 @@ class ActionExecutor:
         """
         action_type = state.get("action_type")
         resource_id = state.get("resource_id")
-        region = state.get("region", "us-east-1")
+        region = state.get("region", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
         problem_type = state.get("problem_type")
 
         timestamp = datetime.now().isoformat()

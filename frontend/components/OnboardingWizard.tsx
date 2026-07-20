@@ -268,7 +268,7 @@ export default function OnboardingWizard() {
     const activeCustomKras = customKras.filter(k => k.selected !== false);
     const kraPayloadEntries = buildKraPayload(predefinedKras, activeCustomKras);
     const payload = {
-      region: "us-east-1",
+      region: process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
       kras: kraPayloadEntries,
       selected_kras: selectedKRAs,
       custom_kras: activeCustomKras.map((k) => ({ name: k.name, description: k.description })),

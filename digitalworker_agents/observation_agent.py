@@ -380,6 +380,21 @@ Never fabricate data not present in the tool results. For operational KRAs, step
                 )
 
             report = ObservabilityReport.model_validate_json(raw_json)
+            
+            # Filter out any hallucinated predefined KRAs (KRA-01 through KRA-05)
+            # since the observation agent is now strictly for Custom KRAs.
+            import re
+            def is_predefined(code: str | None) -> bool:
+                if not code:
+                    return False
+                norm = re.sub(r'[^A-Z0-9]', '', str(code).upper())
+                return norm in {"KRA1", "KRA01", "KRA2", "KRA02", "KRA3", "KRA03", "KRA4", "KRA04", "KRA5", "KRA05"}
+
+            if report.kra_status:
+                report.kra_status = [k for k in report.kra_status if not is_predefined(k.kra_code)]
+            if report.actions:
+                report.actions = [a for a in report.actions if not is_predefined(a.kraCode)]
+
             logger.info("RunPipeline completed. health=%s, issues=%d", report.health, len(report.issues))
             return PipelineResponse(
                 statusCode=200,
