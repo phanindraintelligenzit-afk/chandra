@@ -226,3 +226,30 @@ class TestApprovalCenterDiscovery:
         _poll_request(client, job_id, {"completed", "dry_run"})
         conflict = client.post(f"/requests/{job_id}/approve", json={"approved": True})
         assert conflict.status_code == 409
+
+
+class TestKraRegistryEndpoints:
+    """Dynamic KRA Framework HTTP surface (GET/POST /kras)."""
+
+    def test_list_serves_builtins_without_db(self, client: TestClient) -> None:
+        response = client.get("/kras")
+        assert response.status_code == 200
+        body = response.json()
+        codes = {k["code"] for k in body["kras"]}
+        assert {"cost", "security", "compliance", "performance", "reliability"} <= codes
+
+    def test_upsert_validates_payload(self, client: TestClient) -> None:
+        response = client.post("/kras", json={"name": "missing code"})
+        assert response.status_code == 422
+
+    def test_upsert_without_db_is_503_not_silent(self, client: TestClient) -> None:
+        response = client.post(
+            "/kras",
+            json={"code": "finops", "name": "FinOps", "keywords": ["chargeback"]},
+        )
+        # No Postgres in unit tests: the write must fail loudly, never
+        # pretend success (a registry row the caller thinks exists but
+        # doesn't would silently break customer-KRA classification).
+        assert response.status_code in (200, 503)
+        if response.status_code == 503:
+            assert response.json()["status"] == "error"

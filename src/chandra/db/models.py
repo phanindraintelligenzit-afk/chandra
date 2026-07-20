@@ -218,3 +218,44 @@ class EvalRun(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="eval_run")
+
+
+class KraDefinitionRecord(Base):
+    """One KRA in the Dynamic KRA Framework registry.
+
+    The five built-in KRAs (cost, security, compliance, performance,
+    reliability) exist in code as always-available defaults; rows in this
+    table add customer-defined KRAs (Sustainability, FinOps, AI
+    Governance, …) or override built-ins — without any code change. The
+    LLM/classifier *identifies* the KRA; the registry decides how it is
+    handled (prompt, rules, workflow, notifications).
+    """
+
+    __tablename__ = "kra_definitions"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False).with_variant(String(36), "sqlite"),
+        primary_key=True,
+        default=_uuid,
+    )
+    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Tokens that map free-form request text onto this KRA.
+    keywords_jsonb: Mapped[list[Any]] = mapped_column(
+        "keywords_jsonb", nullable=False, default=list
+    )
+    # Optional per-KRA prompt template consumed by the LLM analysis step.
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # "deterministic" (registered detectors), "llm" (reason-only), "hybrid".
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="llm")
+    # Free-form rule payloads consumed by the workflow loader (risk gates,
+    # validation rules, notification routing).
+    rules_jsonb: Mapped[dict[str, Any]] = mapped_column("rules_jsonb", nullable=False, default=dict)
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )

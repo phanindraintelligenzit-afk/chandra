@@ -51,8 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from dotenv import load_dotenv
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -1389,18 +1388,11 @@ class ExecutionAgents:
             
         self.logger.info("Initialising ExecutionAgents (max_iterations=%d, job_id=%s)", max_iterations, self.job_id)
         try:
-            model_name = os.getenv("MODEL_NAME")
-            if not model_name:
-                raise ValueError(
-                    "MODEL_NAME environment variable is not set. "
-                    "Add MODEL_NAME=<bedrock-model-id> to your .env file."
-                )
-            self.Llm = ChatBedrockConverse(model_id=model_name)
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            # MODEL_NAME is an optional override; when unset, the factory
+            # falls back to the configured provider's model (BEDROCK_MODEL_ID /
+            # OPENAI_MODEL_NAME / OLLAMA_MODEL). No hard requirement — a
+            # missing env var must not crash the workflow.
+            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()

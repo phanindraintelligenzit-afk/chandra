@@ -68,9 +68,9 @@ Today's read-only analytics surface. Renders the latest briefing, findings explo
 ## Hard architectural rules (do not violate without explicit signoff from Phani)
 
 - **LangGraph is the only orchestration framework.** No LangChain `AgentExecutor`. No `create_react_agent`. Use `StateGraph` + `Send(...)` for fan-out. The canonical topology lives in `src/chandra/graphs/chandra_graph.py:build_graph`.
-- **Amazon Bedrock is the only LLM provider** — specifically `langchain_aws.ChatBedrockConverse` with Sonnet 4.5. Do not import `openai`, `anthropic` direct SDK, or any other provider.
+- **All LLM access goes through `src/chandra/llm.build_chat_model()`** — the single provider factory. `LLM_PROVIDER` selects the backend: `bedrock` (default, `langchain_aws.ChatBedrockConverse`), `openai` (any OpenAI-compatible endpoint, e.g. vLLM), or `ollama` (local inference). Never construct `ChatBedrockConverse`/`ChatOpenAI` directly at a call site, and never hardcode a model id — models come from env (`BEDROCK_MODEL_ID` / `OPENAI_MODEL_NAME` / `OLLAMA_MODEL`).
 - **Read-only by default.** Detectors never call mutating AWS APIs. Write actions go through `action_executor_node` (auto-fix for low-risk `auto_fixed` writes — `dry_run=True` by default) + the `escalation` queue (publishes high-risk `pending_writes` to SNS) + `approval_node` (interrupts for human approval when `pending_writes` is non-empty).
-- **`chandra.briefing.composer` is the only module that may call Bedrock.** Detector modules MUST NOT import `langchain_aws`.
+- **`chandra.briefing.composer` (and the sanctioned verifier) are the only `src/chandra` modules that may invoke an LLM** — always via the factory. Detector modules MUST NOT import `langchain_aws`, `langchain_openai`, or `src.chandra.llm`.
 - **`decision_router`, `action_executor`, and `escalation` are deterministic.** They sit between the LLM-powered `analyze` and the LLM-powered `compose_briefing`. If a future change introduces an LLM call into any of these three, it is a rule violation — surface it on the ticket.
 - **Postgres writes only in the `persist` node and Alembic migrations.** Nowhere else.
 - **Every boto3 list/describe call uses a paginator.** No silent truncation.
@@ -422,7 +422,7 @@ If your change touches another team's path, open a draft PR and tag them. Don't 
 - Don't touch GitHub repo settings, branch protection, or security configurations.
 - Don't add new third-party dependencies without justifying in the PR description.
 - Don't refactor outside the scope of your current ticket — open a separate ticket for it.
-- Don't import any LLM provider other than `langchain_aws` (no `openai`, `anthropic`, `cohere`, etc.).
+- Don't construct LLM clients directly — always go through `src/chandra/llm.build_chat_model()`. No direct `anthropic`/`cohere`/vendor SDK imports.
 - Don't instantiate `boto3.client(...)` directly — always go through `AwsClientFactory`.
 - **Don't add features to the Streamlit dashboard.** Migrate existing Streamlit surfaces to Next.js instead (FE-01).
 

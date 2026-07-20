@@ -16,8 +16,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langgraph.graph import END, StateGraph
 
 from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket
@@ -75,12 +74,7 @@ class AnalyzerAgent:
     def __init__(self):
         logger.info("Initialising AnalyzerAgent")
         try:
-            self.Llm = ChatBedrockConverse(model_id=os.getenv("MODEL_NAME"))
-            # self.Llm = ChatOpenAI(
-            #     base_url=os.getenv("OPENAI_API_BASE"),
-            #     api_key=os.getenv("OPENAI_API_KEY"),
-            #     model=os.getenv("OPENAI_MODEL_NAME"),
-            # )
+            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
             self.Graph = self._build_graph()
             logger.info("AnalyzerAgent initialised successfully")
         except Exception as exc:

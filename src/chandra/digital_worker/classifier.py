@@ -278,6 +278,18 @@ def classify_request(request: CloudRequest) -> RequestClassification:
     priority = request.priority or _infer_priority(category, token_set)
     confidence = min(1.0, 0.3 + 0.15 * len(matched_keywords) + (0.2 if services else 0.0))
 
+    # Dynamic KRA Framework: map the request onto a registry KRA (built-in
+    # or customer-defined). Registry failures degrade to kra_code=None —
+    # classification never breaks because the database is away.
+    kra_code: str | None = None
+    try:
+        from src.chandra.kra import match_kra  # noqa: PLC0415  # lazy: avoids db import at load
+
+        matched = match_kra(" ".join(tokens))
+        kra_code = matched.code if matched else None
+    except Exception as exc:  # registry must never break classification
+        logger.warning("classifier.kra_registry_unavailable", error=str(exc))
+
     classification = RequestClassification(
         category=category,
         platform=platform,
@@ -286,6 +298,7 @@ def classify_request(request: CloudRequest) -> RequestClassification:
         priority=priority,
         summary=request.title[:200],
         confidence=round(confidence, 2),
+        kra_code=kra_code,
     )
     logger.info(
         "classifier.request_classified",

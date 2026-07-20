@@ -358,6 +358,44 @@ class CustomKrasPayload(BaseModel):
     )
 
 
+@app.get("/kras")
+def list_registry_kras(include_disabled: bool = Query(default=False)):
+    """Dynamic KRA Framework registry: built-ins merged with DB-defined KRAs.
+
+    A customer-defined KRA (Sustainability, FinOps, AI Governance, …)
+    inserted via POST /kras participates in classification immediately —
+    no code change, no redeploy.
+    """
+    from src.chandra.kra import list_kras
+    kras = list_kras(include_disabled=include_disabled)
+    return JSONResponse(status_code=200, content={
+        "status": "ok",
+        "count": len(kras),
+        "kras": [k.model_dump(mode="json") for k in kras],
+    })
+
+
+@app.post("/kras")
+def upsert_registry_kra(payload: Dict[str, Any]):
+    """Create or update one KRA in the registry (keyed by ``code``)."""
+    from src.chandra.kra import KraDefinition, upsert_kra
+    try:
+        definition = KraDefinition.model_validate(payload)
+    except Exception as exc:
+        return JSONResponse(status_code=422, content={"status": "error", "message": str(exc)})
+    try:
+        saved = upsert_kra(definition)
+    except Exception as exc:
+        logger.exception("KRA registry upsert failed")
+        return JSONResponse(status_code=503, content={
+            "status": "error",
+            "message": f"registry write failed (is Postgres up + migrated?): {exc}",
+        })
+    return JSONResponse(status_code=200, content={
+        "status": "ok", "kra": saved.model_dump(mode="json"),
+    })
+
+
 @app.put("/customKras")
 def put_custom_kras(payload: CustomKrasPayload):
     """Replace the contents of customKras.json with the supplied list."""

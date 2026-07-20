@@ -13,7 +13,6 @@ import io
 import json
 
 from src.chandra.aws.client_factory import get_default_factory
-from src.chandra.config import settings
 from src.chandra.digital_worker.schemas import (
     CloudRequest,
     ExecutionOutcome,
@@ -82,14 +81,11 @@ Output ONLY valid Python code inside a ```python block. No markdown around it.
 def _generate_verification_code(
     request: CloudRequest, plan: ResolutionPlan, execution_logs: str
 ) -> str:
-    """Ask Bedrock to write the Python verification script."""
+    """Ask the configured LLM to write the Python verification script."""
     try:
-        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
+        from src.chandra.llm import build_chat_model  # noqa: PLC0415
 
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-        )
+        llm = build_chat_model()
 
         payload = {
             "request": request.model_dump(mode="json", exclude={"raw_payload"}),
