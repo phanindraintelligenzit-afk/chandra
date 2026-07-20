@@ -69,16 +69,25 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     if provider in ("openai", "openai_compatible", "vllm"):
         from langchain_openai import ChatOpenAI  # noqa: PLC0415  # lazy: provider-specific
 
-        if not settings.openai_api_base:
+        # vLLM reads its own VLLM_* vars first, then falls back to the generic
+        # OPENAI_* pair so any OpenAI-compatible server keeps working.
+        base_url = settings.vllm_api_base or settings.openai_api_base
+        api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
+        if not base_url:
             raise ValueError(
-                "LLM_PROVIDER=openai requires OPENAI_API_BASE (the OpenAI-compatible endpoint URL)"
+                f"LLM_PROVIDER={provider} requires VLLM_API_BASE (or OPENAI_API_BASE) — "
+                "the OpenAI-compatible endpoint URL"
             )
-        resolved = model or settings.openai_model_name
+        resolved = model or settings.vllm_model or settings.openai_model_name
         if not resolved:
-            raise ValueError("LLM_PROVIDER=openai requires OPENAI_MODEL_NAME (or a model override)")
+            raise ValueError(
+                f"LLM_PROVIDER={provider} requires VLLM_MODEL (or OPENAI_MODEL_NAME, "
+                "or a model override) — the production model is chosen by benchmark, "
+                "not hardcoded; set it explicitly."
+            )
         return ChatOpenAI(
-            base_url=settings.openai_api_base,
-            api_key=settings.openai_api_key,
+            base_url=base_url,
+            api_key=api_key,
             model=resolved,
             **kwargs,
         )

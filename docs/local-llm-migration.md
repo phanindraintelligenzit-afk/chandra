@@ -126,8 +126,14 @@ raw model text — no regex, no free-text parsing, no `eval`, no shell string.
 | `src/chandra/execution/verification.py` | **new (M1)** — intent check | Catch schema-valid-but-wrong plans without an LLM. |
 | `src/chandra/execution/planner.py` | **new** — `generate_execution_plan` | JSON-only planning + self-correction + safe fallback. |
 | `src/chandra/execution/executor.py` | **new** — `execute_plan` | Deterministic typed executor; the "never execute raw text" landing spot. |
+| `src/chandra/execution/bridge.py` | **new** — `plan_and_execute` | The one call the agent / DW graph use: provider → planner → validate → verify → executor, with the approval + dry-run contract. |
+| `src/chandra/config.py` | `VLLM_API_BASE` / `VLLM_MODEL` / `VLLM_API_KEY` + `CHANDRA_TYPED_EXECUTION` | First-class vLLM config; the flag that enforces the typed pipeline. |
+| `src/chandra/llm/__init__.py` | vLLM branch prefers `VLLM_*`, falls back to `OPENAI_*` | Natural local-vLLM config while any OpenAI-compatible server keeps working. |
+| `digitalworker_agents/aws_execution_agent.py` | `_typed_execution_gate` in `_execute_node` | With `CHANDRA_TYPED_EXECUTION=true`, remediation runs only through a validated `ExecutionPlan` + deterministic executor — never generated shell/python via subprocess. Default off preserves the legacy engine. |
+| `copilot_agents/call_tools.py` | removed dead `ChatOpenAI` import | The codebase now constructs no chat model outside the factory. |
+| `.env.example` | provider blocks + typed-execution flag; removed hardcoded model ids / password / IP | Documents the env-only provider swap; drops leaked-looking values. |
 | `scripts/benchmark_llm.py` + `evals/fixtures/llm_benchmark_seed.jsonl` | **new** | Replay tickets and score any provider (Claude vs vLLM). |
-| `tests/unit/test_llm_providers.py`, `test_execution_planner.py`, `test_execution_executor.py`, `test_execution_validator.py` | **new** | Cover retry/health/selection, self-correct/fallback, dry-run gate + typed dispatch, schema/safety/verify. |
+| `tests/unit/test_llm_providers.py`, `test_execution_planner.py`, `test_execution_executor.py`, `test_execution_bridge.py`, `test_execution_validator.py` | **new** | Cover retry/health/selection, self-correct/fallback, dry-run gate + typed dispatch, bridge approval/dry-run contract, schema/safety/verify. |
 
 Nothing was removed. The existing FastAPI service, notification agents, Jira
 tracker, KRA engine, LangGraph orchestration, approval workflow, audit,
@@ -161,28 +167,38 @@ model the harness degrades honestly (every ticket → deterministic fallback →
 
 ---
 
-## 6. Legacy-agent cutover (next PR — Frontend CODEOWNERS)
+## 6. Legacy-agent cutover — wired behind a flag
 
-`digitalworker_agents/aws_execution_agent.py` (~3.6k lines) today generates
+`digitalworker_agents/aws_execution_agent.py` (~3.6k lines) generates
 Python/Terraform/shell as **text** (`ExecutionPlan.execution_type ∈
 {python, terraform, shell, mixed}`) and runs it via `subprocess`. That is the
-permissive path this migration is designed to replace.
+permissive path this migration replaces.
 
-**Seam:** its `plan` → `plan_review` → `execute` nodes. Replace the text plan
-with `src.chandra.execution.ExecutionPlan`:
+**Landed (this PR):** a `_typed_execution_gate` at the top of `_execute_node`.
+When `CHANDRA_TYPED_EXECUTION=true`, the node routes the request through
+`plan_and_execute` (provider → planner → validate → verify → deterministic
+executor) and **never** runs generated code via subprocess; the model only
+proposes a typed `ExecutionPlan`. The gate maps the executor's step results
+back into the agent's `execution_results` shape, so the downstream report /
+notify / Jira nodes are unchanged.
 
-1. `generate` / `plan` node → call `generate_execution_plan(intent, context)`
-   and keep the returned **typed** plan on state (drop the free-text plan).
-2. `plan_review` node → its concerns are already covered by `validate_plan` +
-   `verify_intent_matches_plan`; keep the human review, drop the regex checks.
-3. `execute` node → call `execute_plan(plan, force_execute=<approved & not
-   dry_run>)`. Delete the `subprocess`/shell execution of generated code.
+**Default off, on purpose.** With the flag unset the legacy code-gen engine
+runs exactly as before — existing functionality is preserved. Flipping the
+flag to `true` requires an **end-to-end validation pass** in an environment
+that has the MCP servers + live AWS the agent needs (which CI here does not),
+because the typed executor's boto3 coverage must be confirmed against the real
+remediation set before it becomes the only path. That E2E pass is the
+remaining gate before removing the legacy subprocess engine entirely.
 
-This is deliberately a **separate, reviewed PR**: it changes another team's
-CODEOWNERS path, removes an execution path, and cannot be unit-tested without
-the MCP servers + live AWS the agent needs. Landing it inside this PR would
-violate "one ticket = one PR" and ship an untested rewrite. The safe, typed
-executor it will call is already merged and tested here.
+**Recommended cutover sequence (operator):**
+1. `CHANDRA_TYPED_EXECUTION=true` + `dry_run` on a staging account → confirm
+   the typed plans match intent for the real ticket mix.
+2. Widen `ALLOWED_AWS_SERVICES` / add typed handlers for any remediation the
+   plans can't yet express (the validator will reject them loudly — no silent
+   gaps).
+3. Real (non-dry-run) execution on staging → prod.
+4. Once parity is proven, delete the legacy `_plan_node` code-gen +
+   `_run_commands` subprocess path (separate Frontend-CODEOWNERS PR).
 
 ---
 

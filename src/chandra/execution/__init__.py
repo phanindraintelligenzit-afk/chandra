@@ -7,6 +7,7 @@ HCL before apply; :func:`verify_intent_matches_plan` confirms the plan
 matches what was actually requested. No executor consumes raw model text.
 """
 
+from src.chandra.execution.bridge import BridgeResult, plan_and_execute
 from src.chandra.execution.executor import ExecutionResult, StepResult, execute_plan
 from src.chandra.execution.planner import (
     PlanGenerationResult,
@@ -37,6 +38,7 @@ __all__ = [
     "ALLOWED_AWS_SERVICES",
     "ActionKind",
     "AwsApiAction",
+    "BridgeResult",
     "ExecutionPlan",
     "ExecutionResult",
     "ExecutionStep",
@@ -50,6 +52,7 @@ __all__ = [
     "TerraformValidation",
     "execute_plan",
     "generate_execution_plan",
+    "plan_and_execute",
     "terraform_available",
     "validate_plan",
     "validate_terraform",
