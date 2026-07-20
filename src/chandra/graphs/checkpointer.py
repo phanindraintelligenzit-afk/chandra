@@ -25,19 +25,20 @@ logger = get_logger(__name__)
 
 def build_checkpointer() -> Any:
     """Return a durable Postgres checkpointer, or an in-memory fallback."""
-    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-    import inspect
-    from pydantic import BaseModel
-    from enum import Enum
-    import src.chandra.digital_worker.schemas as schemas
-    
+    import inspect  # noqa: PLC0415
+    from enum import Enum  # noqa: PLC0415
+
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer  # noqa: PLC0415
+    from pydantic import BaseModel  # noqa: PLC0415
+    from src.chandra.digital_worker import schemas  # noqa: PLC0415
+
     # Dynamically allow all Pydantic models and Enums defined in the schemas module
     # This avoids hardcoding the list while still satisfying LangGraph's strict msgpack security.
     allowed_modules = []
     for name, obj in inspect.getmembers(schemas, inspect.isclass):
         if issubclass(obj, (BaseModel, Enum)) and obj.__module__ == schemas.__name__:
             allowed_modules.append((schemas.__name__, name))
-            
+
     serde = JsonPlusSerializer(allowed_msgpack_modules=allowed_modules)
 
     try:

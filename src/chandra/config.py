@@ -8,7 +8,6 @@ single source of truth and bypasses validation.
 from __future__ import annotations
 
 import os
-
 from functools import lru_cache
 from pathlib import Path
 
@@ -30,7 +29,9 @@ class Settings(BaseSettings):
     )
 
     aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
-    aws_default_region: str = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), alias="AWS_DEFAULT_REGION")
+    aws_default_region: str = Field(
+        default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), alias="AWS_DEFAULT_REGION"
+    )
 
     bedrock_model_id: str = Field(
         default="anthropic.claude-sonnet-4-5-20250929-v1:0",

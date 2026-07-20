@@ -26,7 +26,6 @@ LG-07: _route_kra_workers now passes a slim projection
 from __future__ import annotations
 
 import os
-
 from datetime import UTC, datetime
 from typing import Any, Literal
 

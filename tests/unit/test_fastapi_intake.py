@@ -186,6 +186,7 @@ class TestApprovalCenterDiscovery:
 
     def test_approve_resumes_to_completion(self, client: TestClient) -> None:
         payload = {
+            "dry_run": True,
             "issue": {
                 "key": "SEC-1002",
                 "fields": {
@@ -204,15 +205,19 @@ class TestApprovalCenterDiscovery:
             json={"approved": True, "approver": "phani", "comment": "go"},
         )
         assert approve.status_code == 202
-        body = _poll_request(client, job_id, {"completed"})
+        body = _poll_request(client, job_id, {"completed", "dry_run"})
         assert body["request"]["workflow_status"] in ("completed", "completed_with_issues")
 
     def test_approve_wrong_state_conflicts(self, client: TestClient) -> None:
         """Approving a job that is not awaiting approval must 409."""
         job_id = client.post(
             "/requests",
-            json={"source": "rest_api", "payload": {"title": "no approval needed here"}},
+            json={
+                "source": "rest_api",
+                "payload": {"title": "no approval needed here"},
+                "dry_run": True,
+            },
         ).json()["job_id"]
-        _poll_request(client, job_id, {"completed"})
+        _poll_request(client, job_id, {"completed", "dry_run"})
         conflict = client.post(f"/requests/{job_id}/approve", json={"approved": True})
         assert conflict.status_code == 409
