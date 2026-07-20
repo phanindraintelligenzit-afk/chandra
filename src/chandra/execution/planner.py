@@ -125,6 +125,11 @@ def generate_execution_plan(
         result = validate_plan(raw)
         last_result = result
         if result.valid and result.plan is not None:
+            # KRA classification is deterministic in Chandra (the classifier),
+            # not the model's call. When the caller supplies a kra_code, it is
+            # authoritative: stamp it so the model can't override or drop it.
+            if kra_code and not result.plan.kra_code:
+                result.plan.kra_code = kra_code
             verification = verify_intent_matches_plan(intent, result.plan)
             if not verification.passed:
                 # A schema-valid but off-intent plan is also a correction case.

@@ -72,6 +72,24 @@ def test_valid_first_attempt() -> None:
     assert llm.calls == 1
 
 
+def test_caller_kra_code_is_stamped_when_model_omits_it() -> None:
+    # Model returns a valid plan with no kra_code; the deterministic
+    # classifier's value (passed by the caller) must win.
+    no_kra = {k: v for k, v in _VALID_PLAN.items() if k != "kra_code"}
+    llm = ScriptedLLM([json.dumps(no_kra)])
+    result = generate_execution_plan("secure the acme-logs bucket", llm=llm, kra_code="security")
+    assert result.valid is True
+    assert result.plan.kra_code == "security"
+
+
+def test_model_kra_code_is_not_overridden_when_present() -> None:
+    llm = ScriptedLLM([json.dumps(_VALID_PLAN)])  # carries kra_code="security"
+    result = generate_execution_plan("secure the acme-logs bucket", llm=llm, kra_code="cost")
+    assert result.valid is True
+    # Model set it explicitly → not clobbered (only the empty case is filled).
+    assert result.plan.kra_code == "security"
+
+
 def test_self_correction_after_bad_json() -> None:
     llm = ScriptedLLM(["this is not json at all", json.dumps(_VALID_PLAN)])
     result = generate_execution_plan(

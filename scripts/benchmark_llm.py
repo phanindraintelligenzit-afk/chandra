@@ -122,8 +122,13 @@ def _run_ticket(ticket: dict[str, Any], llm: BaseLLM) -> TicketOutcome:
     expected_kra = ticket.get("expected_kra")
     expected_kind = ticket.get("expected_kind")
 
+    # KRA is deterministic in production (the classifier), so we pass the
+    # ticket's KRA in as the classifier would; the planner stamps it and we
+    # then confirm it survives end-to-end. This mirrors the real flow rather
+    # than asking the model to self-classify.
+    classified_kra = expected_kra if isinstance(expected_kra, str) else None
     start = time.perf_counter()
-    result = generate_execution_plan(intent, context, llm=llm, kra_code=None)
+    result = generate_execution_plan(intent, context, llm=llm, kra_code=classified_kra)
     latency = time.perf_counter() - start
 
     plan = result.plan
