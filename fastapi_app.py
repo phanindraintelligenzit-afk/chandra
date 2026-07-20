@@ -1255,7 +1255,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
 
         # Check if this is a predefined KRA remediation
-        if request.action.detectorId and request.action.resourceArn:
+        if request.action.detectorId:
             from src.chandra.graphs.action_nodes.action_executor import action_executor_node
             from src.chandra.graphs.state import ChandraState
             from src.chandra.briefing.schemas import ProposedWrite
@@ -1263,7 +1263,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             logger.info("ORCHESTRATION TASK [%s] routing to action_executor_node for predefined KRA %s", job_id, request.action.detectorId)
             pw = ProposedWrite(
                 action=f"remediate_{request.action.detectorId}",
-                target_arn=request.action.resourceArn,
+                target_arn=request.action.resourceArn or getattr(request.action, "resourceId", "") or "unknown-arn",
                 region=request.action.region or "us-east-1",
                 payload={},
                 requested_by="supervisor",
