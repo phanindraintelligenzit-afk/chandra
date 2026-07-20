@@ -20,10 +20,12 @@ def _pretty_format(obj: Any) -> str:
         if hasattr(o, "model_dump"):
             return o.model_dump()
         return str(o)
+
     try:
         return json.dumps(obj, indent=2, default=_default)
     except Exception:
-        import pprint
+        import pprint  # noqa: PLC0415
+
         return pprint.pformat(obj)
 
 
@@ -49,7 +51,9 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                 try:
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
-                    logger.info(f"Input received for node ({node_name}):\n{_pretty_format(state_in)}")
+                    logger.info(
+                        f"Input received for node ({node_name}):\n{_pretty_format(state_in)}"
+                    )
 
                     if timeout_s:
                         result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout_s)
@@ -92,7 +96,9 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                 try:
                     logger.info("node.start", extra={"node": node_name})
                     state_in = args[0] if args else kwargs.get("state", {})
-                    logger.info(f"Input received for node ({node_name}):\n{_pretty_format(state_in)}")
+                    logger.info(
+                        f"Input received for node ({node_name}):\n{_pretty_format(state_in)}"
+                    )
 
                     result = func(*args, **kwargs)
 

@@ -517,12 +517,12 @@ ALL_DETECTORS = (
     check_encryption_at_rest_rds,  # COMP-001
     check_cloudtrail_multi_region,  # COMP-002
     check_config_recorder,  # COMP-003
-    check_encryption_at_rest_ebs,     # COMP-004 — disabled for testing
-    check_s3_default_encryption,      # COMP-005 — disabled for testing
+    check_encryption_at_rest_ebs,  # COMP-004 — disabled for testing
+    check_s3_default_encryption,  # COMP-005 — disabled for testing
     check_backup_protection,  # COMP-006
-    check_config_rule_compliance,     # COMP-007 — disabled for testing
+    check_config_rule_compliance,  # COMP-007 — disabled for testing
     check_ebs_encryption_by_default,  # COMP-008
-    check_missing_mandatory_tags,     # COMP-009 — disabled for testing
+    check_missing_mandatory_tags,  # COMP-009 — disabled for testing
 )
 
 

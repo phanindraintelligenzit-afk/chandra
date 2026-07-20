@@ -26,7 +26,6 @@ from datetime import datetime
 from typing import Any
 
 from botocore.exceptions import ClientError, WaiterError
-
 from src.chandra.aws.client_factory import get_default_factory
 from src.chandra.briefing.schemas import ActionResult, ProposedWrite
 from src.chandra.graphs.state import ChandraState
@@ -44,7 +43,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _SkippedRemediation(Exception):
+class _SkippedRemediation(Exception):  # noqa: N818  # sentinel, not an error condition
     """Raised when remediation is intentionally skipped for a valid non-error reason.
 
     Examples:
@@ -62,10 +61,12 @@ class _SkippedRemediation(Exception):
 # Error codes in the Resource Groups Tagging API FailedResourcesMap that
 # mean the resource is managed by AWS and cannot be tagged — these should
 # produce a skipped result, not a failure.
-_SKIP_TAGGING_ERROR_CODES: frozenset[str] = frozenset({
-    "ManagedRuleException",    # AWS-owned EventBridge managed rules
-    "InvalidParameterException",  # certain service-owned resources reject tags
-})
+_SKIP_TAGGING_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "ManagedRuleException",  # AWS-owned EventBridge managed rules
+        "InvalidParameterException",  # certain service-owned resources reject tags
+    }
+)
 
 
 def _error_code(exc: Exception) -> str:
@@ -85,49 +86,53 @@ def _error_code(exc: Exception) -> str:
 # before remediation ran (deleted, terminated, manually fixed, etc). These
 # races are reported as ``status="skipped"`` (already resolved), never as a
 # hard failure.
-_ALREADY_RESOLVED_ERROR_CODES: frozenset[str] = frozenset({
-    "NoSuchBucket",
-    "NoSuchEntity",
-    "NoSuchEntityException",
-    "InvalidVolume.NotFound",
-    "InvalidGroup.NotFound",
-    "InvalidPermission.NotFound",
-    "InvalidInstanceID.NotFound",
-    "InvalidAllocationID.NotFound",
-    "InvalidAddress.NotFound",
-    "DBInstanceNotFoundFault",
-    "DBSnapshotNotFoundFault",
-    "DBClusterNotFoundFault",
-    "NotFoundException",
-    "ResourceNotFoundException",
-    "TrailNotFoundException",
-    "NoSuchConfigRuleException",
-    "NoSuchRemediationConfigurationException",
-})
+_ALREADY_RESOLVED_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "NoSuchBucket",
+        "NoSuchEntity",
+        "NoSuchEntityException",
+        "InvalidVolume.NotFound",
+        "InvalidGroup.NotFound",
+        "InvalidPermission.NotFound",
+        "InvalidInstanceID.NotFound",
+        "InvalidAllocationID.NotFound",
+        "InvalidAddress.NotFound",
+        "DBInstanceNotFoundFault",
+        "DBSnapshotNotFoundFault",
+        "DBClusterNotFoundFault",
+        "NotFoundException",
+        "ResourceNotFoundException",
+        "TrailNotFoundException",
+        "NoSuchConfigRuleException",
+        "NoSuchRemediationConfigurationException",
+    }
+)
 
 # Error codes that mean the target is AWS-managed, at an account/resource
 # limit, in a conflicting state, or otherwise structurally forbids the
 # requested modification right now. These are non-retryable-by-us in the
 # current run and should be reported as skipped rather than failed.
-_SKIP_STATE_CONFLICT_ERROR_CODES: frozenset[str] = frozenset({
-    "KMSInvalidStateException",
-    "UnsupportedOperationException",
-    "InvalidDBInstanceStateFault",
-    "InvalidDBClusterStateFault",
-    "IncorrectInstanceState",
-    "IncorrectState",
-    "VolumeInUse",
-    "LimitExceededException",
-    "MaxNumberOfConfigurationRecordersExceededException",
-    "MaxNumberOfDeliveryChannelsExceededException",
-    "NoAvailableConfigurationRecorderException",
-    "MaximumNumberOfTrailsExceededException",
-    "InsufficientS3BucketPolicyException",
-    "AlreadyExistsException",
-    "InvalidRequestException",
-    "ResourceConflictException",
-    "InvalidAccessException",
-})
+_SKIP_STATE_CONFLICT_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "KMSInvalidStateException",
+        "UnsupportedOperationException",
+        "InvalidDBInstanceStateFault",
+        "InvalidDBClusterStateFault",
+        "IncorrectInstanceState",
+        "IncorrectState",
+        "VolumeInUse",
+        "LimitExceededException",
+        "MaxNumberOfConfigurationRecordersExceededException",
+        "MaxNumberOfDeliveryChannelsExceededException",
+        "NoAvailableConfigurationRecorderException",
+        "MaximumNumberOfTrailsExceededException",
+        "InsufficientS3BucketPolicyException",
+        "AlreadyExistsException",
+        "InvalidRequestException",
+        "ResourceConflictException",
+        "InvalidAccessException",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +373,7 @@ def _remove_wildcard_iam_statements_via(
     executor._remove_wildcard_iam_statements(resource_id, region)
 
 
-def _archive_guardduty_finding_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _archive_guardduty_finding_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._archive_guardduty_finding(resource_id, region)
 
 
@@ -392,9 +395,7 @@ def _enable_cloudtrail_multi_region_via(
     executor._enable_cloudtrail_multi_region(resource_id, region)
 
 
-def _enable_config_recorder_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _enable_config_recorder_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._enable_config_recorder(resource_id, region)
 
 
@@ -410,15 +411,11 @@ def _trigger_config_rule_remediation_via(
     executor._trigger_config_rule_remediation(resource_id, region)
 
 
-def _enable_rds_multi_az_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _enable_rds_multi_az_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._enable_rds_multi_az(resource_id, region)
 
 
-def _create_default_dlm_policy_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _create_default_dlm_policy_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._create_default_dlm_policy(resource_id, region)
 
 
@@ -430,15 +427,11 @@ def _stop_idle_rds_via(executor: ActionExecutor, resource_id: str, region: str) 
     executor._stop_idle_rds(resource_id, region)
 
 
-def _fix_ec2_instance_type_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _fix_ec2_instance_type_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._fix_ec2_instance_type(resource_id, region)
 
 
-def _update_lambda_memory_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _update_lambda_memory_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._update_lambda_memory(resource_id, region)
 
 
@@ -460,9 +453,7 @@ def _create_encrypted_ebs_replacement_via(
     executor._create_encrypted_ebs_replacement(resource_id, region)
 
 
-def _migrate_ec2_to_asg_via(
-    executor: ActionExecutor, resource_id: str, region: str
-) -> None:
+def _migrate_ec2_to_asg_via(executor: ActionExecutor, resource_id: str, region: str) -> None:
     executor._migrate_ec2_to_asg(resource_id, region)
 
 
@@ -541,9 +532,7 @@ _HANDLERS: dict[str, _Handler | _ObservationOnlyHandler] = {
         extract_resource_id=_instance_id_from_arn,
         run=_fix_untagged_via,
     ),
-
     # ── New auto-remediable (16) ───────────────────────────────────────────
-
     # SEC-005: Remove Action:* + Resource:* Allow statements from the IAM
     # managed policy. Creates a new restricted default version and deletes
     # the old wildcard version. WARNING: may remove permissions applications
@@ -663,7 +652,6 @@ _HANDLERS: dict[str, _Handler | _ObservationOnlyHandler] = {
         extract_resource_id=_lambda_function_arn_passthrough,
         run=_update_lambda_memory_via,
     ),
-
     # ── Observation-only & assisted-remediation (7) ─────────────────────────
     # NOTE: only SEC-004, PERF-004, and PERF-005 below are true
     # _ObservationOnlyHandler entries — no AWS API is ever called for them.
@@ -672,7 +660,6 @@ _HANDLERS: dict[str, _Handler | _ObservationOnlyHandler] = {
     # a replacement + tag the original) rather than a direct in-place fix,
     # because the direct in-place action would be destructive, irreversible,
     # or require a live-traffic cutover a human should approve.
-
     # SEC-004: AWS has no API to enroll MFA on the root account.
     "SEC-004-root-mfa": _ObservationOnlyHandler(
         problem_type="root_mfa",
@@ -792,7 +779,7 @@ class ActionExecutor:
     def _get_account_id(self) -> str:
         """Return the current AWS account ID via STS GetCallerIdentity."""
         try:
-            return self.sts_client.get_caller_identity()["Account"]
+            return str(self.sts_client.get_caller_identity()["Account"])
         except Exception as exc:
             logger.warning("action._get_account_id.failed", error=str(exc))
             return "unknown"
@@ -902,8 +889,7 @@ class ActionExecutor:
             # non-error reason (e.g. AWS-managed resource, already resolved).
             message = str(e)
             audit_entry = (
-                f"[{timestamp}] SKIPPED: {action_type} on {resource_id}. "
-                f"Reason: {message}"
+                f"[{timestamp}] SKIPPED: {action_type} on {resource_id}. Reason: {message}"
             )
             logger.info("action.skipped", action=action_type, resource=resource_id, reason=message)
             return {
@@ -979,8 +965,7 @@ class ActionExecutor:
                 ) from exc
             if code == "InvalidPermission.NotFound":
                 raise _SkippedRemediation(
-                    f"Security group {sg_id!r} ingress rule was already revoked; "
-                    "already resolved."
+                    f"Security group {sg_id!r} ingress rule was already revoked; already resolved."
                 ) from exc
             raise
 
@@ -1271,8 +1256,7 @@ class ActionExecutor:
 
         # All failures were managed-resource errors — emit a skipped result.
         raise _SkippedRemediation(
-            f"Resource is AWS-managed and does not permit tagging: "
-            + "; ".join(skippable)
+            "Resource is AWS-managed and does not permit tagging: " + "; ".join(skippable)
         )
 
     # ── New remediation methods ───────────────────────────────────────────
@@ -1317,9 +1301,7 @@ class ActionExecutor:
                 return False
             actions = stmt.get("Action", [])
             resources = stmt.get("Resource", [])
-            has_wildcard_action = actions == "*" or (
-                isinstance(actions, list) and "*" in actions
-            )
+            has_wildcard_action = actions == "*" or (isinstance(actions, list) and "*" in actions)
             has_wildcard_resource = resources == "*" or (
                 isinstance(resources, list) and "*" in resources
             )
@@ -1405,9 +1387,7 @@ class ActionExecutor:
                 paginator = self.guardduty_client.get_paginator("list_findings")
                 for page in paginator.paginate(
                     DetectorId=det_id,
-                    FindingCriteria={
-                        "Criterion": {"service.archived": {"Eq": ["false"]}}
-                    },
+                    FindingCriteria={"Criterion": {"service.archived": {"Eq": ["false"]}}},
                 ):
                     finding_ids.extend(page.get("FindingIds", []))
             except ClientError as exc:
@@ -1425,9 +1405,7 @@ class ActionExecutor:
             for i in range(0, len(finding_ids), 50):
                 batch = finding_ids[i : i + 50]
                 try:
-                    self.guardduty_client.archive_findings(
-                        DetectorId=det_id, FindingIds=batch
-                    )
+                    self.guardduty_client.archive_findings(DetectorId=det_id, FindingIds=batch)
                     archived_total += len(batch)
                 except ClientError as exc:
                     logger.warning(
@@ -1462,9 +1440,7 @@ class ActionExecutor:
         for analyzer in analyzers:
             analyzer_arn = analyzer["arn"]
             try:
-                for page in self.accessanalyzer_client.get_paginator(
-                    "list_findings"
-                ).paginate(
+                for page in self.accessanalyzer_client.get_paginator("list_findings").paginate(
                     analyzerArn=analyzer_arn,
                     filter={
                         "status": {"eq": ["ACTIVE"]},
@@ -1514,14 +1490,11 @@ class ActionExecutor:
                 Filters=filters
             ):
                 for f in page.get("Findings", []):
-                    finding_identifiers.append(
-                        {"Id": f["Id"], "ProductArn": f["ProductArn"]}
-                    )
+                    finding_identifiers.append({"Id": f["Id"], "ProductArn": f["ProductArn"]})
         except ClientError as exc:
             if _error_code(exc) == "InvalidAccessException":
                 raise _SkippedRemediation(
-                    f"Security Hub is not enabled in region {region}; "
-                    "nothing to notify."
+                    f"Security Hub is not enabled in region {region}; nothing to notify."
                 ) from exc
             raise
 
@@ -1581,33 +1554,30 @@ class ActionExecutor:
 
             self.s3_client.put_bucket_policy(
                 Bucket=bucket_name,
-                Policy=_json.dumps({
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Sid": "AWSCloudTrailAclCheck",
-                            "Effect": "Allow",
-                            "Principal": {"Service": "cloudtrail.amazonaws.com"},
-                            "Action": "s3:GetBucketAcl",
-                            "Resource": f"arn:aws:s3:::{bucket_name}",
-                        },
-                        {
-                            "Sid": "AWSCloudTrailWrite",
-                            "Effect": "Allow",
-                            "Principal": {"Service": "cloudtrail.amazonaws.com"},
-                            "Action": "s3:PutObject",
-                            "Resource": (
-                                f"arn:aws:s3:::{bucket_name}"
-                                f"/AWSLogs/{account_id}/*"
-                            ),
-                            "Condition": {
-                                "StringEquals": {
-                                    "s3:x-amz-acl": "bucket-owner-full-control"
-                                }
+                Policy=_json.dumps(
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "AWSCloudTrailAclCheck",
+                                "Effect": "Allow",
+                                "Principal": {"Service": "cloudtrail.amazonaws.com"},
+                                "Action": "s3:GetBucketAcl",
+                                "Resource": f"arn:aws:s3:::{bucket_name}",
                             },
-                        },
-                    ],
-                }),
+                            {
+                                "Sid": "AWSCloudTrailWrite",
+                                "Effect": "Allow",
+                                "Principal": {"Service": "cloudtrail.amazonaws.com"},
+                                "Action": "s3:PutObject",
+                                "Resource": (f"arn:aws:s3:::{bucket_name}/AWSLogs/{account_id}/*"),
+                                "Condition": {
+                                    "StringEquals": {"s3:x-amz-acl": "bucket-owner-full-control"}
+                                },
+                            },
+                        ],
+                    }
+                ),
             )
 
         # Create the trail (idempotent — TrailAlreadyExistsException is fine).
@@ -1718,9 +1688,7 @@ class ActionExecutor:
                 ) from exc
             raise
         try:
-            self.config_client.start_configuration_recorder(
-                ConfigurationRecorderName="default"
-            )
+            self.config_client.start_configuration_recorder(ConfigurationRecorderName="default")
         except ClientError as exc:
             if _error_code(exc) == "NoAvailableConfigurationRecorderException":
                 raise _SkippedRemediation(
@@ -1743,9 +1711,7 @@ class ActionExecutor:
         )
         plan_name = "chandra-default-backup-plan"
 
-        existing_plans = self.backup_client.list_backup_plans().get(
-            "BackupPlansList", []
-        )
+        existing_plans = self.backup_client.list_backup_plans().get("BackupPlansList", [])
         if any(p["BackupPlanName"] == plan_name for p in existing_plans):
             logger.info("action.create_backup_plan.exists", name=plan_name)
             return
@@ -1779,8 +1745,7 @@ class ActionExecutor:
                 BackupSelection={
                     "SelectionName": "AllTaggedResources",
                     "IamRoleArn": (
-                        f"arn:aws:iam::{account_id}:role/service-role/"
-                        "AWSBackupDefaultServiceRole"
+                        f"arn:aws:iam::{account_id}:role/service-role/AWSBackupDefaultServiceRole"
                     ),
                     "ListOfTags": [
                         {
@@ -1824,9 +1789,7 @@ class ActionExecutor:
         )
         # Extract rule name from ARN if necessary.
         rule_name = (
-            rule_identifier.rsplit("/", 1)[-1]
-            if "/" in rule_identifier
-            else rule_identifier
+            rule_identifier.rsplit("/", 1)[-1] if "/" in rule_identifier else rule_identifier
         )
 
         resource_keys: list[dict[str, str]] = []
@@ -1838,9 +1801,8 @@ class ActionExecutor:
                 ComplianceTypes=["NON_COMPLIANT"],
             ):
                 for result in page.get("EvaluationResults", []):
-                    qualifier = (
-                        result.get("EvaluationResultIdentifier", {})
-                        .get("EvaluationResultQualifier", {})
+                    qualifier = result.get("EvaluationResultIdentifier", {}).get(
+                        "EvaluationResultQualifier", {}
                     )
                     resource_keys.append(
                         {
@@ -1910,9 +1872,7 @@ class ActionExecutor:
             raise
         instances = resp.get("DBInstances", [])
         if not instances:
-            raise _SkippedRemediation(
-                f"RDS instance {db_id!r} no longer exists; already resolved."
-            )
+            raise _SkippedRemediation(f"RDS instance {db_id!r} no longer exists; already resolved.")
         db = instances[0]
         if db.get("MultiAZ"):
             logger.info("action.enable_rds_multi_az.already_enabled", db=db_id)
@@ -1962,9 +1922,7 @@ class ActionExecutor:
             logger.info("action.create_dlm_policy.exists", region=region)
             return
 
-        role_arn = (
-            f"arn:aws:iam::{account_id}:role/AWSDataLifecycleManagerDefaultRole"
-        )
+        role_arn = f"arn:aws:iam::{account_id}:role/AWSDataLifecycleManagerDefaultRole"
         try:
             self.dlm_client.create_lifecycle_policy(
                 ExecutionRoleArn=role_arn,
@@ -2033,8 +1991,7 @@ class ActionExecutor:
             # Desired end-state (not running) is already achieved, or the
             # instance is gone — either way there is nothing left to do.
             raise _SkippedRemediation(
-                f"Instance {instance_id} is already in state {state!r}; "
-                "already resolved."
+                f"Instance {instance_id} is already in state {state!r}; already resolved."
             )
         if state != "running":
             raise _SkippedRemediation(
@@ -2085,9 +2042,7 @@ class ActionExecutor:
             raise
         instances = resp.get("DBInstances", [])
         if not instances:
-            raise _SkippedRemediation(
-                f"RDS instance {db_id!r} no longer exists; already resolved."
-            )
+            raise _SkippedRemediation(f"RDS instance {db_id!r} no longer exists; already resolved.")
         db_status = instances[0].get("DBInstanceStatus", "unknown")
         if db_status in ("stopped", "stopping"):
             raise _SkippedRemediation(
@@ -2123,7 +2078,7 @@ class ActionExecutor:
             raise
         logger.info("action.stop_idle_rds.done", db=db_id)
 
-    def _fix_ec2_instance_type(self, instance_id: str, region: str) -> None:
+    def _fix_ec2_instance_type(self, instance_id: str, region: str) -> None:  # noqa: PLR0912,PLR0915
         """Stop → change instance type → start an over-provisioned EC2 (PERF-003, PERF-006).
 
         Queries Compute Optimizer for the recommended instance type. Falls back
@@ -2146,17 +2101,11 @@ class ActionExecutor:
         recommended_type: str | None = None
         try:
             account_id = self._get_account_id()
-            instance_arn = (
-                f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
-            )
-            co_resp = self.co_client.get_ec2_instance_recommendations(
-                instanceArns=[instance_arn]
-            )
+            instance_arn = f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
+            co_resp = self.co_client.get_ec2_instance_recommendations(instanceArns=[instance_arn])
             recs = co_resp.get("instanceRecommendations", [])
             if recs and recs[0].get("recommendationOptions"):
-                recommended_type = recs[0]["recommendationOptions"][0].get(
-                    "instanceType"
-                )
+                recommended_type = recs[0]["recommendationOptions"][0].get("instanceType")
         except Exception as exc:
             logger.warning(
                 "action.fix_ec2_instance_type.co_unavailable",
@@ -2195,7 +2144,7 @@ class ActionExecutor:
 
         # 3. Fall back to a one-step downsize within the same family.
         if recommended_type is None:
-            _DOWNSIZE_MAP = {
+            _DOWNSIZE_MAP = {  # noqa: N806
                 "nano": "nano",
                 "micro": "nano",
                 "small": "micro",
@@ -2230,8 +2179,7 @@ class ActionExecutor:
                 waiter.wait(InstanceIds=[instance_id])
             except WaiterError as exc:
                 raise ValueError(
-                    f"Instance {instance_id} did not reach 'stopped' state "
-                    f"in time: {exc}"
+                    f"Instance {instance_id} did not reach 'stopped' state in time: {exc}"
                 ) from exc
 
         # 5. Change instance type.
@@ -2289,18 +2237,12 @@ class ActionExecutor:
             function_arn=function_arn,
             region=region,
         )
-        co_resp = self.co_client.get_lambda_function_recommendations(
-            functionArns=[function_arn]
-        )
+        co_resp = self.co_client.get_lambda_function_recommendations(functionArns=[function_arn])
         recs = co_resp.get("lambdaFunctionRecommendations", [])
         if not recs or not recs[0].get("memorySizeRecommendationOptions"):
-            raise ValueError(
-                f"No Compute Optimizer memory recommendation found for {function_arn}"
-            )
+            raise ValueError(f"No Compute Optimizer memory recommendation found for {function_arn}")
 
-        recommended_memory: int = recs[0]["memorySizeRecommendationOptions"][0][
-            "memorySize"
-        ]
+        recommended_memory: int = recs[0]["memorySizeRecommendationOptions"][0]["memorySize"]
         current_memory: int = recs[0].get("currentMemorySize", 0)
 
         if recommended_memory == current_memory:
@@ -2320,8 +2262,7 @@ class ActionExecutor:
             code = _error_code(exc)
             if code == "ResourceNotFoundException":
                 raise _SkippedRemediation(
-                    f"Lambda function {function_arn!r} no longer exists; "
-                    "already resolved."
+                    f"Lambda function {function_arn!r} no longer exists; already resolved."
                 ) from exc
             if code == "ResourceConflictException":
                 raise _SkippedRemediation(
@@ -2370,9 +2311,8 @@ class ActionExecutor:
                     ComplianceTypes=["NON_COMPLIANT"],
                 ):
                     for result in page.get("EvaluationResults", []):
-                        qualifier = (
-                            result.get("EvaluationResultIdentifier", {})
-                            .get("EvaluationResultQualifier", {})
+                        qualifier = result.get("EvaluationResultIdentifier", {}).get(
+                            "EvaluationResultQualifier", {}
                         )
                         r_id = qualifier.get("ResourceId", "")
                         r_arn = qualifier.get("ResourceArn", "")
@@ -2732,9 +2672,7 @@ class ActionExecutor:
         except self.ec2_client.exceptions.ClientError as exc:
             if "AlreadyExists" in str(exc):
                 # Re-use existing template if we already created one for this instance.
-                lt_resp = self.ec2_client.describe_launch_templates(
-                    LaunchTemplateNames=[lt_name]
-                )
+                lt_resp = self.ec2_client.describe_launch_templates(LaunchTemplateNames=[lt_name])
                 lt_id = lt_resp["LaunchTemplates"][0]["LaunchTemplateId"]
             else:
                 raise

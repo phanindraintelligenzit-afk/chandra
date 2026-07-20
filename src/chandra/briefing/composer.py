@@ -26,7 +26,6 @@ from src.chandra.briefing.schemas import (
     Finding,
     Scorecard,
 )
-from src.chandra.config import settings
 from src.chandra.logging import get_logger
 from src.chandra.observability.callbacks import UsageCapture
 
@@ -98,27 +97,11 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         return []
 
     try:
-        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,
-        )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        logger.warning("llm.openai_unavailable_fallback_to_deterministic")
-        return deterministic_rank(findings)
+        # Provider chosen by LLM_PROVIDER (bedrock | openai | ollama); any
+        # import/build failure falls through to the deterministic path.
+        from src.chandra.llm import build_chat_model  # noqa: PLC0415
 
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-            # temperature=0.0,
-            # max_tokens=2048,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        llm = build_chat_model()
         analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
         payload = [
@@ -143,8 +126,8 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
-        
+        import json_repair  # noqa: PLC0415
+
         parsed = json_repair.loads(text)
         ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
     except Exception as exc:
@@ -199,26 +182,9 @@ def compose_executive_summary(
     """Three-bullet exec summary. LLM-generated when Bedrock is reachable."""
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
-        from langchain_aws import (  # noqa: PLC0415  # lazy: optional dep
-            ChatBedrockConverse,
-        )
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        return _deterministic_summary(analyzed, score_dict)
+        from src.chandra.llm import build_chat_model  # noqa: PLC0415
 
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-            # temperature=0.2,
-            # max_tokens=512,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        llm = build_chat_model()
         briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
         top = [
@@ -311,25 +277,11 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
     """
     try:
         # Lazy import, matching llm_rank / compose_executive_summary: the
-        # composer must degrade to deterministic output when Bedrock's SDK
-        # is absent from the runtime.
-        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
-        # from langchain_openai import ChatOpenAI  # noqa: PLC0415
-    except ImportError:
-        logger.warning("llm.openai_unavailable_fallback_to_deterministic")
-        return None
+        # composer must degrade to deterministic output when the selected
+        # provider's SDK is absent from the runtime.
+        from src.chandra.llm import build_chat_model  # noqa: PLC0415
 
-    try:
-        import os
-        llm = ChatBedrockConverse(
-            model_id=settings.bedrock_model_id,
-            region_name=settings.aws_default_region,
-        )
-        # llm = ChatOpenAI(
-        #     base_url=os.getenv("OPENAI_API_BASE"),
-        #     api_key=os.getenv("OPENAI_API_KEY"),
-        #     model=os.getenv("OPENAI_MODEL_NAME"),
-        # )
+        llm = build_chat_model()
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
         cb = UsageCapture()
         response = llm.invoke(
@@ -340,8 +292,8 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
-        
+        import json_repair  # noqa: PLC0415
+
         parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:
             logger.warning("llm.request_analysis_malformed_fallback_to_deterministic")

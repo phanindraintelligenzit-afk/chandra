@@ -115,6 +115,13 @@ class RequestClassification(BaseModel):
     priority: RequestPriority = RequestPriority.P3
     summary: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    kra_code: str | None = Field(
+        default=None,
+        description=(
+            "Matched Dynamic KRA Framework registry code (built-in or "
+            "customer-defined); None when no registry KRA matched."
+        ),
+    )
 
 
 class ContextItem(BaseModel):

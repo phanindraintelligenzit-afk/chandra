@@ -37,6 +37,20 @@ class Settings(BaseSettings):
         alias="BEDROCK_MODEL_ID",
     )
 
+    # ── LLM provider selection (src/chandra/llm.build_chat_model) ─────────
+    # "bedrock" (default) | "openai" (any OpenAI-compatible endpoint, e.g.
+    # vLLM) | "ollama" (local Ollama; uses its OpenAI-compatible /v1 API).
+    # Switching provider is an env change only — never a code change.
+    llm_provider: str = Field(default="bedrock", alias="LLM_PROVIDER")
+    # OpenAI-compatible endpoint (vLLM, TGI, LM Studio, ...).
+    openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
+    openai_model_name: str | None = Field(default=None, alias="OPENAI_MODEL_NAME")
+    openai_api_key: str = Field(default="not-needed", alias="OPENAI_API_KEY")
+    # Local Ollama daemon. No default model on purpose: the production
+    # model is selected by benchmarking Chandra workloads, not hardcoded.
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
+    ollama_model: str | None = Field(default=None, alias="OLLAMA_MODEL")
+
     postgres_url: str = Field(
         default="postgresql+psycopg://chandra:chandra@localhost:5432/chandra",
         alias="POSTGRES_URL",
