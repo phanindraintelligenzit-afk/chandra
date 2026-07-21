@@ -1942,6 +1942,42 @@ Attached Policies:
             }
         }
 
+    @staticmethod
+    def _budget_context(text: str, env_var: str, default_chars: int, label: str) -> str:
+        """Cap one context block so the code-gen prompt stays within budget.
+
+        Custom KRAs ground the generator with live AWS inventory + full
+        Terraform resource docs (an ``aws_s3_bucket`` doc alone is many
+        thousands of tokens). Predefined KRAs don't — which is why they stay
+        small and fast while Custom KRAs balloon to ~24k prompt tokens and
+        then truncate the completion (LengthFinishReasonError). Bedrock's
+        large context absorbed it; a local model does not.
+
+        A deterministic per-section char budget (~4 chars/token) keeps the
+        prompt small enough that a 7B–14B local model has room to *generate*
+        the plan. Bedrock is exempt (budget 0 = unlimited) so the Claude path
+        is unchanged. Each budget is env-overridable.
+        """
+        provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+        if provider == "bedrock":
+            return text
+        try:
+            budget = int(os.getenv(env_var, str(default_chars)))
+        except ValueError:
+            budget = default_chars
+        if budget <= 0 or len(text) <= budget:
+            return text
+        omitted = len(text) - budget
+        logger.warning(
+            "%s too large for local model (%d chars); trimming to %d (omitted %d). "
+            "Override with %s.",
+            label, len(text), budget, omitted, env_var,
+        )
+        return text[:budget] + (
+            f"\n...[{label}: trimmed {omitted} chars to fit the local model's "
+            "context budget; only the most relevant portion is shown]..."
+        )
+
     def _generate_node(self, state: AgentState) -> dict:
         check_cancelled()
         action = state["action"]
@@ -1959,6 +1995,19 @@ Attached Policies:
         terraform_state_ctx = state.get("terraform_state_context") or ""
         service_quotas_context = state.get("service_quotas_context") or ""
         terraform_docs_context = state.get("terraform_docs") or ""
+        # Token Budget Manager: cap the grounding blocks that make Custom-KRA
+        # prompts explode (full Terraform resource docs + live AWS inventory
+        # + memory). Bedrock is exempt; local providers get bounded so the
+        # completion isn't truncated (LengthFinishReasonError). Env-tunable.
+        terraform_docs_context = self._budget_context(
+            terraform_docs_context, "CHANDRA_TF_DOCS_MAX_CHARS", 8000, "Terraform docs"
+        )
+        aws_ctx = self._budget_context(
+            aws_ctx, "CHANDRA_AWS_CTX_MAX_CHARS", 6000, "AWS grounding"
+        )
+        memory_ctx = self._budget_context(
+            memory_ctx, "CHANDRA_MEMORY_MAX_CHARS", 3000, "Resolution memory"
+        )
         validate_feedback = state.get("validate_feedback") or ""
         plan_review = state.get("plan_review") or {}
         plan_review_feedback = ""
