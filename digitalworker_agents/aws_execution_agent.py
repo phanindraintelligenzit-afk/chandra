@@ -1453,6 +1453,34 @@ class ExecutionAgents:
             max_tokens=_env_int("CHANDRA_AGENT_MAX_TOKENS", 8192),
         )
 
+    def _structured_llm(self, schema: Any) -> Any:
+        """Return a structured-output runnable using the right method per provider.
+
+        LangChain's default (`function_calling`) needs the model to expose
+        OpenAI-style tool calling — which for a local vLLM model means the
+        server must be started with a *matching* ``--tool-call-parser`` +
+        ``--enable-auto-tool-choice``. Getting that wrong (e.g. a Mistral
+        parser on a Llama/Qwen model, or a model with no tool support at
+        all) makes every structured call fail. vLLM instead supports schema
+        enforcement via guided decoding (``response_format`` json_schema)
+        for *any* model, no tool parser required — which is far more robust
+        across the models that actually fit a 24 GB GPU.
+
+        So: Bedrock/Claude keeps the proven tool-calling path unchanged;
+        OpenAI-compatible / vLLM / Ollama default to ``json_schema`` guided
+        decoding. Override with ``CHANDRA_STRUCTURED_OUTPUT_METHOD``
+        (``json_schema`` | ``json_mode`` | ``function_calling``) if a
+        specific server build needs a different one.
+        """
+        provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+        openai_family = {"openai", "openai_compatible", "vllm", "ollama"}
+        default_method = "json_schema" if provider in openai_family else "function_calling"
+        method = (os.getenv("CHANDRA_STRUCTURED_OUTPUT_METHOD") or default_method).strip()
+        if method == "function_calling":
+            # Preserve the exact legacy call (Bedrock/Claude path unchanged).
+            return self.Llm.with_structured_output(schema)
+        return self.Llm.with_structured_output(schema, method=method)
+
     def _banner(self, text: str, char: str = "=", width: int = 78) -> None:
         self.logger.info(char * width)
         self.logger.info(text)
@@ -1694,7 +1722,7 @@ Generally be conservative with clarification requests (use sensible defaults whe
 cautious regarding IAM and security: ALWAYS ask the user if target identities or permissions are underspecified."""
 
         try:
-            structured_llm = self.Llm.with_structured_output(ActionAnalysis)
+            structured_llm = self._structured_llm(ActionAnalysis)
             analysis: ActionAnalysis = structured_llm.invoke([HumanMessage(content=prompt)])
             return {"analysis": analysis.model_dump()}
         except Exception as exc:
@@ -1820,7 +1848,7 @@ Expected Terraform Resources: {resources}
 Attached Policies:
 {json.dumps(policies_json, indent=2)}
 """
-            structured_llm = self.Llm.with_structured_output(PermissionCheck)
+            structured_llm = self._structured_llm(PermissionCheck)
             evaluation: PermissionCheck = structured_llm.invoke([HumanMessage(content=prompt)])
             
             self.logger.info("Permission Check Result: is_authorized=%s, missing=%s, reasoning=%s", evaluation.is_authorized, evaluation.missing_permissions, evaluation.reasoning)
@@ -2260,7 +2288,7 @@ OUTPUT CONTRACT — this response is machine-parsed, not read by a human
 Generate the complete set of files now."""
 
         try:
-            structured_llm = self.Llm.with_structured_output(CodeGenerationResult)
+            structured_llm = self._structured_llm(CodeGenerationResult)
             result: CodeGenerationResult = structured_llm.invoke([HumanMessage(content=prompt)])
             return {
                 "generated_files": [f.model_dump() for f in result.files],
@@ -2532,7 +2560,7 @@ No prose or markdown outside those fields. Each command must be a single complet
 command string — never a placeholder, never "...", never a comment."""
 
         try:
-            structured_llm = self.Llm.with_structured_output(ExecutionPlan)
+            structured_llm = self._structured_llm(ExecutionPlan)
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
             self.logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
             self.logger.info("  Reasoning: %s", plan.reasoning)
@@ -2752,7 +2780,7 @@ Determine:
 4. reasoning — one or two sentences."""
 
         try:
-            structured_llm = self.Llm.with_structured_output(PlanReview)
+            structured_llm = self._structured_llm(PlanReview)
             review: PlanReview = structured_llm.invoke([HumanMessage(content=review_prompt)])
             review_dict = review.model_dump()
             self.logger.info(
