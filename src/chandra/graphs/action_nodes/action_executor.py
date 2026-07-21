@@ -949,14 +949,41 @@ class ActionExecutor:
         """
         logger.info(f"Fixing security group: {sg_id}")
         try:
+            resp = self.ec2_client.describe_security_groups(GroupIds=[sg_id])
+        except ClientError as exc:
+            if _error_code(exc) == "InvalidGroup.NotFound":
+                raise _SkippedRemediation(
+                    f"Security group {sg_id!r} no longer exists; already resolved."
+                ) from exc
+            raise
+            
+        sg = resp["SecurityGroups"][0]
+        to_revoke = []
+        for perm in sg.get("IpPermissions", []):
+            if any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", [])):
+                ip_protocol = perm.get("IpProtocol")
+                if ip_protocol in ("tcp", "-1"):
+                    from_port = perm.get("FromPort")
+                    to_port = perm.get("ToPort")
+                    if ip_protocol == "-1" or (from_port and to_port and any(p in (22, 3389, 3306, 5432) for p in range(from_port, to_port + 1))):
+                        new_perm = {
+                            "IpProtocol": ip_protocol,
+                            "IpRanges": [{"CidrIp": "0.0.0.0/0"}]
+                        }
+                        if from_port is not None:
+                            new_perm["FromPort"] = from_port
+                            new_perm["ToPort"] = to_port
+                        to_revoke.append(new_perm)
+
+        if not to_revoke:
+            raise _SkippedRemediation(
+                f"Security group {sg_id!r} ingress rule was already revoked; already resolved."
+            )
+
+        try:
             self.ec2_client.revoke_security_group_ingress(
                 GroupId=sg_id,
-                IpPermissions=[
-                    {
-                        "IpProtocol": "-1",
-                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
-                    }
-                ],
+                IpPermissions=to_revoke,
             )
         except ClientError as exc:
             code = _error_code(exc)

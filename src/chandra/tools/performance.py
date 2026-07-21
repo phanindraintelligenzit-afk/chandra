@@ -120,6 +120,8 @@ def find_underutilized_rds(ctx: DetectorContext) -> list[Finding]:
                 dbs.extend(page.get("DBInstances", []))
 
         for db in dbs:
+            if db.get("DBInstanceStatus") != "available":
+                continue
             identifier = db["DBInstanceIdentifier"]
             arn = db["DBInstanceArn"]
             with detector_guard(ctx, detector_id=detector_id, region=region, resource_arn=arn):
