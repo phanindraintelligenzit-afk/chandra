@@ -13,6 +13,7 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from src.chandra.config import settings as chandra_settings
 from src.chandra.llm import build_chat_model
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -226,6 +227,43 @@ class AwsObservabilityAgent:
         )
         return {"raw_results": raw_results}
 
+    def _bound_input(self, text: str) -> str:
+        """Cap tool data so the summary prompt fits a local model's context.
+
+        Claude/Bedrock has a very large context window, so the full tool
+        dump (often 25k+ tokens) always fit. A local vLLM model served at,
+        e.g., 16k context rejects the request outright (HTTP 400: input
+        exceeds max context) — which is exactly what breaks the observation
+        summary on the local LLM. Truncate the data to a char budget
+        (~4 chars/token) so the summary degrades gracefully instead of
+        failing the whole job.
+
+        Bedrock is left untouched (budget 0 = no truncation) so the Claude
+        path is byte-for-byte unchanged. For OpenAI-compatible / vLLM /
+        Ollama the default budget targets a 16k-context model; override with
+        ``CHANDRA_AGENT_MAX_INPUT_CHARS`` when the server runs a larger
+        ``--max-model-len``.
+        """
+        provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+        default_budget = 0 if provider == "bedrock" else 30000
+        try:
+            budget = int(os.getenv("CHANDRA_AGENT_MAX_INPUT_CHARS", str(default_budget)))
+        except ValueError:
+            budget = default_budget
+        if budget <= 0 or len(text) <= budget:
+            return text
+        omitted = len(text) - budget
+        logger.warning(
+            "Tool data too large for model context (%d chars); truncating to %d "
+            "(omitted %d). Raise CHANDRA_AGENT_MAX_INPUT_CHARS or the vLLM "
+            "--max-model-len to include more.",
+            len(text), budget, omitted,
+        )
+        return text[:budget] + (
+            f"\n\n...[TRUNCATED {omitted} characters of tool data to fit the "
+            "model context window]..."
+        )
+
     def SummaryNode(self, state: AgentState) -> dict:
         check_cancelled()
         raw_results = state.get("raw_results", {})
@@ -250,7 +288,7 @@ class AwsObservabilityAgent:
             return {"final_summary": empty_report.model_dump_json()}
 
         try:
-            raw_str = json.dumps(raw_results, indent=2, default=str)
+            raw_str = self._bound_input(json.dumps(raw_results, indent=2, default=str))
             prompt = f"""You are an autonomous AWS Cloud Engineer Agent capable of handling both observability analysis and operational tasks.
 
 **User-defined KRAs (Key Result Areas):**
