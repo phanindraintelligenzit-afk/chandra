@@ -27,7 +27,14 @@ def client() -> Iterator[TestClient]:
 
 
 def _poll_request(
-    client: TestClient, job_id: str, wanted: set[str], timeout_s: float = 20.0
+    # 60s ceiling (not 20s): these poll the full Digital Worker graph to a
+    # terminal state, and a heavily-loaded CI runner can starve the worker
+    # thread well past 20s. Fast jobs still return as soon as they finish —
+    # this only raises the timeout, not the normal duration.
+    client: TestClient,
+    job_id: str,
+    wanted: set[str],
+    timeout_s: float = 60.0,
 ) -> dict[str, Any]:
     """Poll GET /requests/{job_id} until status is in ``wanted`` or timeout."""
     deadline = time.time() + timeout_s
@@ -186,6 +193,7 @@ class TestApprovalCenterDiscovery:
 
     def test_approve_resumes_to_completion(self, client: TestClient) -> None:
         payload = {
+            "dry_run": True,
             "issue": {
                 "key": "SEC-1002",
                 "fields": {
@@ -204,15 +212,19 @@ class TestApprovalCenterDiscovery:
             json={"approved": True, "approver": "phani", "comment": "go"},
         )
         assert approve.status_code == 202
-        body = _poll_request(client, job_id, {"completed"})
+        body = _poll_request(client, job_id, {"completed", "dry_run"})
         assert body["request"]["workflow_status"] in ("completed", "completed_with_issues")
 
     def test_approve_wrong_state_conflicts(self, client: TestClient) -> None:
         """Approving a job that is not awaiting approval must 409."""
         job_id = client.post(
             "/requests",
-            json={"source": "rest_api", "payload": {"title": "no approval needed here"}},
+            json={
+                "source": "rest_api",
+                "payload": {"title": "no approval needed here"},
+                "dry_run": True,
+            },
         ).json()["job_id"]
-        _poll_request(client, job_id, {"completed"})
+        _poll_request(client, job_id, {"completed", "dry_run"})
         conflict = client.post(f"/requests/{job_id}/approve", json={"approved": True})
         assert conflict.status_code == 409

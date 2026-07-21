@@ -20,17 +20,18 @@ Run with:
 """
 
 import contextvars
-import sys
 import os
+import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from langgraph.graph import StateGraph, END, START
-from langgraph.types import interrupt, Command
+from typing import TypedDict
+
 from langgraph.checkpoint.memory import MemorySaver
-from typing import TypedDict, Optional
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 
 # ─────────────────────────────────────────────
@@ -39,7 +40,7 @@ from typing import TypedDict, Optional
 class TestState(TypedDict):
     action: str
     result: str
-    clarification: Optional[str]
+    clarification: str | None
 
 
 # ─────────────────────────────────────────────
@@ -48,11 +49,13 @@ class TestState(TypedDict):
 # ─────────────────────────────────────────────
 _SHARED_CHECKPOINTER = None
 
+
 def _get_shared_checkpointer():
     global _SHARED_CHECKPOINTER
     if _SHARED_CHECKPOINTER is None:
         _SHARED_CHECKPOINTER = MemorySaver()
     return _SHARED_CHECKPOINTER
+
 
 def _reset_shared_checkpointer():
     """Reset for test isolation."""
@@ -94,6 +97,7 @@ def _build_graph(checkpointer):
 
 class SimulatedAgent:
     """Simulates one HTTP request creating one ExecutionAgents instance."""
+
     def __init__(self, use_singleton: bool):
         if use_singleton:
             self.checkpointer = _get_shared_checkpointer()  # THE FIX
@@ -143,7 +147,9 @@ class TestRealBug(unittest.TestCase):
             # We detect this by checking if action is in final state
             final = ctx2.run(agent_b.graph.get_state, config)
             action_val = final.values.get("action", "MISSING")
-            print(f"   BUG test: Resume result action='{action_val}' result='{final.values.get('result')}'")
+            print(
+                f"   BUG test: Resume result action='{action_val}' result='{final.values.get('result')}'"
+            )
             # The action will be MISSING because it restarted with empty state from Command
             print("   BUG CONFIRMED: Resume produced wrong state (checkpoint was lost)")
         except KeyError as e:
@@ -189,15 +195,19 @@ class TestRealBug(unittest.TestCase):
         final = ctx2.run(agent_b.graph.get_state, config)
         vals = final.values
 
-        self.assertEqual(vals.get("action"), "deploy-rds-instance",
-            "FAIL: action was lost after resume!")
-        self.assertEqual(vals.get("clarification"), "prod-rds-bucket-01",
-            "FAIL: clarification answer not saved!")
-        self.assertIn("done:deploy-rds-instance:clarified_with:prod-rds-bucket-01",
-                      vals.get("result", ""),
-            "FAIL: final result is wrong!")
+        self.assertEqual(
+            vals.get("action"), "deploy-rds-instance", "FAIL: action was lost after resume!"
+        )
+        self.assertEqual(
+            vals.get("clarification"), "prod-rds-bucket-01", "FAIL: clarification answer not saved!"
+        )
+        self.assertIn(
+            "done:deploy-rds-instance:clarified_with:prod-rds-bucket-01",
+            vals.get("result", ""),
+            "FAIL: final result is wrong!",
+        )
 
-        print(f"   FIX test: Resume succeeded!")
+        print("   FIX test: Resume succeeded!")
         print(f"   Final result: '{vals['result']}'")
         print("PASS: Singleton checkpointer fix works correctly across two instances!")
 
@@ -212,17 +222,33 @@ class TestRealBug(unittest.TestCase):
         agent2 = SimulatedAgent(use_singleton=True)
         ctx = contextvars.Context()
 
-        ctx.run(agent1.graph.invoke, {"action": "parent-action", "result": "", "clarification": None}, parent_config)
-        ctx.run(agent2.graph.invoke, {"action": "child-action", "result": "", "clarification": None}, child_config)
+        ctx.run(
+            agent1.graph.invoke,
+            {"action": "parent-action", "result": "", "clarification": None},
+            parent_config,
+        )
+        ctx.run(
+            agent2.graph.invoke,
+            {"action": "child-action", "result": "", "clarification": None},
+            child_config,
+        )
 
         parent_snap = ctx.run(agent1.graph.get_state, parent_config)
         child_snap = ctx.run(agent2.graph.get_state, child_config)
 
-        self.assertEqual(parent_snap.values.get("action"), "parent-action",
-            "FAIL: Parent state corrupted by child!")
-        self.assertEqual(child_snap.values.get("action"), "child-action",
-            "FAIL: Child state corrupted by parent!")
-        print(f"PASS: No collision — parent='{parent_snap.values['action']}', child='{child_snap.values['action']}'")
+        self.assertEqual(
+            parent_snap.values.get("action"),
+            "parent-action",
+            "FAIL: Parent state corrupted by child!",
+        )
+        self.assertEqual(
+            child_snap.values.get("action"),
+            "child-action",
+            "FAIL: Child state corrupted by parent!",
+        )
+        print(
+            f"PASS: No collision — parent='{parent_snap.values['action']}', child='{child_snap.values['action']}'"
+        )
 
 
 class TestContextvarsIsolation(unittest.TestCase):

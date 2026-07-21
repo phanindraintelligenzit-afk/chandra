@@ -73,15 +73,15 @@ def test_missing_auto_fixed_key_treated_as_empty() -> None:
 
 def test_unknown_detector_emits_skipped() -> None:
     """A detector with no registered handler -> ActionResult(status='skipped')."""
-    write = _write("COST-001-idle-ec2", "arn:aws:ec2:us-east-1:123:i-abc")
+    write = _write("FAKE-999-unregistered", "arn:aws:ec2:us-east-1:123:i-abc")
 
     result = action_executor_node(_state(auto_fixed=[write]))
     assert len(result["action_results"]) == 1
     r = result["action_results"][0]
     assert r.status == "skipped"
-    assert r.action == "remediate_COST-001-idle-ec2"
+    assert r.action == "remediate_FAKE-999-unregistered"
     assert r.dry_run is True
-    assert "COST-001-idle-ec2" in r.message
+    assert "FAKE-999-unregistered" in r.message
 
 
 def test_malformed_arn_emits_failure() -> None:
@@ -179,7 +179,7 @@ def test_sec_003_stale_iam_key_dispatches_through_registry(iam: object) -> None:
 def test_mixed_writes_continue_on_failure() -> None:
     """One skipped + one failure + one real = 3 results, in input order."""
     writes = [
-        _write("COST-001-idle-ec2", "arn:aws:ec2:us-east-1:123:i-1"),  # skipped
+        _write("FAKE-999-unregistered", "arn:aws:ec2:us-east-1:123:i-1"),  # skipped
         _write("SEC-001-public-s3", "arn:aws:s3:::"),  # failure (bad ARN)
         _write("SEC-001-public-s3", "arn:aws:s3:::ok-bucket", region="us-west-2"),
     ]

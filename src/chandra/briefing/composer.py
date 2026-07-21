@@ -26,7 +26,6 @@ from src.chandra.briefing.schemas import (
     Finding,
     Scorecard,
 )
-from src.chandra.config import settings
 from src.chandra.logging import get_logger
 from src.chandra.observability.callbacks import UsageCapture
 
@@ -104,7 +103,6 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         return deterministic_rank(findings)
 
     try:
-        import os
         llm = build_chat_model()
         analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
@@ -130,8 +128,8 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
-        
+        import json_repair  # noqa: PLC0415
+
         parsed = json_repair.loads(text)
         ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
     except Exception as exc:
@@ -191,7 +189,6 @@ def compose_executive_summary(
         return _deterministic_summary(analyzed, score_dict)
 
     try:
-        import os
         llm = build_chat_model()
         briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
@@ -293,7 +290,6 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     try:
-        import os
         llm = build_chat_model()
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
         cb = UsageCapture()
@@ -305,8 +301,8 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
-        
+        import json_repair  # noqa: PLC0415
+
         parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:
             logger.warning("llm.request_analysis_malformed_fallback_to_deterministic")

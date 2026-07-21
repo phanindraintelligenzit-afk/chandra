@@ -10,9 +10,8 @@ Detector IDs:
 
 from __future__ import annotations
 
-import os
-
 import asyncio
+import os
 from typing import Any
 
 from src.chandra.briefing.schemas import Finding

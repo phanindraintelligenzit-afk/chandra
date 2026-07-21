@@ -51,6 +51,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from dotenv import load_dotenv
+from src.chandra.config import settings as chandra_settings
+from src.chandra.execution.bridge import BridgeResult, plan_and_execute
 from src.chandra.llm import build_chat_model
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import HumanMessage
@@ -2731,8 +2733,93 @@ Determine:
         results = state.get("pre_apply_results") or []
         return {"execution_results": results, "success": False}
 
+    def _typed_execution_gate(self, state: AgentState) -> Optional[dict]:
+        """Route execution through the validated ExecutionPlan pipeline.
+
+        When ``CHANDRA_TYPED_EXECUTION`` is enabled, remediation runs only
+        through ``plan_and_execute`` — provider (Bedrock/vLLM via
+        ``LLM_PROVIDER``) → structured-JSON planner (self-correcting) →
+        schema + safety + Terraform + intent validation → deterministic
+        typed executor (AwsClientFactory, no shell/subprocess/eval). The
+        model can only *propose* a typed plan; it never produces code that
+        is run.
+
+        Returns the node's result dict when it handled execution, or
+        ``None`` to fall through to the legacy code-generation engine
+        (default, so existing behavior is preserved until an operator opts
+        in after end-to-end validation).
+        """
+        if not chandra_settings.typed_execution_enabled:
+            return None
+
+        action = state["action"]
+        intent = f"{action.get('actionName', '')}: {action.get('actionDescription', '')}".strip(
+            ": "
+        )
+        steps = action.get("steps") or []
+        context_parts = [f"Steps: {json.dumps(steps)}"] if steps else []
+        if state.get("aws_context"):
+            context_parts.append(str(state["aws_context"]))
+        context = "\n".join(context_parts)
+
+        # By execute time the plan has already cleared the graph's approval
+        # gate (plan_review + HITL), so this is an approved run. dry_run is
+        # opt-out via state; default safe.
+        dry_run = bool(state.get("dry_run", True))
+
+        self.logger.info("=" * 80)
+        self.logger.info("TYPED EXECUTION (CHANDRA_TYPED_EXECUTION on) — intent=%s", intent[:120])
+        self.logger.info("=" * 80)
+
+        result: BridgeResult = plan_and_execute(
+            intent, context, approved=True, dry_run=dry_run
+        )
+
+        if not result.planned or result.execution is None:
+            self.logger.error(
+                "TYPED EXECUTION: model produced no valid plan (attempts=%d) — no action taken",
+                result.generation.attempts,
+            )
+            return {
+                "execution_results": [
+                    {
+                        "command": "<typed-plan>",
+                        "description": "no valid ExecutionPlan produced",
+                        "working_dir": ".",
+                        "stdout": "",
+                        "stderr": "; ".join(result.generation.errors),
+                        "return_code": 1,
+                        "success": False,
+                        "timed_out": False,
+                    }
+                ],
+                "success": False,
+            }
+
+        execution_results = [
+            {
+                "command": f"{s.kind.value}:{s.detail}",
+                "description": s.detail,
+                "working_dir": ".",
+                "stdout": json.dumps(s.output) if s.output else "",
+                "stderr": "" if s.status not in ("failed", "rejected") else s.detail,
+                "return_code": 0 if s.status not in ("failed", "rejected") else 1,
+                "success": s.status not in ("failed", "rejected"),
+                "timed_out": False,
+            }
+            for s in result.execution.steps
+        ]
+        self.logger.info(
+            "TYPED EXECUTION complete — dry_run=%s ok=%s steps=%d errors=%d",
+            result.dry_run, result.ok, len(execution_results), len(result.execution.errors),
+        )
+        return {"execution_results": execution_results, "success": result.ok}
+
     def _execute_node(self, state: AgentState) -> dict:
         check_cancelled()
+        typed = self._typed_execution_gate(state)
+        if typed is not None:
+            return typed
         execute_folder = state["sandbox_path"]
         plan = state["execution_plan"]
         _raw_timeout = state.get("command_timeout")

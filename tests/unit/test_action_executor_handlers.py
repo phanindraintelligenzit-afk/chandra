@@ -176,8 +176,9 @@ def test_cost_003_refuses_associated_eip(ec2: object) -> None:
     arn = f"arn:aws:ec2:us-east-1:123:address/{alloc_id}"
     result = action_executor_node(_state([_write("COST-003-unused-eip", arn)], dry_run=False))
     r = result["action_results"][0]
-    assert r.status == "failure"
-    assert r.error is not None and "in use" in r.error
+    # State-changed races surface as status="skipped" (_SkippedRemediation
+    # sentinel: not an error, just no longer applicable) — never a release.
+    assert r.status == "skipped"
     # The EIP must still exist — nothing was released.
     remaining = ec2.describe_addresses().get("Addresses", [])
     assert any(a.get("AllocationId") == alloc_id for a in remaining)

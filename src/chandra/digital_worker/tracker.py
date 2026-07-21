@@ -92,8 +92,10 @@ def update_request_ticket(
                 _transition(client, issue_key, "Done")
             logger.info("tracker.jira_updated", issue_key=issue_key, resolved=resolved)
             return TrackerUpdate(issue_key=issue_key, status="updated", detail="comment added")
-            
-        return TrackerUpdate(status="skipped", detail="Not a Jira request, skipping ticket creation")
+
+        return TrackerUpdate(
+            status="skipped", detail="Not a Jira request, skipping ticket creation"
+        )
 
     except Exception as exc:
         logger.warning("tracker.jira_update_failed", request_id=request.request_id, error=str(exc))

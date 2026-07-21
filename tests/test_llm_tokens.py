@@ -1,7 +1,6 @@
 import json
 
 from src.chandra.llm import build_chat_model
-from src.chandra.config import settings
 from src.chandra.observability.callbacks import UsageCapture
 
 print("=" * 70)
