@@ -36,6 +36,8 @@ def check_rds_multi_az(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(rds, "describe_db_instances"):
                 for db in page.get("DBInstances", []):
+                    if db.get("DBInstanceStatus") == "deleting":
+                        continue
                     tags = {t["Key"]: t["Value"] for t in db.get("TagList", []) or []}
                     env = tags.get("Environment", "").lower()
                     if env not in PROD_VALUES:

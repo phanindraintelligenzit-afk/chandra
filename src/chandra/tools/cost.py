@@ -21,6 +21,8 @@ def find_unattached_ebs(ctx: DetectorContext) -> list[Finding]:
             resp = ec2.describe_volumes()
 
             for volume in resp.get("Volumes", []):
+                if volume.get("State") != "available":
+                    continue
                 if not volume.get("Attachments"):
                     findings.append(
                         Finding(
@@ -107,6 +109,9 @@ def find_untagged_billable(ctx: DetectorContext) -> list[Finding]:
 
             for reservation in resp.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
+                    state = instance.get("State", {}).get("Name")
+                    if state in ("terminated", "shutting-down"):
+                        continue
                     tags = {tag["Key"] for tag in instance.get("Tags", [])}
                     missing = required_tags - tags
 
@@ -155,6 +160,8 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
 
             for reservation in resp.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
+                    if instance.get("State", {}).get("Name") != "running":
+                        continue
                     instance_id = instance["InstanceId"]
 
                     now = datetime.now(UTC)

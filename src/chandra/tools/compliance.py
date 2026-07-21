@@ -42,6 +42,8 @@ def check_encryption_at_rest_rds(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(rds, "describe_db_instances"):
                 for db in page.get("DBInstances", []):
+                    if db.get("DBInstanceStatus") == "deleting":
+                        continue
                     if db.get("StorageEncrypted"):
                         continue
                     arn = db["DBInstanceArn"]
@@ -193,6 +195,8 @@ def check_encryption_at_rest_ebs(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(ec2, "describe_volumes"):
                 for vol in page.get("Volumes", []):
+                    if vol.get("State") == "deleting":
+                        continue
                     if vol.get("Encrypted"):
                         continue
                     volume_id = vol["VolumeId"]
