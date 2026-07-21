@@ -165,6 +165,21 @@ endpoint is reachable; the seed fixture is a smoke set. With no reachable
 model the harness degrades honestly (every ticket → deterministic fallback →
 100% hallucination rate) instead of crashing.
 
+### One-command live E2E (`scripts/e2e_validate.sh`)
+
+Run **in the GPU + AWS/Jira environment** (CI/sandboxes have none of these):
+
+```bash
+VLLM_API_BASE=http://localhost:8000/v1 VLLM_MODEL=<approved-model> \
+  scripts/e2e_validate.sh --fixture evals/fixtures/your_1000.jsonl --limit 1000
+```
+
+It probes vLLM `/health` + `/models`, confirms provider resolution +
+`health_check()`, captures GPU/memory (`nvidia-smi`) and token throughput
+(vLLM `/metrics`), then benchmarks **both** providers on the same fixture and
+writes a combined `evals/reports/e2e_validation_*.md`. Every number is a live
+probe — it fabricates nothing and fails loudly if the endpoint is down.
+
 ---
 
 ## 6. Legacy-agent cutover — wired behind a flag
