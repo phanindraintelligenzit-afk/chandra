@@ -956,7 +956,7 @@ class ActionExecutor:
                     f"Security group {sg_id!r} no longer exists; already resolved."
                 ) from exc
             raise
-            
+
         sg = resp["SecurityGroups"][0]
         to_revoke = []
         for perm in sg.get("IpPermissions", []):
@@ -965,10 +965,18 @@ class ActionExecutor:
                 if ip_protocol in ("tcp", "-1"):
                     from_port = perm.get("FromPort")
                     to_port = perm.get("ToPort")
-                    if ip_protocol == "-1" or (from_port and to_port and any(p in (22, 3389, 3306, 5432) for p in range(from_port, to_port + 1))):
+                    sensitive_ports = (22, 3389, 3306, 5432)
+                    # Behavior preserved exactly from the merged fix (truthy
+                    # from_port/to_port); only wrapped to satisfy E501.
+                    covers_sensitive_port = (
+                        from_port
+                        and to_port
+                        and any(p in sensitive_ports for p in range(from_port, to_port + 1))
+                    )
+                    if ip_protocol == "-1" or covers_sensitive_port:
                         new_perm = {
                             "IpProtocol": ip_protocol,
-                            "IpRanges": [{"CidrIp": "0.0.0.0/0"}]
+                            "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
                         }
                         if from_port is not None:
                             new_perm["FromPort"] = from_port
