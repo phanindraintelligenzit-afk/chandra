@@ -1394,7 +1394,7 @@ class ExecutionAgents:
             # falls back to the configured provider's model (BEDROCK_MODEL_ID /
             # OPENAI_MODEL_NAME / OLLAMA_MODEL). No hard requirement — a
             # missing env var must not crash the workflow.
-            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
+            self.Llm = self._build_reasoning_model()
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()
@@ -1402,6 +1402,56 @@ class ExecutionAgents:
         except Exception as exc:
             self.logger.exception("Failed to initialise ExecutionAgents: %s", exc)
             raise
+
+    def _build_reasoning_model(self) -> Any:
+        """Build the agent's chat model with deterministic decoding.
+
+        Terraform / boto3 / ExecutionPlan generation must be reproducible
+        and complete. Left at provider defaults, an OpenAI-compatible /
+        vLLM backend samples at ``temperature=0.7`` with an unpinned output
+        budget — which, on a smaller local model, materially raises
+        hallucination, ABSOLUTE-RULE dropping, and truncated / malformed
+        structured output. Claude on Bedrock tolerates that; a local model
+        does not. Pinning low temperature + full top_p and a generous
+        ``max_tokens`` makes a valid, complete plan the likely outcome
+        regardless of which model serves the request, and is harmless to
+        Claude (deterministic generation is desirable here either way).
+
+        All three knobs are env-overridable so ops can tune per model
+        without a code change:
+          CHANDRA_AGENT_TEMPERATURE (default 0.0)
+          CHANDRA_AGENT_TOP_P       (default 1.0)
+          CHANDRA_AGENT_MAX_TOKENS  (default 8192 — multi-file Terraform
+                                     generation needs room; too small a cap
+                                     truncates the JSON mid-file)
+        """
+
+        def _env_float(name: str, default: float) -> float:
+            raw = os.getenv(name)
+            if raw in (None, ""):
+                return default
+            try:
+                return float(raw)  # type: ignore[arg-type]
+            except ValueError:
+                self.logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
+                return default
+
+        def _env_int(name: str, default: int) -> int:
+            raw = os.getenv(name)
+            if raw in (None, ""):
+                return default
+            try:
+                return int(raw)  # type: ignore[arg-type]
+            except ValueError:
+                self.logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
+                return default
+
+        return build_chat_model(
+            model=os.getenv("MODEL_NAME"),
+            temperature=_env_float("CHANDRA_AGENT_TEMPERATURE", 0.0),
+            top_p=_env_float("CHANDRA_AGENT_TOP_P", 1.0),
+            max_tokens=_env_int("CHANDRA_AGENT_MAX_TOKENS", 8192),
+        )
 
     def _banner(self, text: str, char: str = "=", width: int = 78) -> None:
         self.logger.info(char * width)
@@ -2194,6 +2244,19 @@ RULE 8 — SELF-VALIDATING TERRAFORM (native checks, not just data sources):
   with wrong behavior). A single well-placed precondition beats five
   boilerplate ones.
 
+═══════════════════════════════════════════════════════════════
+OUTPUT CONTRACT — this response is machine-parsed, not read by a human
+═══════════════════════════════════════════════════════════════
+  - Return ONLY the structured result (files[] + executableSteps[] + summary).
+    No prose, no markdown code fences, no commentary outside those fields.
+  - Every file's content MUST be COMPLETE and apply-ready: no "...", no
+    "# TODO", no "# rest unchanged", no omitted blocks, no truncation. A
+    partially-written file is worse than no file — it fails at apply.
+  - Multi-line HCL strings use heredoc (RULE 0). Any JSON embedded in a
+    policy/parameter must be valid JSON.
+  - If a detail is missing, pick a safe, documented default and proceed —
+    never emit a placeholder literal that would fail at apply.
+
 Generate the complete set of files now."""
 
         try:
@@ -2462,7 +2525,11 @@ Create a detailed execution plan:
 
 3. reasoning — one or two sentences.
 
-Only include commands needed for the actual files present."""
+Only include commands needed for the actual files present.
+
+OUTPUT CONTRACT: return ONLY the structured plan (execution_type, commands, reasoning).
+No prose or markdown outside those fields. Each command must be a single complete shell
+command string — never a placeholder, never "...", never a comment."""
 
         try:
             structured_llm = self.Llm.with_structured_output(ExecutionPlan)
