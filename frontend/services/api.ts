@@ -856,7 +856,8 @@ export type DigitalWorkerStatus =
   | "awaiting_approval"
   | "completed"
   | "failed"
-  | "stopped";
+  | "stopped"
+  | "skipped";
 
 /** One row in the approval-center list (GET /requests). */
 export type DigitalWorkerRequestSummary = {
@@ -878,6 +879,8 @@ export type DigitalWorkerRequestSummary = {
   approved_by_human?: boolean;
   workflow_status?: string | null;
   submitted_at: number | null;
+  action?: string | null;
+  kraData?: { kraCode: string } | null;
   started_at: number | null;
   completed_at: number | null;
 };

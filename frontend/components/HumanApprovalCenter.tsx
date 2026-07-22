@@ -508,7 +508,7 @@ export function HumanApprovalCenter({
 
     if (kraFilter !== "all") {
       matched = matched.filter(r => 
-        (r.kraData?.kraCode === kraFilter) || 
+        (('kraData' in r && (r as any).kraData?.kraCode === kraFilter)) || 
         (r.category === kraFilter)
       );
     }

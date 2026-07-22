@@ -130,6 +130,11 @@ type ApprovalRow = {
   pendingReason: string;
   kraCode: string;
   steps: string[];
+  resourceId?: string;
+  detectorId?: string;
+  region?: string;
+  action?: string;
+  category?: string;
 };
 
 type KraReview = {
@@ -2512,7 +2517,7 @@ export function ChandraExperience() {
             confidence: 90,
             requestedBy: "Detector",
             lockState: "LOCKED",
-            emailStatus: "NONE",
+            emailStatus: "pending",
             pendingReason: issue.recommendation,
             kraCode: kraCode,
             resourceId: issue.resource_arn || undefined,

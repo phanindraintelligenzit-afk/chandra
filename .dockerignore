@@ -1,0 +1,12 @@
+.venv
+.env
+node_modules
+*/node_modules
+.next
+*/.next
+.git
+__pycache__
+*/__pycache__
+*.pyc
+.vscode
+.mypy_cache

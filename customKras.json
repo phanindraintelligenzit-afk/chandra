@@ -7,16 +7,16 @@
   {
     "name": "Deploy EC2 Instance with Terraform",
     "description": "Deploy a simple t2.micro EC2 instance on AWS using Terraform",
-    "selected": false
+    "selected": true
   },
   {
     "name": "Deploy VPC with Terraform",
     "description": "Create a new AWS VPC using Terraform to provide an isolated networking environment for cloud resources.",
-    "selected": false
+    "selected": true
   },
   {
     "name": "Deploy Production RDS Instance with Terraform",
     "description": "Deploy a single-AZ PostgreSQL RDS instance (REL-001) tagged as production in the default VPC using Terraform. This provisions the database infrastructure with storage encryption enabled and applies production environment tags.",
-    "selected": false
+    "selected": true
   }
 ]
