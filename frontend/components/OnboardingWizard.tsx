@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { KeyRound, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 
+import ModelSelectionStep from "./ModelSelectionStep";
 import { useOnboarding } from "@/store/OnboardingContext";
 import { fetchAgentObservations, fetchCostMetrics } from "@/services/api";
 import { buildKraPayload } from "@/services/mapping";
@@ -167,6 +168,12 @@ export default function OnboardingWizard() {
     setCostMetrics
   } = useOnboarding();
   const [step, setStep] = useState(0);
+  const [llmProvider, setLlmProvider] = useState<"bedrock" | "openai" | null>(null);
+  const [bedrockModel, setBedrockModel] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [openaiBase, setOpenaiBase] = useState("");
+  const [openaiModel, setOpenaiModel] = useState("");
+  const [modelStatus, setModelStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [localName, setLocalName] = useState(agentName || "");
   const [deployStage, setDeployStage] = useState<number>(0);
   const [deployProgress, setDeployProgress] = useState<number>(0);
@@ -203,13 +210,14 @@ export default function OnboardingWizard() {
 
   const canNext = useMemo(() => {
     if (step === 0) return normalizedName.length > 0 && !duplicateName && hasSelectedAvatar;
-    if (step === 1) return role === "AWS Cloud Engineer";
-    if (step === 2) return maturity === "L2";
-    if (step === 3) return selectedKRAs.length > 0;
+    if (step === 1) return llmProvider !== null && modelStatus !== "loading";
+    if (step === 2) return role === "AWS Cloud Engineer";
+    if (step === 3) return maturity === "L2";
+    if (step === 4) return selectedKRAs.length > 0;
     return true;
-  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length]);
+  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length, llmProvider, modelStatus]);
 
-  function next() {
+  async function next() {
     if (step === 0) {
       if (duplicateName) {
         setNotice("This agent name is already registered. Choose a different workforce identity.");
@@ -218,14 +226,41 @@ export default function OnboardingWizard() {
       setAgentName(normalizedName);
       setEmployeeId(employeeIdPreview);
     }
-    if (step === 3) {
+    if (step === 1) {
+      setModelStatus("loading");
+      const payload = llmProvider === "bedrock" 
+        ? { provider: "bedrock", model_name: bedrockModel }
+        : { provider: "openai", model_name: openaiModel, api_key: openaiKey, api_base: openaiBase };
+      
+      try {
+        const res = await fetch("http://localhost:6001/settings/model/test-and-save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok || data.status === "error") {
+          setModelStatus("error");
+          setNotice(data.message || "Failed to connect to LLM");
+          return;
+        }
+        setModelStatus("success");
+        // Wait 1 second so user can see "Connection Verified" tick
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (err: any) {
+        setModelStatus("error");
+        setNotice(err.message || "Network error");
+        return;
+      }
+    }
+    if (step === 4) {
       if (deploymentStartedRef.current) return;
       deploymentStartedRef.current = true;
-      setStep(4);
+      setStep(5);
       runDeploymentSequence();
       return;
     }
-    setStep((s) => Math.min(s + 1, 4));
+    setStep((s) => Math.min(s + 1, 5));
   }
 
   function prev() {
@@ -458,7 +493,7 @@ export default function OnboardingWizard() {
             </motion.div>
           )}
 
-          {step === 1 && (
+          {step === 2 && (
             <motion.div key="role" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
               <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">
                 WHAT ROLE SHOULD {(normalizedName || agentName || "THIS AGENT").toUpperCase()} PERFORM?
@@ -494,7 +529,34 @@ export default function OnboardingWizard() {
             </motion.div>
           )}
 
-          {step === 2 && (
+          {step === 1 && (
+            <motion.div key="model" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
+              <ModelSelectionStep 
+                provider={llmProvider}
+                setProvider={setLlmProvider}
+                bedrockModel={bedrockModel}
+                setBedrockModel={setBedrockModel}
+                openaiKey={openaiKey}
+                setOpenaiKey={setOpenaiKey}
+                openaiBase={openaiBase}
+                setOpenaiBase={setOpenaiBase}
+                openaiModel={openaiModel}
+                setOpenaiModel={setOpenaiModel}
+              />
+              <div className="mt-8 flex items-center justify-between border-t border-signal/15 pt-5">
+                <button onClick={prev} className="rounded-2xl px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted hover:text-frost">BACK</button>
+                <div className="flex items-center gap-3">
+                  {modelStatus === "loading" && <div className="text-sm text-amber flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber pulse-core"></span> Testing Connection...</div>}
+                  {modelStatus === "success" && <div className="text-sm text-emerald-400">Connection Verified</div>}
+                  <button onClick={next} disabled={!canNext || modelStatus === "loading"} className="ml-auto rounded-2xl bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50 flex items-center gap-2">
+                    CONTINUE
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {step === 3 && (
             <motion.div key="maturity" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
               <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">SELECT MATURITY PATHWAY</h3>
               <p className="text-muted mt-2">Choose the governance level for this AI workforce deployment.</p>
@@ -531,7 +593,7 @@ export default function OnboardingWizard() {
             </motion.div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <motion.div key="kras" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
               <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">
                 WHAT SHOULD {(agentName || normalizedName || "THIS AGENT").toUpperCase()} HANDLE?
@@ -742,7 +804,7 @@ export default function OnboardingWizard() {
             </motion.div>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <motion.div key="deploy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="mx-auto max-w-xl text-center">
                 <div className="mx-auto flex h-52 w-52 items-center justify-center rounded-full border border-signal/30 bg-black/30 p-3 shadow-[0_0_60px_rgba(255,59,59,0.18)]">

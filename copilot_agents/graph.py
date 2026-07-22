@@ -140,13 +140,10 @@ def should_continue(state: AgentState) -> str:
 
 # ── Build the graph ───────────────────────────────────────────────────────────
 def build_graph():
-    # Initialize LLM here (not at module level) so import errors don't crash FastAPI
-    llm = build_chat_model(model=os.getenv("MODEL_NAME"))
-    llm_with_tools = llm.bind_tools(tools)
-
-    # Define call_llm as a closure so it captures the local llm_with_tools
     def call_llm_node(state: AgentState) -> AgentState:
         """Send messages to the LLM (with tools available)."""
+        llm = build_chat_model()
+        llm_with_tools = llm.bind_tools(tools)
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
         response = llm_with_tools.invoke(messages)
         return {"messages": [response]}

@@ -1388,11 +1388,7 @@ class ExecutionAgents:
             
         self.logger.info("Initialising ExecutionAgents (max_iterations=%d, job_id=%s)", max_iterations, self.job_id)
         try:
-            # MODEL_NAME is an optional override; when unset, the factory
-            # falls back to the configured provider's model (BEDROCK_MODEL_ID /
-            # OPENAI_MODEL_NAME / OLLAMA_MODEL). No hard requirement — a
-            # missing env var must not crash the workflow.
-            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
+            self.Llm = build_chat_model()
             self.Memory = AgentMemory(memory_path)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()

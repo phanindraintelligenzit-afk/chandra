@@ -1918,5 +1918,73 @@ def get_cloud_request(job_id: str):
     })
 
 
+class ModelSettings(BaseModel):
+    provider: str
+    model_name: str
+    api_key: str | None = None
+    api_base: str | None = None
+
+@app.post("/settings/model/test-and-save")
+def test_and_save_model_settings(payload: ModelSettings):
+    """Dynamically test and persist LLM model settings."""
+    try:
+        from langchain_core.messages import HumanMessage
+        import dotenv
+        from pathlib import Path
+
+        if payload.provider == "bedrock":
+            from langchain_aws import ChatBedrockConverse
+            import os
+            test_llm = ChatBedrockConverse(
+                model_id=payload.model_name,
+                region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+            )
+        elif payload.provider in ("openai", "openai_compatible", "vllm"):
+            from langchain_openai import ChatOpenAI
+            if not payload.api_base:
+                return JSONResponse(status_code=400, content={"status": "error", "message": "API Base required for OpenAI provider"})
+            test_llm = ChatOpenAI(
+                base_url=payload.api_base,
+                api_key=payload.api_key or "dummy-not-needed",
+                model=payload.model_name,
+            )
+        else:
+            return JSONResponse(status_code=400, content={"status": "error", "message": "Unsupported provider"})
+        
+        # Test connection
+        test_llm.invoke([HumanMessage(content="Hello")])
+        logger.info("llm_initialized successfully")
+        
+        # Save to .env
+        env_path = Path(".env")
+        dotenv.set_key(env_path, "LLM_PROVIDER", payload.provider)
+        if payload.provider == "bedrock":
+            dotenv.set_key(env_path, "BEDROCK_MODEL_ID", payload.model_name)
+        elif payload.provider in ("openai", "openai_compatible", "vllm"):
+            dotenv.set_key(env_path, "OPENAI_MODEL_NAME", payload.model_name)
+            if payload.api_key:
+                dotenv.set_key(env_path, "OPENAI_API_KEY", payload.api_key)
+            if payload.api_base:
+                dotenv.set_key(env_path, "OPENAI_API_BASE", payload.api_base)
+        
+        # Update global settings in memory
+        from src.chandra.config import settings as global_settings
+        global_settings.llm_provider = payload.provider
+        if payload.provider == "bedrock":
+            global_settings.bedrock_model_id = payload.model_name
+        else:
+            global_settings.openai_model_name = payload.model_name
+            if payload.api_key:
+                global_settings.openai_api_key = payload.api_key
+            if payload.api_base:
+                global_settings.openai_api_base = payload.api_base
+            
+        return JSONResponse(status_code=200, content={"status": "ok", "message": "Success"})
+    except Exception as e:
+        logger.error(f"llm_initialization failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=400, content={"status": "error", "message": f"LLM test failed: {str(e)}"})
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)

@@ -74,11 +74,7 @@ class AnalyzerAgent:
     def __init__(self):
         logger.info("Initialising AnalyzerAgent")
         try:
-            # MODEL_NAME is an optional override; when unset, the factory
-            # falls back to the configured provider's model (BEDROCK_MODEL_ID /
-            # OPENAI_MODEL_NAME / OLLAMA_MODEL). No hard requirement — a
-            # missing env var must not crash the workflow.
-            self.Llm = build_chat_model(model=os.getenv("MODEL_NAME"))
+            self.Llm = build_chat_model()
             self.Graph = self._build_graph()
             logger.info("AnalyzerAgent initialised successfully")
         except Exception as exc:
