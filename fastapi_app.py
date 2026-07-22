@@ -1986,5 +1986,73 @@ def test_and_save_model_settings(payload: ModelSettings):
         traceback.print_exc()
         return JSONResponse(status_code=400, content={"status": "error", "message": f"LLM test failed: {str(e)}"})
 
+class AwsSettings(BaseModel):
+    region: str
+    access_key: str
+    secret_key: str
+    synthetic_account_id: str
+
+@app.post("/settings/aws/test-and-save")
+def test_and_save_aws_settings(payload: AwsSettings):
+    """Dynamically test and persist AWS credentials."""
+    try:
+        import boto3
+        import dotenv
+        import os
+        from pathlib import Path
+        
+        # Test AWS credentials
+        session = boto3.Session(
+            aws_access_key_id=payload.access_key,
+            aws_secret_access_key=payload.secret_key,
+            region_name=payload.region
+        )
+        sts = session.client("sts")
+        sts.get_caller_identity()
+        
+        # Save to .env securely in one operation to prevent Windows lock issues
+        env_path = Path(".env")
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        else:
+            lines = []
+            
+        new_keys = {
+            "AWS_DEFAULT_REGION": payload.region,
+            "AWS_ACCESS_KEY_ID": payload.access_key,
+            "AWS_SECRET_ACCESS_KEY": payload.secret_key,
+            "SYNTHETIC_ACCOUNT_ID": payload.synthetic_account_id
+        }
+        
+        for i, line in enumerate(lines):
+            for k in list(new_keys.keys()):
+                if line.startswith(f"{k}="):
+                    lines[i] = f"{k}={new_keys.pop(k)}\n"
+                    
+        for k, v in new_keys.items():
+            lines.append(f"{k}={v}\n")
+            
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        
+        # Inject into current os.environ for immediate boto3 use
+        os.environ["AWS_DEFAULT_REGION"] = payload.region
+        os.environ["AWS_ACCESS_KEY_ID"] = payload.access_key
+        os.environ["AWS_SECRET_ACCESS_KEY"] = payload.secret_key
+        os.environ["SYNTHETIC_ACCOUNT_ID"] = payload.synthetic_account_id
+        
+        # Update global settings in memory
+        from src.chandra.config import settings as global_settings
+        global_settings.aws_default_region = payload.region
+        global_settings.synthetic_account_id = payload.synthetic_account_id
+        
+        return JSONResponse(status_code=200, content={"status": "ok", "message": "Success"})
+    except Exception as e:
+        logger.error(f"aws_initialization failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=400, content={"status": "error", "message": f"AWS test failed: {str(e)}"})
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)
