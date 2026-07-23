@@ -1446,12 +1446,24 @@ class ExecutionAgents:
                 self.logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
                 return default
 
-        return build_chat_model(
-            model=os.getenv("MODEL_NAME"),
-            temperature=_env_float("CHANDRA_AGENT_TEMPERATURE", 0.0),
-            top_p=_env_float("CHANDRA_AGENT_TOP_P", 1.0),
-            max_tokens=_env_int("CHANDRA_AGENT_MAX_TOKENS", 8192),
-        )
+        kwargs: dict[str, Any] = {
+            "model": os.getenv("MODEL_NAME"),
+            "temperature": _env_float("CHANDRA_AGENT_TEMPERATURE", 0.0),
+            "top_p": _env_float("CHANDRA_AGENT_TOP_P", 1.0),
+        }
+        # max_tokens caps the OUTPUT. A fixed cap (the old default 8192, or the
+        # 4096 some deployments set) truncates multi-file Terraform generation
+        # mid-response → LengthFinishReasonError, even when the model has room
+        # left in its context. Leave CHANDRA_AGENT_MAX_TOKENS UNSET so vLLM
+        # uses all remaining context for the completion (context_len - prompt);
+        # only pass a cap when an operator explicitly sets one.
+        raw_max = os.getenv("CHANDRA_AGENT_MAX_TOKENS")
+        if raw_max not in (None, ""):
+            try:
+                kwargs["max_tokens"] = int(raw_max)  # type: ignore[arg-type]
+            except ValueError:
+                self.logger.warning("Ignoring invalid CHANDRA_AGENT_MAX_TOKENS=%r", raw_max)
+        return build_chat_model(**kwargs)
 
     def _structured_llm(self, schema: Any) -> Any:
         """Return a structured-output runnable using the right method per provider.
