@@ -846,14 +846,100 @@ async def _mcp_fetch_terraform_docs_async(
         return ""
 
 
-async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
-    """Fetches the full AWS account-grounding context. All independent
+#: Dynamic Context Builder — keyword → AWS service scopes. When an action's
+#: text matches a keyword, only the mapped services' inventory is fetched
+#: (plus the always-on identity/AZ base). An S3 KRA no longer pulls EC2, RDS,
+#: Lambda, Route53, CloudFront, DynamoDB, ELB and the whole AMI catalog into
+#: the prompt. Unmatched text falls back to the full fetch (safe default).
+_SERVICE_KEYWORDS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("s3", ("s3", "kms", "iam")),
+    ("bucket", ("s3", "kms", "iam")),
+    ("ec2", ("ec2", "iam")),
+    ("instance", ("ec2", "iam")),
+    ("ami", ("ec2",)),
+    ("ssh", ("ec2",)),
+    ("key pair", ("ec2",)),
+    ("keypair", ("ec2",)),
+    ("security group", ("ec2",)),
+    ("vpc", ("ec2",)),
+    ("subnet", ("ec2",)),
+    ("nat", ("ec2",)),
+    ("internet gateway", ("ec2",)),
+    ("route table", ("ec2",)),
+    ("rds", ("rds", "ec2", "kms")),
+    ("database", ("rds", "ec2", "kms")),
+    ("postgres", ("rds", "ec2", "kms")),
+    ("mysql", ("rds", "ec2", "kms")),
+    ("aurora", ("rds", "ec2", "kms")),
+    ("lambda", ("lambda", "iam")),
+    ("serverless", ("lambda", "iam")),
+    ("dynamodb", ("dynamodb", "iam")),
+    ("iam", ("iam",)),
+    ("role", ("iam",)),
+    ("policy", ("iam",)),
+    ("permission", ("iam",)),
+    ("route53", ("route53", "acm")),
+    ("route 53", ("route53", "acm")),
+    ("dns", ("route53", "acm")),
+    ("hosted zone", ("route53", "acm")),
+    ("cloudfront", ("cloudfront", "acm", "s3")),
+    ("cdn", ("cloudfront", "acm", "s3")),
+    ("load balancer", ("elbv2", "ec2", "acm")),
+    ("alb", ("elbv2", "ec2", "acm")),
+    ("elb", ("elbv2", "ec2", "acm")),
+    ("nlb", ("elbv2", "ec2", "acm")),
+    ("target group", ("elbv2", "ec2", "acm")),
+    ("kms", ("kms", "iam")),
+    ("encrypt", ("kms", "iam")),
+    ("certificate", ("acm",)),
+    ("acm", ("acm",)),
+    ("tls", ("acm",)),
+    ("https", ("acm",)),
+    ("eks", ("ec2", "iam")),
+    ("kubernetes", ("ec2", "iam")),
+    ("ecs", ("ec2", "iam")),
+    ("fargate", ("ec2", "iam")),
+    ("cloudwatch", ("ec2", "iam")),
+    ("alarm", ("ec2", "iam")),
+]
+
+
+def _required_aws_services(action_text: str) -> Optional[set]:
+    """Deterministic intent → service-scope detection for the context builder.
+
+    Returns the set of AWS service scopes the action needs, or ``None`` when
+    nothing matches — in which case the caller falls back to the full fetch
+    (identical to the legacy behavior, so unknown intents lose nothing).
+    """
+    text = (action_text or "").lower()
+    if not text.strip():
+        return None
+    matched: set = set()
+    for keyword, scopes in _SERVICE_KEYWORDS:
+        if re.search(rf"\b{re.escape(keyword)}\b", text):
+            matched.update(scopes)
+    return matched or None
+
+
+async def _gather_aws_context_async(
+    log: logging.Logger = logger, services: Optional[set] = None
+) -> str:
+    """Fetches the AWS account-grounding context. All independent
     describe/list calls fire concurrently in one asyncio.gather() round; a
     second small round fetches per-role policies for roles that are actually
     attached to an instance profile. Pure post-processing (no more network
-    calls) builds the final grounding text from the results dict."""
+    calls) builds the final grounding text from the results dict.
+
+    ``services`` (Dynamic Context Builder): when given, only commands for
+    those service scopes run — an S3 action fetches buckets/KMS/IAM, not the
+    entire account. ``None`` keeps the legacy fetch-everything behavior.
+    Post-processing already guards every section with ``results.get(...)``,
+    so unfetched sections simply render empty."""
     check_cancelled()
     region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
+
+    def _want(*scopes: str) -> bool:
+        return services is None or bool(set(scopes) & services)
 
     try:
         # Warms up (or reuses) BOTH the aws_api and terraform MCP servers —
@@ -875,39 +961,66 @@ async def _gather_aws_context_async(log: logging.Logger = logger) -> str:
         ami_commands = [
             f"aws ssm get-parameters-by-path --path {path} --recursive --region {region}"
             for path in AMI_SSM_PATHS
-        ]
+        ] if _want("ec2") else []
 
-        # ---- Build the full list of independent commands up front ----
+        # ---- Build the command list, scoped to the services the action
+        # ---- actually needs (Dynamic Context Builder). Base identity + AZs
+        # ---- always run; every other group is gated on its scope.
         commands = [
             "aws sts get-caller-identity",
-            f"aws ec2 describe-vpcs --region {region}",
-            f"aws ec2 describe-subnets --region {region}",
-            f"aws ec2 describe-internet-gateways --region {region}",
-            f"aws ec2 describe-route-tables --region {region}",
-            f"aws ec2 describe-security-groups --region {region}",
-            f"aws ec2 describe-vpc-endpoints --region {region}",
             f"aws ec2 describe-availability-zones --region {region}",
-            f"aws ec2 describe-key-pairs --region {region}",
-            f"aws route53 list-hosted-zones --region {region}",
-            "aws iam list-roles",
-            "aws iam list-users",
-            "aws iam list-instance-profiles",
-            "aws s3api list-buckets",
-            *ami_commands,
-            f"aws rds describe-db-instances --region {region}",
-            f"aws rds describe-db-subnet-groups --region {region}",
-            f"aws dynamodb list-tables --region {region}",
-            f"aws elbv2 describe-load-balancers --region {region}",
-            f"aws ec2 describe-addresses --region {region}",
-            f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}",
-            f"aws acm list-certificates --region {region}",
-            "aws cloudfront list-distributions",
-            f"aws kms list-aliases --region {region}",
-            f"aws lambda list-functions --region {region}",
         ]
+        if _want("ec2", "rds", "elbv2", "lambda"):
+            commands += [
+                f"aws ec2 describe-vpcs --region {region}",
+                f"aws ec2 describe-subnets --region {region}",
+                f"aws ec2 describe-internet-gateways --region {region}",
+                f"aws ec2 describe-route-tables --region {region}",
+                f"aws ec2 describe-security-groups --region {region}",
+                f"aws ec2 describe-vpc-endpoints --region {region}",
+            ]
+        if _want("ec2"):
+            commands += [
+                f"aws ec2 describe-key-pairs --region {region}",
+                f"aws ec2 describe-addresses --region {region}",
+                f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}",
+                *ami_commands,
+            ]
+        if _want("route53"):
+            commands.append(f"aws route53 list-hosted-zones --region {region}")
+        if _want("iam", "ec2", "lambda"):
+            commands += [
+                "aws iam list-roles",
+                "aws iam list-users",
+                "aws iam list-instance-profiles",
+            ]
+        if _want("s3"):
+            commands.append("aws s3api list-buckets")
+        if _want("rds"):
+            commands += [
+                f"aws rds describe-db-instances --region {region}",
+                f"aws rds describe-db-subnet-groups --region {region}",
+            ]
+        if _want("dynamodb"):
+            commands.append(f"aws dynamodb list-tables --region {region}")
+        if _want("elbv2"):
+            commands.append(f"aws elbv2 describe-load-balancers --region {region}")
+        if _want("acm"):
+            commands.append(f"aws acm list-certificates --region {region}")
+        if _want("cloudfront"):
+            commands.append("aws cloudfront list-distributions")
+        if _want("kms"):
+            commands.append(f"aws kms list-aliases --region {region}")
+        if _want("lambda"):
+            commands.append(f"aws lambda list-functions --region {region}")
+
+        log.info(
+            "Dynamic Grounding: AWS context scope=%s -> %d commands",
+            sorted(services) if services else "ALL(full fetch)", len(commands),
+        )
 
         acm_use1_cmd = None
-        if region != "us-east-1":
+        if region != "us-east-1" and _want("acm", "cloudfront"):
             acm_use1_cmd = "aws acm list-certificates --region us-east-1"
             commands.append(acm_use1_cmd)
 
@@ -1571,7 +1684,7 @@ class ExecutionAgents:
             self.logger.warning(f"MCP Terraform docs failed: {exc}")
             return ""
 
-    def _gather_aws_context(self, force_refresh: bool = False) -> str:
+    def _gather_aws_context(self, force_refresh: bool = False, action_text: str = "") -> str:
         """Returns the AWS account-grounding context.
 
         Optimization vs the old version:
@@ -1607,7 +1720,14 @@ class ExecutionAgents:
                     return cached
 
             try:
-                ctx_str = _mcp_session.run_coro(_gather_aws_context_async, self.logger)
+                # Dynamic Context Builder: scope the fetch to the services this
+                # action needs. Bedrock keeps the legacy full fetch (large
+                # context absorbs it); unmatched intents also fall back to full.
+                provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+                services = None if provider == "bedrock" else _required_aws_services(action_text)
+                ctx_str = _mcp_session.run_coro(
+                    _gather_aws_context_async, self.logger, services
+                )
             except Exception as exc:
                 self.logger.warning("aws_context.failed: %s", exc)
                 return ""
@@ -3649,7 +3769,22 @@ Rules:
         }
 
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
-        aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
+        # Feed the action's own text to the Dynamic Context Builder so only
+        # the AWS services this KRA touches are inventoried.
+        _action_scope_text = " ".join(
+            str(part)
+            for part in (
+                action.get("actionName", ""),
+                action.get("actionDescription", ""),
+                action.get("service", ""),
+                *(action.get("steps") or []),
+            )
+        )
+        aws_ctx = (
+            self._gather_aws_context(force_refresh=True, action_text=_action_scope_text)
+            if not answers
+            else ""
+        )
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
