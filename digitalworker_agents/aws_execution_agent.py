@@ -470,6 +470,10 @@ class AgentState(TypedDict):
     final_status: str
     final_summary: str
 
+    # ── User-defined KRA payload (compact, replaces MCP docs) ──
+    kra_data: Optional[Dict] = None
+
+
 class PipelineResponse(BaseModel):
     statusCode: int
     status: str = Field(description="'success' | 'failed' | 'error' | 'needs_clarification'")
@@ -1649,6 +1653,16 @@ cautious regarding IAM and security: ALWAYS ask the user if target identities or
 
     def _check_permissions_node(self, state: AgentState) -> dict:
         check_cancelled()
+
+        # ── Bypass: for user-defined KRA payloads, skip IAM policy crawling ──
+        kra_data = state.get("kra_data")
+        if kra_data and isinstance(kra_data, dict):
+            self.logger.info(
+                "Custom KRA payload detected — skipping IAM permission check. "
+                "User specified permissions via UI."
+            )
+            return {"permission_issues": [], "caller_arn": ""}
+
         self.logger.info("Dynamic Grounding: Checking required IAM permissions for expected resources...")
         
         analysis = state.get("analysis") or {}
@@ -2016,6 +2030,25 @@ each referencing the real resource attribute it corresponds to (no placeholders)
 {outputs_list}
 The executableSteps after apply MUST include a single step running `terraform output` (or `terraform output -json`) so all these details are printed for the user at once."""
 
+        # ── Custom KRA instruction (when user-defined payload replaces MCP docs) ──
+        kra_data = state.get("kra_data")
+        custom_kra_instruction = ""
+        if kra_data and isinstance(kra_data, dict):
+            resources = kra_data.get("resources", [])
+            perms = kra_data.get("iam_permissions", [])
+            region = kra_data.get("region", "us-east-1")
+            custom_kra_instruction = f"""
+CUSTOM KRA — USER-DEFINED RESOURCES (this is NOT an MCP/Terraform doc fetch):
+The user has already specified exactly which AWS resources they want.
+Resources: {json.dumps(resources, indent=2) if resources else '(none explicitly listed — infer from the action name/description)'}
+IAM Permissions: {json.dumps(perms, indent=2) if perms else '(infer from the resource types needed)'}
+Target Region: {region}
+
+IMPORTANT: DO NOT attempt to call MCP or fetch external Terraform documentation.
+Use your internal knowledge of AWS and Terraform to generate the correct HCL.
+Keep the output compact — the user already scoped what they need.
+"""
+
         prompt = f"""You are a senior AWS automation engineer. {mode_instruction}
 
 Action Name: {action["actionName"]}
@@ -2029,6 +2062,7 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 {memory_section}
 {aws_section}
 {service_quotas_context}
+{custom_kra_instruction}
 {terraform_docs_context}
 {state_section}
 {validate_section}
@@ -3195,6 +3229,26 @@ Rules:
 
     def _gather_docs_and_quotas_node(self, state: AgentState) -> dict:
         check_cancelled()
+
+        # ── Bypass: if user-defined KRA payload present, skip MCP entirely ──
+        kra_data = state.get("kra_data")
+        if kra_data and isinstance(kra_data, dict):
+            payload_json = json.dumps(kra_data, indent=2)
+            self.logger.info(
+                "Custom KRA with user-defined payload — skipping MCP Terraform docs. "
+                "Payload: %s", payload_json[:500]
+            )
+            # Cache the user payload so retry iterations reuse it
+            self._terraform_docs_context_cache["value"] = json.dumps({
+                "type": "custom_kra_payload",
+                "instruction": "This is a user-defined KRA payload. Use your internal knowledge of AWS services and Terraform to generate the appropriate Terraform HCL based on the resources/permissions specified below. Do NOT attempt to fetch external documentation.",
+                "payload": kra_data
+            }, indent=2)
+            return {
+                "service_quotas_context": "",
+                "terraform_docs": self._terraform_docs_context_cache["value"],
+            }
+
         analysis = state.get("analysis") or {}
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
@@ -3404,7 +3458,13 @@ Rules:
         }
 
         memory_ctx = self.Memory.context_for_action(action.get("actionName", ""))
-        aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
+        # Skip full AWS context gathering for user-defined KRA payloads
+        kra_data = action.get("kraData")
+        if kra_data and isinstance(kra_data, dict):
+            aws_ctx = ""  # User already specified resources — no need for full inventory
+            self.logger.info("Custom KRA payload detected — skipping full AWS context gathering")
+        else:
+            aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
@@ -3480,6 +3540,9 @@ Rules:
 
                         "final_status": "in_progress",
                         "final_summary": "",
+
+                        # ── User-defined KRA payload ──
+                        "kra_data": action.get("kraData"),
                     },
                     config
                 )

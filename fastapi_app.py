@@ -704,6 +704,7 @@ class ActionInput(BaseModel):
     kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
     priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
     steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
+    kraData: Optional[Dict[str, Any]] = Field(default=None, description="User-defined KRA payload (resources, permissions, region, tags) — when present, bypasses MCP doc scraping and uses this compact payload instead")
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default="us-east-1", description="Target region for predefined KRA actions")
@@ -1716,6 +1717,7 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "started_at": job.get("started_at"),
         "completed_at": job.get("completed_at"),
         "sandbox_path": job.get("sandbox_path") or (output.get("execution") or {}).get("sandbox_path"),
+        "kraCode": approval.get("kraCode") or request.get("kraCode") or job.get("kraCode"),
     }
     return summary
 
@@ -1867,22 +1869,31 @@ def update_digital_worker_settings(settings: DigitalWorkerSettings):
 
 
 @app.get("/requests")
-async def list_cloud_requests(status: Optional[str] = Query(default=None)):
+async def list_cloud_requests(
+    status: Optional[str] = Query(default=None),
+    kraCode: Optional[str] = Query(default=None, description="Filter by KRA code (e.g. KRA-01)")
+):
     """List Digital Worker requests for the Human Approval Center.
 
     Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
-    ``completed``, ``failed``). Results are newest-first. This is the
-    discovery endpoint the approval center polls — no job_id needed.
+    ``completed``, ``failed``). Optional ``?kraCode=`` filter (e.g. ``KRA-01``).
+    Results are newest-first. Discovery endpoint the approval center polls.
     """
     # Acquire the lock once for both the item list and the counts so the
     # HTTP thread holds it for the shortest possible time (single acquisition
     # instead of two, reducing contention with background worker threads).
     with _job_store_lock:
-        items = [
-            _dw_request_summary(job_id, job)
-            for job_id, job in _job_store.items()
-            if job.get("kind") == "digital_worker" and (status is None or job.get("status") == status)
-        ]
+        items = []
+        for job_id, job in _job_store.items():
+            if job.get("kind") != "digital_worker":
+                continue
+            if status is not None and job.get("status") != status:
+                continue
+            if kraCode is not None:
+                job_kra = job.get("kraCode") or ""
+                if isinstance(job_kra, str) and job_kra.upper() != kraCode.upper():
+                    continue
+            items.append(_dw_request_summary(job_id, job))
         counts: Dict[str, int] = {}
         for job in _job_store.values():
             if job.get("kind") == "digital_worker":
@@ -1917,6 +1928,125 @@ def get_cloud_request(job_id: str):
         "error": job_copy.get("error"),
     })
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AWS Tasks CRUD — Reusable AWS task definitions
+# ═══════════════════════════════════════════════════════════════════
+
+AWS_TASKS_FILE = "aws_tasks.json"
+
+
+def _load_aws_tasks() -> list:
+    """Load AWS tasks from JSON file."""
+    try:
+        if os.path.exists(AWS_TASKS_FILE):
+            with open(AWS_TASKS_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load AWS tasks: {e}")
+    return []
+
+
+def _save_aws_tasks(tasks: list) -> int:
+    """Save AWS tasks to JSON file."""
+    with open(AWS_TASKS_FILE, "w") as f:
+        json.dump(tasks, f, indent=2)
+    return len(tasks)
+
+
+class AwsTaskInput(BaseModel):
+    title: str
+    description: str
+    resource_type: str
+    created_by: str = "nagendra"
+
+
+@app.get("/aws-tasks")
+def get_aws_tasks(search: str = Query(""), resource_type: str = Query("")):
+    """Get all AWS tasks."""
+    tasks = _load_aws_tasks()
+    if search:
+        search_lower = search.lower()
+        tasks = [t for t in tasks if search_lower in t["title"].lower() or search_lower in t["description"].lower()]
+    if resource_type:
+        tasks = [t for t in tasks if t["resource_type"] == resource_type]
+    tasks.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
+    return tasks
+
+
+@app.post("/aws-tasks")
+def create_aws_task(task: AwsTaskInput):
+    """Create a new AWS task."""
+    from datetime import datetime
+    tasks = _load_aws_tasks()
+    new_task = {
+        "id": str(uuid.uuid4()),
+        "title": task.title,
+        "description": task.description,
+        "resource_type": task.resource_type,
+        "created_by": task.created_by,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    tasks.append(new_task)
+    _save_aws_tasks(tasks)
+    logger.info(f"Created AWS task: {new_task['id']} - {new_task['title']}")
+    return new_task
+
+
+@app.put("/aws-tasks/{task_id}")
+def update_aws_task(task_id: str, task: AwsTaskInput):
+    """Update an existing AWS task by ID."""
+    from datetime import datetime
+    tasks = _load_aws_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            t["title"] = task.title
+            t["description"] = task.description
+            t["resource_type"] = task.resource_type
+            t["updated_at"] = datetime.now().isoformat()
+            _save_aws_tasks(tasks)
+            logger.info(f"Updated AWS task: {task_id}")
+            return t
+    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+@app.delete("/aws-tasks/{task_id}")
+def delete_aws_task(task_id: str):
+    """Delete an AWS task by ID."""
+    tasks = _load_aws_tasks()
+    original_count = len(tasks)
+    tasks = [t for t in tasks if t["id"] != task_id]
+    if len(tasks) == original_count:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    _save_aws_tasks(tasks)
+    logger.info(f"Deleted AWS task: {task_id}")
+    return {"ok": True, "deleted": task_id}
+
+
+@app.get("/aws-tasks/resource-types")
+def get_aws_resource_types():
+    """Get list of available AWS resource types for the dropdown."""
+    return {
+        "types": [
+            {"value": "S3", "label": "S3 Bucket"},
+            {"value": "EC2", "label": "EC2 Instance"},
+            {"value": "VPC", "label": "VPC Network"},
+            {"value": "Lambda", "label": "Lambda Function"},
+            {"value": "CloudWatch", "label": "CloudWatch Alarm"},
+            {"value": "RDS", "label": "RDS Database"},
+            {"value": "IAM", "label": "IAM Role/Policy"},
+            {"value": "DynamoDB", "label": "DynamoDB Table"},
+            {"value": "SQS", "label": "SQS Queue"},
+            {"value": "SNS", "label": "SNS Topic"},
+            {"value": "ECS", "label": "ECS Service"},
+            {"value": "ELB", "label": "Load Balancer (ELB)"},
+            {"value": "CloudFront", "label": "CloudFront Distribution"},
+            {"value": "ElastiCache", "label": "ElastiCache Cluster"},
+            {"value": "APIGateway", "label": "API Gateway"},
+        ]
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)
