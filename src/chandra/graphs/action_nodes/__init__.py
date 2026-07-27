@@ -388,7 +388,7 @@ def persist(state: ChandraState) -> dict[str, Any]:
             return obj.isoformat()
         elif isinstance(obj, dict):
             return {k: simplify_for_json(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple)):
+        elif isinstance(obj, list | tuple):
             return [simplify_for_json(item) for item in obj]
         else:
             return obj

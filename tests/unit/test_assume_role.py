@@ -4,7 +4,6 @@ from src.chandra.aws.client_factory import AwsClientFactory
 
 @mock_aws
 def test_assume_role():
-
     factory = AwsClientFactory()
 
     role_arn = "arn:aws:iam::123456789012:role/TestRole"

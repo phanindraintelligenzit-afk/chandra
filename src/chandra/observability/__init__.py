@@ -24,7 +24,7 @@ def _pretty_format(obj: Any) -> str:
     try:
         return json.dumps(obj, indent=2, default=_default)
     except Exception:
-        import pprint  # noqa: PLC0415
+        import pprint
 
         return pprint.pformat(obj)
 
@@ -167,7 +167,7 @@ def _emit_metric(
 
     def _put() -> None:
         try:
-            from src.chandra.aws.client_factory import (  # noqa: PLC0415  # lazy: avoid cycle
+            from src.chandra.aws.client_factory import (  # lazy: avoid cycle
                 get_default_factory,
             )
 

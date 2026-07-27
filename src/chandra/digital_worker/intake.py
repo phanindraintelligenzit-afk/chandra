@@ -83,7 +83,7 @@ def _from_jira(payload: dict[str, Any]) -> CloudRequest:
 def _from_slack(payload: dict[str, Any]) -> CloudRequest:
     """Slack Events API message / slash-command payload."""
     event = payload.get("event", payload)
-    import re  # noqa: PLC0415
+    import re
 
     raw_text = _text(event.get("text") or payload.get("text"), default="Slack request")
     text = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip() if raw_text else "Slack request"
@@ -101,7 +101,7 @@ def _from_slack(payload: dict[str, Any]) -> CloudRequest:
 
 def _from_teams(payload: dict[str, Any]) -> CloudRequest:
     """Microsoft Teams bot-framework activity payload."""
-    import re  # noqa: PLC0415
+    import re
 
     raw_text = _text(payload.get("text"), default="Teams request")
 

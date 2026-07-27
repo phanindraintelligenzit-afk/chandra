@@ -228,7 +228,7 @@ def risk_analysis(state: DigitalWorkerState) -> dict[str, Any]:
 
 def decision(state: DigitalWorkerState) -> dict[str, Any]:
     """Dynamically evaluate the execute-vs-guidance decision using the Decision Engine."""
-    from src.chandra.digital_worker.decision_engine import evaluate_decision  # noqa: PLC0415
+    from src.chandra.digital_worker.decision_engine import evaluate_decision
 
     verdict = evaluate_decision(
         request=state["request"],
@@ -306,9 +306,9 @@ def route_approval(state: DigitalWorkerState) -> str:
 
 def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PLR0912,PLR0915
     """Run the execution using the ExecutionAgents orchestrator."""
-    import json  # noqa: PLC0415
+    import json
 
-    from digitalworker_agents.aws_execution_agent import ExecutionAgents  # noqa: PLC0415
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
 
     request = state["request"]
     plan = state["plan"]
@@ -316,7 +316,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
     dry_run = state.get("dry_run", False)
 
     if dry_run:
-        from src.chandra.digital_worker.schemas import ExecutionOutcome  # noqa: PLC0415
+        from src.chandra.digital_worker.schemas import ExecutionOutcome
 
         outcome = ExecutionOutcome(
             status="dry_run",
@@ -343,8 +343,8 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         dw_job_id = state.get("job_id") or request.request_id
 
         # Load global digital worker settings if available
-        import json  # noqa: PLC0415
-        import os  # noqa: PLC0415
+        import json
+        import os
 
         # graph.py is in src/chandra/digital_worker/
         # so dirname(dirname(dirname(dirname(__file__)))) is the root
@@ -371,8 +371,8 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         # Also stamp decision_mode="auto_execute" so the Worker Action Execution
         # Center can distinguish this job from a pre-approval running job
         # (which has decision_mode=null while the graph is still classifying).
-        import sys  # noqa: PLC0415
-        import threading  # noqa: PLC0415
+        import sys
+        import threading
 
         fastapi_app = sys.modules.get("fastapi_app") or sys.modules.get("__main__")
         if (
@@ -417,7 +417,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
                 answers=user_answers if isinstance(user_answers, list) else [user_answers],
             )
 
-        from src.chandra.digital_worker.schemas import ExecutionOutcome  # noqa: PLC0415
+        from src.chandra.digital_worker.schemas import ExecutionOutcome
 
         status_map = {
             200: "executed",
@@ -499,13 +499,13 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
-    from src.chandra.digital_worker.verifier import verify_execution  # noqa: PLC0415
+    from src.chandra.digital_worker.verifier import verify_execution
 
     execution = state["execution"]
 
     if state.get("guidance_md") and execution.status == "skipped":
         # Guidance path, no real execution to verify
-        from src.chandra.digital_worker.schemas import (  # noqa: PLC0415
+        from src.chandra.digital_worker.schemas import (
             ValidationCheck,
             ValidationResult,
         )

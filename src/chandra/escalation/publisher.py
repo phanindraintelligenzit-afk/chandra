@@ -51,7 +51,7 @@ class SNSPublisher:
 
         except Exception as e:
             try:
-                import botocore.exceptions  # noqa: PLC0415  # lazy: optional dep
+                import botocore.exceptions  # lazy: optional dep
 
                 if (
                     isinstance(e, botocore.exceptions.ClientError)

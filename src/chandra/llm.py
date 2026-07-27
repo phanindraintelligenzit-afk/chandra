@@ -121,7 +121,7 @@ def _build_bedrock_llm(
 ) -> Any:
     """Build a ``ChatBedrockConverse`` instance."""
     try:
-        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415
+        from langchain_aws import ChatBedrockConverse
     except ImportError as exc:
         raise ImportError(
             "langchain-aws is required for LLM_PROVIDER=bedrock. "
@@ -156,7 +156,7 @@ def _build_openai_llm(
     * Any other OpenAI-compatible endpoint
     """
     try:
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415
+        from langchain_openai import ChatOpenAI
     except ImportError as exc:
         raise ImportError(
             "langchain-openai is required for LLM_PROVIDER=openai. "
@@ -185,7 +185,7 @@ def _build_ollama_llm(
 ) -> Any:
     """Build a ``ChatOllama`` instance for direct Ollama integration."""
     try:
-        from langchain_ollama import ChatOllama  # noqa: PLC0415
+        from langchain_ollama import ChatOllama
     except ImportError as exc:
         raise ImportError(
             "langchain-ollama is required for LLM_PROVIDER=ollama. "

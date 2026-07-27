@@ -58,7 +58,7 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
 
     if provider == "bedrock":
-        from langchain_aws import ChatBedrockConverse  # noqa: PLC0415  # lazy: provider-specific
+        from langchain_aws import ChatBedrockConverse  # lazy: provider-specific
 
         return ChatBedrockConverse(
             model_id=model or settings.bedrock_model_id,
@@ -67,7 +67,7 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         )
 
     if provider in ("openai", "openai_compatible", "vllm"):
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415  # lazy: provider-specific
+        from langchain_openai import ChatOpenAI  # lazy: provider-specific
 
         # vLLM reads its own VLLM_* vars first, then falls back to the generic
         # OPENAI_* pair so any OpenAI-compatible server keeps working.
@@ -93,7 +93,7 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         )
 
     if provider == "ollama":
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415  # lazy: provider-specific
+        from langchain_openai import ChatOpenAI  # lazy: provider-specific
 
         resolved = model or settings.ollama_model
         if not resolved:

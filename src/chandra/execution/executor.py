@@ -72,9 +72,9 @@ def _jsonsafe(value: Any) -> Any:
     """Best-effort reduce a boto3 response to something serialisable."""
     if isinstance(value, dict):
         return {str(k): _jsonsafe(v) for k, v in value.items() if k != "ResponseMetadata"}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_jsonsafe(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, str | int | float | bool) or value is None:
         return value
     return str(value)
 

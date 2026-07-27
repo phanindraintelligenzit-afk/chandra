@@ -79,7 +79,7 @@ def _tolerant_parse(raw: str) -> Any:
     except json.JSONDecodeError:
         pass
     try:
-        import json_repair  # noqa: PLC0415  # optional dep; best-effort recovery
+        import json_repair  # optional dep; best-effort recovery
 
         return json_repair.loads(raw)
     except Exception:  # parse recovery is best-effort by design

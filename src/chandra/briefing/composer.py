@@ -97,7 +97,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
         return []
 
     try:
-        from src.chandra.llm import get_llm  # noqa: PLC0415
+        from src.chandra.llm import get_llm
 
         llm = get_llm()
         analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
@@ -124,7 +124,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair  # noqa: PLC0415
+        import json_repair
 
         parsed = json_repair.loads(text)
         ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
@@ -180,7 +180,7 @@ def compose_executive_summary(
     """Three-bullet exec summary. LLM-generated when a provider is reachable."""
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
-        from src.chandra.llm import get_llm  # noqa: PLC0415
+        from src.chandra.llm import get_llm
 
         llm = get_llm()
         briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
@@ -274,7 +274,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         }
     """
     try:
-        from src.chandra.llm import get_llm  # noqa: PLC0415
+        from src.chandra.llm import get_llm
 
         llm = get_llm()
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
@@ -287,7 +287,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair  # noqa: PLC0415
+        import json_repair
 
         parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:

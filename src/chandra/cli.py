@@ -133,7 +133,7 @@ def eval_cmd(
     LIVE MODE (requires AWS account):
         chandra eval --account 123456789 --apply
     """
-    from evals.harness import (  # noqa: PLC0415  # lazy: heavy deps
+    from evals.harness import (  # lazy: heavy deps
         run_eval,
     )
 
