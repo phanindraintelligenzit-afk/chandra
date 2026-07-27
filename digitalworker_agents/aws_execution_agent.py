@@ -1945,11 +1945,11 @@ Keep the output compact — the user already scoped what they need.
         batch_size = len(resources) if resources and resources != ["all"] else 1
         max_retries = 3
 
-        tf_docs_dict = state.get("terraform_docs_dict") or {}
+        tf_docs_dict = state.get("terraform_docs_dict") or {{}}
 
         for attempt in range(max_retries):
             try:
-                all_generated_files = {}
+                all_generated_files = {{}}
                 all_exec_steps = []
                 summaries = []
                 

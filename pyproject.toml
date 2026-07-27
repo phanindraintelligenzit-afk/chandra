@@ -150,6 +150,7 @@ module = [
     "tools.jira_tools.*",
     "tools.langchain_tools",
 ]
+follow_imports = "skip"
 ignore_errors = true
 
 [tool.pytest.ini_options]
