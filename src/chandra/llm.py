@@ -88,10 +88,7 @@ def get_llm(
     elif provider == "ollama":
         return _build_ollama_llm(model_name, temp, tokens, **kwargs)
     else:
-        raise ValueError(
-            f"Unknown LLM_PROVIDER={provider!r}. "
-            f"Supported: bedrock, openai, ollama"
-        )
+        raise ValueError(f"Unknown LLM_PROVIDER={provider!r}. Supported: bedrock, openai, ollama")
 
 
 def get_llm_with_tools(

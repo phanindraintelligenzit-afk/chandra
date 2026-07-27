@@ -98,6 +98,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
 
     try:
         from src.chandra.llm import get_llm  # noqa: PLC0415
+
         llm = get_llm()
         analyzer_prompt = (PROMPTS_DIR / "analyzer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{analyzer_prompt}"
@@ -180,6 +181,7 @@ def compose_executive_summary(
     score_dict = scorecard.as_dict() if isinstance(scorecard, Scorecard) else scorecard
     try:
         from src.chandra.llm import get_llm  # noqa: PLC0415
+
         llm = get_llm()
         briefer_prompt = (PROMPTS_DIR / "briefer.md").read_text(encoding="utf-8")
         system = f"{_KRA_CONTEXT}\n\n{briefer_prompt}"
@@ -273,6 +275,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
     """
     try:
         from src.chandra.llm import get_llm  # noqa: PLC0415
+
         llm = get_llm()
         prompt = (PROMPTS_DIR / "digital_worker.md").read_text(encoding="utf-8")
         cb = UsageCapture()

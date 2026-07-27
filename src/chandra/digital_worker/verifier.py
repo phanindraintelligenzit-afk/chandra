@@ -84,6 +84,7 @@ def _generate_verification_code(
     """Ask the configured LLM to write the Python verification script."""
     try:
         from src.chandra.llm import get_llm  # noqa: PLC0415
+
         llm = get_llm()
 
         payload = {

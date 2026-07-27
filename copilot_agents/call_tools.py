@@ -18,10 +18,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 load_dotenv(override=True)
 
 # ── Clients ──────────────────────────────────────────────────────────────────
-cloudwatch_client = boto3.client("cloudwatch")
-xray_client = boto3.client("xray")
-config_client = boto3.client("config")
-cloudtrail_client = boto3.client("cloudtrail")
+cloudwatch_client = boto3.client("cloudwatch", region_name="us-east-1")
+xray_client = boto3.client("xray", region_name="us-east-1")
+config_client = boto3.client("config", region_name="us-east-1")
+cloudtrail_client = boto3.client("cloudtrail", region_name="us-east-1")
 ce_client = boto3.client("ce", region_name="us-east-1")
 
 # ── Tool 1: CloudWatch CPU Metrics ───────────────────────────────────────────

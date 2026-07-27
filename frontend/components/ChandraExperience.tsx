@@ -73,7 +73,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 type Severity = "P1" | "P2" | "P3" | "P4";
 type IncidentStatus = "Resolved" | "Investigating" | "Escalated" | "Monitoring" | "Awaiting Approval";
 type ApprovalState = "Awaiting Review" | "Approved" | "Rejected" | "Escalated" | "Timed Out";
-type EmailStatus = "pending" | "sent" | "viewed" | "approved" | "rejected";
+type EmailStatus = "pending" | "sent" | "viewed" | "approved" | "rejected" | "NONE";
 
 type OpsEvent = {
   id: string;
@@ -388,7 +388,8 @@ function EmailStatusPill({ status }: { status: EmailStatus }) {
     sent: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     viewed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     approved: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
-    rejected: "border-signal/45 bg-signal/15 text-signal"
+    rejected: "border-signal/45 bg-signal/15 text-signal",
+    NONE: "border-white/20 bg-white/[0.06] text-frost"
   }[status];
   return <span className={cx("inline-flex items-center border px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.18em]", tone)}>{status}</span>;
 }
