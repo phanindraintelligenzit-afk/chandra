@@ -130,6 +130,11 @@ type ApprovalRow = {
   pendingReason: string;
   kraCode: string;
   steps: string[];
+  resourceId?: string;
+  detectorId?: string;
+  region?: string;
+  action?: string;
+  category?: string;
 };
 
 type KraReview = {
@@ -2409,10 +2414,10 @@ export function ChandraExperience() {
   };
   const [pendingHitlRequests, setPendingHitlRequests] = useState<HitlRequest[]>([]);
 
-  const [cwRegion, setCwRegion] = useState("us-east-1");
+  const [cwRegion, setCwRegion] = useState(process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1");
   const [cwHours, setCwHours] = useState(12);
   const [cwPeriod, setCwPeriod] = useState(1200);
-  const [availableRegions, setAvailableRegions] = useState<string[]>(["us-east-1"]);
+  const [availableRegions, setAvailableRegions] = useState<string[]>([process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"]);
 
   // Fetch available regions on mount
   useEffect(() => {
@@ -2512,12 +2517,12 @@ export function ChandraExperience() {
             confidence: 90,
             requestedBy: "Detector",
             lockState: "LOCKED",
-            emailStatus: "NONE",
+            emailStatus: "pending",
             pendingReason: issue.recommendation,
             kraCode: kraCode,
             resourceId: issue.resource_arn || undefined,
             detectorId: issue.detector_id,
-            region: issue.region || "us-east-1",
+            region: issue.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
             action: `remediate_${issue.detector_id}`,
             category: issue.kra.toUpperCase(),
             steps: issue.evidence
@@ -2585,8 +2590,8 @@ export function ChandraExperience() {
 
   const observationsPayload = useMemo(
     () => ({
-      region: "us-east-1",
-      kras: buildKraPayload(predefinedKras, activeCustomKras),
+      region: process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
+      kras: buildKraPayload([], activeCustomKras),
       selected_kras: selectedKRAs,
       custom_kras: activeCustomKras,
       maturity_level: maturity,

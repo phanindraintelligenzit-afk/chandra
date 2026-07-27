@@ -435,7 +435,7 @@ async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 class CloudWatchMetricsRequest(BaseModel):
-    region: str = Field(default="us-east-1", description="AWS region to fetch metrics from")
+    region: str = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="AWS region to fetch metrics from")
     last_hours: int = Field(default=12, description="Hours to look back")
     period: int = Field(default=1200, description="Period in seconds")
     timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
@@ -572,7 +572,14 @@ def _run_detector_task(job_id: str):
             _job_store[job_id]["thread_id"] = threading.get_ident()
 
         # Use shared bg loop — avoids competing event loops crashing uvicorn
-        findings = _run_async(run_all_detectors())
+        selected = [k["name"].lower() for k in _load_custom_kras_from_disk() if k.get("selected")]
+        valid_modules = [m for m in ["compliance", "security", "reliability", "performance", "cost"] if m in selected]
+        
+        if valid_modules:
+            findings = _run_async(run_predefined_kra_detectors(valid_modules))
+        else:
+            findings = {}
+            
         if isinstance(findings, dict):
             total_issues = sum(len(g) for g in findings.values())
             output = findings
@@ -707,7 +714,7 @@ class ActionInput(BaseModel):
     kraData: Optional[Dict[str, Any]] = Field(default=None, description="User-defined KRA payload (resources, permissions, region, tags) — when present, bypasses MCP doc scraping and uses this compact payload instead")
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
-    region: Optional[str] = Field(default="us-east-1", description="Target region for predefined KRA actions")
+    region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1256,7 +1263,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
 
         # Check if this is a predefined KRA remediation
-        if request.action.detectorId and request.action.resourceArn:
+        if request.action.detectorId:
             from src.chandra.graphs.action_nodes.action_executor import action_executor_node
             from src.chandra.graphs.state import ChandraState
             from src.chandra.briefing.schemas import ProposedWrite
@@ -1264,8 +1271,8 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             logger.info("ORCHESTRATION TASK [%s] routing to action_executor_node for predefined KRA %s", job_id, request.action.detectorId)
             pw = ProposedWrite(
                 action=f"remediate_{request.action.detectorId}",
-                target_arn=request.action.resourceArn,
-                region=request.action.region or "us-east-1",
+                target_arn=request.action.resourceArn or getattr(request.action, "resourceId", "") or "unknown-arn",
+                region=request.action.region or os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                 payload={},
                 requested_by="supervisor",
                 justification=request.action.actionDescription,

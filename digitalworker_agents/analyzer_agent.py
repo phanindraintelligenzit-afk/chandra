@@ -16,8 +16,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langgraph.graph import END, StateGraph
 
 from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket

@@ -25,6 +25,7 @@ LG-07: _route_kra_workers now passes a slim projection
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -412,7 +413,7 @@ def escalation_node(state: ChandraState) -> dict[str, Any]:
         resource_id=state.get("resource_id", "unknown"),
         severity=state.get("severity", "medium"),
         service=state.get("service", "aws"),
-        region=state.get("region", "us-east-1"),
+        region=state.get("region", os.getenv("AWS_DEFAULT_REGION", "us-east-1")),
         summary=state.get("summary", "Security finding"),
         recommended_action=state.get("recommended_action", "Review and remediate"),
     )

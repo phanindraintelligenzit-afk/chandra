@@ -94,6 +94,17 @@ ignore = ["PLR0913", "PLR2004"]
 "src/chandra/aws/client_factory.py" = ["PLW0603"]
 "src/chandra/db/session.py" = ["PLW0603"]
 "src/chandra/logging.py" = ["PLW0603"]
+# LLM prompt templates are long literal strings that cannot be wrapped
+# without changing the prompt the model receives.
+"src/chandra/digital_worker/decision_engine.py" = ["E501"]
+"src/chandra/digital_worker/verifier.py" = ["E501"]
+# Deliberate shared-checkpointer module global + long debug f-strings.
+"tests/test_hitl_context_isolation.py" = ["PLW0603", "E501"]
+# Long inline test payloads + xfail-reason strings (recovery of gate churn).
+"tests/unit/test_analyze_ranking.py" = ["E501"]
+"tests/unit/test_digital_worker_graph.py" = ["E501"]
+"tests/unit/test_digital_worker_intake.py" = ["E501"]
+"tests/unit/test_digital_worker_planning.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -124,6 +135,22 @@ module = [
     "dotenv.*",
 ]
 ignore_missing_imports = true
+
+# The legacy root-level services (digitalworker_agents/, root tools/,
+# copilot_agents/) are pre-src/ drift never held to strict typing. They
+# enter `mypy src` scope only because src/chandra/digital_worker/graph.py
+# imports digitalworker_agents.aws_execution_agent. Follow imports for
+# type info, but don't gate src/chandra on that untyped tree. src.chandra.*
+# stays fully type-checked. (Re-applied — lost in a main merge.)
+[[tool.mypy.overrides]]
+module = [
+    "digitalworker_agents.*",
+    "copilot_agents.*",
+    "tools.aws_cloud_tools.*",
+    "tools.jira_tools.*",
+    "tools.langchain_tools",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

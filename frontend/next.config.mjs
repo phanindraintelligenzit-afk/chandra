@@ -13,7 +13,8 @@ const nextConfig = {
   assetPrefix: pagesPath || undefined,
   env: {
     NEXT_PUBLIC_BASE_PATH: pagesPath,
-    NEXT_PUBLIC_API_URL: apiUrl
+    NEXT_PUBLIC_API_URL: apiUrl,
+    NEXT_PUBLIC_AWS_REGION: process.env.AWS_DEFAULT_REGION || process.env.AWS_REGION || "us-east-1"
   },
   images: {
     unoptimized: true

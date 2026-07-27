@@ -7,6 +7,7 @@ single source of truth and bypasses validation.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,7 +29,9 @@ class Settings(BaseSettings):
     )
 
     aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
-    aws_default_region: str = Field(default="us-east-1", alias="AWS_DEFAULT_REGION")
+    aws_default_region: str = Field(
+        default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), alias="AWS_DEFAULT_REGION"
+    )
 
     # ── LLM provider ────────────────────────────────────────────────────────
     # One of: bedrock, openai, ollama
@@ -55,14 +58,28 @@ class Settings(BaseSettings):
         alias="BEDROCK_MODEL_ID",
     )
 
-    # ― OpenAI-compatible endpoint ―
+    llm_provider: str | None = Field(default="bedrock", alias="LLM_PROVIDER")
     openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_model_name: str | None = Field(default=None, alias="OPENAI_MODEL_NAME")
+    # vLLM-specific aliases. When ``LLM_PROVIDER=vllm`` these take precedence
+    # over the generic OPENAI_* pair (which stays supported for any other
+    # OpenAI-compatible server), so a local vLLM deployment reads naturally:
+    #   LLM_PROVIDER=vllm VLLM_API_BASE=http://localhost:8000/v1 VLLM_MODEL=...
+    vllm_api_base: str | None = Field(default=None, alias="VLLM_API_BASE")
+    vllm_model: str | None = Field(default=None, alias="VLLM_MODEL")
+    vllm_api_key: str | None = Field(default=None, alias="VLLM_API_KEY")
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
+    ollama_model: str | None = Field(default=None, alias="OLLAMA_MODEL")
 
-    # ― Ollama-specific ―
-    ollama_base_url: str | None = Field(default=None, alias="OLLAMA_BASE_URL")
+    # Enforce the typed execution pipeline in the AWS Execution Agent: when
+    # true, remediation runs only through a validated ExecutionPlan +
+    # deterministic executor (no generated shell/python/terraform via
+    # subprocess). Default false keeps the legacy code-gen engine so
+    # existing behavior is preserved until an operator opts in after E2E
+    # validation. See docs/local-llm-migration.md §6.
+    typed_execution_enabled: bool = Field(default=False, alias="CHANDRA_TYPED_EXECUTION")
 
-    # ── Postgres ─────────────────────────────────────────────────────────────
     postgres_url: str = Field(
         default="postgresql+psycopg://chandra:chandra@localhost:5432/chandra",
         alias="POSTGRES_URL",

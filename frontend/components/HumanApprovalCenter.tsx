@@ -381,10 +381,17 @@ export function HumanApprovalCenter({
   filterRef.current = filter;
 
   const [kraApprovals, setKraApprovals] = useState<any[]>([]);
+  const localDecisions = useRef<Record<string, string>>({});
+
   useEffect(() => {
-    // Only set initial state or sync if we haven't locally mutated
-    // In a real app we might diff, but simple assignment works for seed
-    setKraApprovals(kraCards);
+    // Merge backend updates with our optimistic local decisions
+    // so the button doesn't pop back to "Approve" when the backend polls
+    setKraApprovals(kraCards.map(card => {
+       if (localDecisions.current[card.id]) {
+           return { ...card, state: localDecisions.current[card.id] };
+       }
+       return card;
+    }));
   }, [kraCards]);
 
   const load = useCallback(async () => {
@@ -410,7 +417,10 @@ export function HumanApprovalCenter({
   const onDecision = useCallback(
     async (req: UnifiedRequest, approved: boolean) => {
       if (req.isKra) {
-        setKraApprovals(curr => curr.map(r => r.id === req.job_id ? { ...r, state: approved ? "Approved" : "Rejected" } : r));
+        const newState = approved ? "Approved" : "Rejected";
+        localDecisions.current[req.job_id] = newState;
+        
+        setKraApprovals(curr => curr.map(r => r.id === req.job_id ? { ...r, state: newState } : r));
         const row = kraApprovals.find(r => r.id === req.job_id);
         if (approved && row && onAutoApproved) {
           onAutoApproved({
@@ -498,7 +508,7 @@ export function HumanApprovalCenter({
 
     if (kraFilter !== "all") {
       matched = matched.filter(r => 
-        (r.kraData?.kraCode === kraFilter) || 
+        (('kraData' in r && (r as any).kraData?.kraCode === kraFilter)) || 
         (r.category === kraFilter)
       );
     }

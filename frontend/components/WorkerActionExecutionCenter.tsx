@@ -29,6 +29,9 @@ type ExecutingAction = {
   summary?: string;
   questions?: string[];
   sandboxPath?: string;
+  detectorId?: string;
+  region?: string;
+  resourceId?: string;
 };
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -619,7 +622,9 @@ export const WorkerActionExecutionCenter = forwardRef<
       progress: 0,
       jobMessage: "Submitting job...",
       resourceId: resourceId,
-      originalJobId: action.id
+      originalJobId: action.id,
+      detectorId: action.detectorId,
+      region: action.region
     } as ExecutingAction;
 
     setExecutingActions((current) => [executing, ...current]);
@@ -633,9 +638,9 @@ export const WorkerActionExecutionCenter = forwardRef<
           service: executing.service || "AWS",
           kraCode: executing.kraCode,
           priorityLevel: executing.priorityLevel,
-          detectorId: action.detectorId,
-          resourceArn: action.region === "us-east-1" ? action.resourceId : action.resourceId, // dummy check to pass resourceId
-          region: action.region || "us-east-1"
+          detectorId: executing.detectorId,
+          resourceArn: executing.region === (process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1") ? executing.resourceId : executing.resourceId, // dummy check to pass resourceId
+          region: executing.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: timeoutMins * 60,

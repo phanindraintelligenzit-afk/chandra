@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -74,10 +75,10 @@ def find_public_s3_buckets(ctx: DetectorContext) -> list[Finding]:  # noqa: PLR0
 
     for name in bucket_names:
         arn = f"arn:aws:s3:::{name}"
-        region = "us-east-1"
+        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
         with detector_guard(ctx, detector_id=detector_id, resource_arn=arn):
             loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
-            region = loc or "us-east-1"
+            region = loc or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 
         pab_disabled = False
         pab_evidence: dict[str, Any] = {}
@@ -860,11 +861,11 @@ ALL_DETECTORS = (
     find_stale_access_keys,
     check_root_mfa,
     find_overly_permissive_iam,
-    # find_config_noncompliant_rules,   
-    # find_guardduty_threats,            
-    find_access_analyzer_findings,    
+    # find_config_noncompliant_rules,
+    # find_guardduty_threats,
+    find_access_analyzer_findings,
     find_kms_rotation_disabled,
-    # find_security_hub_findings,        
+    # find_security_hub_findings,
 )
 
 

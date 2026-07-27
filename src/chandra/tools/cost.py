@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 
 from src.chandra.briefing.schemas import Finding
@@ -12,13 +13,15 @@ def find_unattached_ebs(ctx: DetectorContext) -> list[Finding]:
     """Find unattached EBS volumes (COST-002-unattached-ebs)."""
     findings = []
 
-    regions = ctx.regions or ["us-east-1"]
+    regions = ctx.regions or [os.getenv("AWS_DEFAULT_REGION", "us-east-1")]
     for region in regions:
         try:
             ec2 = ctx.factory.client("ec2", region=region)
             resp = ec2.describe_volumes()
 
             for volume in resp.get("Volumes", []):
+                if volume.get("State") != "available":
+                    continue
                 if not volume.get("Attachments"):
                     findings.append(
                         Finding(
@@ -54,7 +57,7 @@ def find_unused_eips(ctx: DetectorContext) -> list[Finding]:
     """Find unassociated Elastic IPs (COST-003-unused-eip)."""
     findings = []
 
-    regions = ctx.regions or ["us-east-1"]
+    regions = ctx.regions or [os.getenv("AWS_DEFAULT_REGION", "us-east-1")]
     for region in regions:
         try:
             ec2 = ctx.factory.client("ec2", region=region)
@@ -97,7 +100,7 @@ def find_untagged_billable(ctx: DetectorContext) -> list[Finding]:
     findings = []
     required_tags = {"Environment", "Owner"}
 
-    regions = ctx.regions or ["us-east-1"]
+    regions = ctx.regions or [os.getenv("AWS_DEFAULT_REGION", "us-east-1")]
     for region in regions:
         try:
             ec2 = ctx.factory.client("ec2", region=region)
@@ -105,6 +108,9 @@ def find_untagged_billable(ctx: DetectorContext) -> list[Finding]:
 
             for reservation in resp.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
+                    state = instance.get("State", {}).get("Name")
+                    if state in ("terminated", "shutting-down"):
+                        continue
                     tags = {tag["Key"] for tag in instance.get("Tags", [])}
                     missing = required_tags - tags
 
@@ -143,7 +149,7 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
     """Find idle EC2 instances with low CPU utilization (COST-001-idle-ec2)."""
     findings = []
 
-    regions = ctx.regions or ["us-east-1"]
+    regions = ctx.regions or [os.getenv("AWS_DEFAULT_REGION", "us-east-1")]
     for region in regions:
         try:
             ec2 = ctx.factory.client("ec2", region=region)
@@ -153,6 +159,8 @@ def find_idle_ec2(ctx: DetectorContext) -> list[Finding]:
 
             for reservation in resp.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
+                    if instance.get("State", {}).get("Name") != "running":
+                        continue
                     instance_id = instance["InstanceId"]
 
                     now = datetime.now(UTC)

@@ -16,6 +16,7 @@ Detector IDs:
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from src.chandra.briefing.schemas import Finding
@@ -40,6 +41,8 @@ def check_encryption_at_rest_rds(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(rds, "describe_db_instances"):
                 for db in page.get("DBInstances", []):
+                    if db.get("DBInstanceStatus") == "deleting":
+                        continue
                     if db.get("StorageEncrypted"):
                         continue
                     arn = db["DBInstanceArn"]
@@ -191,6 +194,8 @@ def check_encryption_at_rest_ebs(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(ec2, "describe_volumes"):
                 for vol in page.get("Volumes", []):
+                    if vol.get("State") == "deleting":
+                        continue
                     if vol.get("Encrypted"):
                         continue
                     volume_id = vol["VolumeId"]
@@ -260,7 +265,7 @@ def check_s3_default_encryption(ctx: DetectorContext) -> list[Finding]:
                     severity="high",
                     resource_arn=arn,
                     resource_type="AWS::S3::Bucket",
-                    region="us-east-1",
+                    region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                     title=f"S3 bucket {name} has no default encryption configured",
                     evidence=evidence,
                     recommendation=(
@@ -515,12 +520,12 @@ ALL_DETECTORS = (
     check_encryption_at_rest_rds,  # COMP-001
     check_cloudtrail_multi_region,  # COMP-002
     check_config_recorder,  # COMP-003
-    check_encryption_at_rest_ebs,     # COMP-004 — disabled for testing
-    check_s3_default_encryption,      # COMP-005 — disabled for testing
+    check_encryption_at_rest_ebs,  # COMP-004 — disabled for testing
+    check_s3_default_encryption,  # COMP-005 — disabled for testing
     check_backup_protection,  # COMP-006
-    check_config_rule_compliance,     # COMP-007 — disabled for testing
+    check_config_rule_compliance,  # COMP-007 — disabled for testing
     check_ebs_encryption_by_default,  # COMP-008
-    check_missing_mandatory_tags,     # COMP-009 — disabled for testing
+    check_missing_mandatory_tags,  # COMP-009 — disabled for testing
 )
 
 

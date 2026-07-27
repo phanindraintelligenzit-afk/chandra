@@ -7,11 +7,6 @@ approval, or just produce engineer guidance.
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-from pydantic import ValidationError
-from src.chandra.config import settings
 from src.chandra.digital_worker.schemas import (
     CloudRequest,
     DecisionMode,
@@ -21,7 +16,6 @@ from src.chandra.digital_worker.schemas import (
     RiskAssessment,
 )
 from src.chandra.logging import get_logger
-from src.chandra.observability.callbacks import UsageCapture
 
 logger = get_logger(__name__)
 
@@ -58,7 +52,7 @@ def evaluate_decision(
     plan: ResolutionPlan,
     risk: RiskAssessment,
 ) -> ExecutionDecision:
-    """Dynamically decide execution mode. 
+    """Dynamically decide execution mode.
     (LLM policy engine bypassed; ambiguity is handled via HITL in the execution agent)"""
     # Fallback to deterministic gate if automation is completely absent
     if not plan.automation_available:
@@ -72,14 +66,16 @@ def evaluate_decision(
     return _deterministic_fallback(classification, risk)
 
 
-def _deterministic_fallback(classification: RequestClassification, risk: RiskAssessment) -> ExecutionDecision:
+def _deterministic_fallback(
+    classification: RequestClassification, risk: RiskAssessment
+) -> ExecutionDecision:
     """Deterministic fallback if Bedrock is down."""
     if not risk.requires_approval:
         return ExecutionDecision(
             mode=DecisionMode.AUTO_EXECUTE,
-            reason=f"Fallback: Risk {risk.level.value} needs no approval."
+            reason=f"Fallback: Risk {risk.level.value} needs no approval.",
         )
     return ExecutionDecision(
         mode=DecisionMode.AWAIT_APPROVAL,
-        reason=f"Fallback: Risk {risk.level.value} requires human approval."
+        reason=f"Fallback: Risk {risk.level.value} requires human approval.",
     )

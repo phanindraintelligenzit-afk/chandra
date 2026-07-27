@@ -1,4 +1,5 @@
 import json
+import os
 
 from src.chandra.aws.client_factory import AwsClientFactory, get_default_factory
 from src.chandra.escalation.schemas import (
@@ -11,7 +12,7 @@ class SNSPublisher:
     def __init__(
         self,
         topic_arn: str,
-        region: str = "us-east-1",
+        region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
         factory: AwsClientFactory | None = None,
     ):
         self.topic_arn = topic_arn

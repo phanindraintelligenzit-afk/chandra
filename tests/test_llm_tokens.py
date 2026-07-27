@@ -1,7 +1,6 @@
 import json
 
-from langchain_aws import ChatBedrockConverse
-from src.chandra.config import settings
+from src.chandra.llm import build_chat_model
 from src.chandra.observability.callbacks import UsageCapture
 
 print("=" * 70)
@@ -13,12 +12,7 @@ print()
 cb = UsageCapture()
 
 # Create LLM instance
-llm = ChatBedrockConverse(
-    model=settings.bedrock_model_id,
-    region_name=settings.aws_default_region,
-    temperature=0.0,
-    max_tokens=512,
-)
+llm = build_chat_model(temperature=0.0, max_tokens=512)
 
 print("Calling Claude via Bedrock...")
 print("-" * 70)

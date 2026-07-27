@@ -4,8 +4,7 @@ from typing import Annotated, Any, TypedDict
 import os
 from src.chandra.config import settings
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_aws import ChatBedrockConverse
-# from langchain_openai import ChatOpenAI
+from src.chandra.llm import build_chat_model
 from langgraph.checkpoint.memory import MemorySaver, logger
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages

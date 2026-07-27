@@ -6,20 +6,31 @@ successfully achieved the desired cloud state.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import contextlib
 import io
 import json
 
-import ast
 from src.chandra.aws.client_factory import get_default_factory
-from src.chandra.config import settings
+from src.chandra.digital_worker.schemas import (
+    CloudRequest,
+    ExecutionOutcome,
+    RequestClassification,
+    ResolutionPlan,
+    ValidationCheck,
+    ValidationResult,
+)
+from src.chandra.logging import get_logger
+from src.chandra.observability.callbacks import UsageCapture
 
 FORBIDDEN_MODULES = {"os", "sys", "subprocess", "shlex", "pty", "socket"}
 FORBIDDEN_FUNCTIONS = {"exec", "eval", "open", "compile"}
 
+
 class SecurityError(Exception):
     pass
+
 
 class SecurityVisitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
@@ -34,25 +45,16 @@ class SecurityVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if isinstance(node.func, ast.Name):
-            if node.func.id in FORBIDDEN_FUNCTIONS:
-                raise SecurityError(f"Function {node.func.id}() is forbidden by policy.")
+        if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_FUNCTIONS:
+            raise SecurityError(f"Function {node.func.id}() is forbidden by policy.")
         self.generic_visit(node)
+
 
 def _validate_ast(code: str) -> None:
     tree = ast.parse(code)
     visitor = SecurityVisitor()
     visitor.visit(tree)
-from src.chandra.digital_worker.schemas import (
-    CloudRequest,
-    ExecutionOutcome,
-    RequestClassification,
-    ResolutionPlan,
-    ValidationCheck,
-    ValidationResult,
-)
-from src.chandra.logging import get_logger
-from src.chandra.observability.callbacks import UsageCapture
+
 
 logger = get_logger(__name__)
 
@@ -98,14 +100,14 @@ def _generate_verification_code(
             ],
             config={"callbacks": [cb]},
         )
-        
+
         code = response.content if isinstance(response.content, str) else str(response.content)
-        
+
         if "```python" in code:
             code = code.split("```python")[1].split("```")[0].strip()
         elif "```" in code:
             code = code.split("```")[1].split("```")[0].strip()
-            
+
         return code
     except Exception as exc:
         logger.error("llm.verification_code_generation_failed", error=str(exc))
@@ -122,22 +124,38 @@ def verify_execution(
     if execution.status == "skipped" or execution.dry_run:
         return ValidationResult(
             passed=True,
-            checks=[ValidationCheck(name="dry_run_or_skipped", passed=True, detail="No verification needed.")],
+            checks=[
+                ValidationCheck(
+                    name="dry_run_or_skipped", passed=True, detail="No verification needed."
+                )
+            ],
         )
 
     if execution.status == "failed":
         return ValidationResult(
             passed=False,
-            checks=[ValidationCheck(name="execution_failed", passed=False, detail="Automation failed before verification.")],
+            checks=[
+                ValidationCheck(
+                    name="execution_failed",
+                    passed=False,
+                    detail="Automation failed before verification.",
+                )
+            ],
         )
 
     logger.info("verifier.generating_code", request_id=request.request_id)
     code = _generate_verification_code(request, plan, execution.execution_logs)
-    
+
     if not code:
         return ValidationResult(
             passed=False,
-            checks=[ValidationCheck(name="code_generation", passed=False, detail="Failed to generate verification script.")],
+            checks=[
+                ValidationCheck(
+                    name="code_generation",
+                    passed=False,
+                    detail="Failed to generate verification script.",
+                )
+            ],
         )
 
     logger.info("verifier.validating_ast", request_id=request.request_id)
@@ -152,14 +170,14 @@ def verify_execution(
         )
 
     logger.info("verifier.running_code", request_id=request.request_id)
-    
+
     safe_builtins = {k: v for k, v in builtins.__dict__.items() if k not in FORBIDDEN_FUNCTIONS}
     factory = get_default_factory()
     exec_globals = {
         "__builtins__": safe_builtins,
         "aws_session": factory.session,
     }
-    
+
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     passed = True
@@ -177,7 +195,7 @@ def verify_execution(
         logger.error("verifier.runtime_error", error=str(exc))
 
     logs = stdout_buf.getvalue() + "\n" + stderr_buf.getvalue()
-    
+
     for line in logs.splitlines():
         if line.strip():
             logger.info(line.strip())

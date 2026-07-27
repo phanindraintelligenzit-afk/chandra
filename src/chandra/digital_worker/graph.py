@@ -44,22 +44,15 @@ from src.chandra.digital_worker.schemas import (
     CloudPlatform,
     CloudRequest,
     DecisionMode,
-    ExecutionDecision,
     ExecutionOutcome,
     NotificationResult,
     RequestPriority,
     RiskLevel,
-    ValidationCheck,
-    ValidationResult,
     WorkflowResult,
 )
 from src.chandra.digital_worker.state import DigitalWorkerState
 from src.chandra.digital_worker.tracker import update_request_ticket
 from src.chandra.escalation.schemas import EscalationPayload
-from src.chandra.graphs.action_nodes.action_executor import (
-    ActionExecutor,
-    registered_problem_type,
-)
 from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.logging import get_logger
 
@@ -235,15 +228,15 @@ def risk_analysis(state: DigitalWorkerState) -> dict[str, Any]:
 
 def decision(state: DigitalWorkerState) -> dict[str, Any]:
     """Dynamically evaluate the execute-vs-guidance decision using the Decision Engine."""
-    from src.chandra.digital_worker.decision_engine import evaluate_decision
-    
+    from src.chandra.digital_worker.decision_engine import evaluate_decision  # noqa: PLC0415
+
     verdict = evaluate_decision(
         request=state["request"],
         classification=state["classification"],
         plan=state["plan"],
-        risk=state["risk"]
+        risk=state["risk"],
     )
-    
+
     logger.info(
         "graph.decision",
         request_id=state["request"].request_id,
@@ -311,18 +304,20 @@ def route_approval(state: DigitalWorkerState) -> str:
     return "generate_guidance"
 
 
-def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
+def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PLR0912,PLR0915
     """Run the execution using the ExecutionAgents orchestrator."""
-    from digitalworker_agents.aws_execution_agent import ExecutionAgents
-    import json
-    
+    import json  # noqa: PLC0415
+
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents  # noqa: PLC0415
+
     request = state["request"]
     plan = state["plan"]
     classification = state["classification"]
     dry_run = state.get("dry_run", False)
-    
+
     if dry_run:
-        from src.chandra.digital_worker.schemas import ExecutionOutcome
+        from src.chandra.digital_worker.schemas import ExecutionOutcome  # noqa: PLC0415
+
         outcome = ExecutionOutcome(
             status="dry_run",
             detail="Dry run requested, skipping execution",
@@ -332,70 +327,86 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
         action_dict = {
             "actionName": request.title or "Digital Worker Resolution",
             "actionDescription": request.description or "Automated execution for request",
-            "service": ", ".join(classification.services) if classification.services else classification.platform.value,
+            "service": ", ".join(classification.services)
+            if classification.services
+            else classification.platform.value,
             "kraCode": None,
             "priorityLevel": classification.priority.value,
             "steps": [step.action for step in plan.steps],
-            "jiraUrl": f"https://dummyintelligenzit.atlassian.net/browse/{request.external_id}" if request.external_id and request.source.value == "jira" else "",
+            "jiraUrl": f"https://dummyintelligenzit.atlassian.net/browse/{request.external_id}"
+            if request.external_id and request.source.value == "jira"
+            else "",
             "skipJiraUpdate": True,
         }
-        
+
         # Instantiate orchestrator using the native job_id injected into state
         dw_job_id = state.get("job_id") or request.request_id
-        
+
         # Load global digital worker settings if available
-        import os, json
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+
         # graph.py is in src/chandra/digital_worker/
         # so dirname(dirname(dirname(dirname(__file__)))) is the root
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "digital_worker_config.json")
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "digital_worker_config.json",
+        )
         max_iters = 5
         cmd_timeout = 300
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
+                with open(config_path) as f:
                     data = json.load(f)
                     max_iters = data.get("max_iterations", max_iters)
                     cmd_timeout = data.get("command_timeout", cmd_timeout)
             except Exception:
                 pass
-                
+
         orchestrator = ExecutionAgents(max_iterations=max_iters, job_id=dw_job_id)
         exec_thread_id = f"exec-{dw_job_id}"
-        
+
         # Register the actual LangGraph worker thread ID into the backend job store
         # so that the /orchestrate/stop endpoint can correctly kill this thread.
         # Also stamp decision_mode="auto_execute" so the Worker Action Execution
         # Center can distinguish this job from a pre-approval running job
         # (which has decision_mode=null while the graph is still classifying).
-        import threading
-        import sys
+        import sys  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+
         fastapi_app = sys.modules.get("fastapi_app") or sys.modules.get("__main__")
-        if fastapi_app and hasattr(fastapi_app, "_job_store_lock") and hasattr(fastapi_app, "_job_store"):
+        if (
+            fastapi_app
+            and hasattr(fastapi_app, "_job_store_lock")
+            and hasattr(fastapi_app, "_job_store")
+        ):
             with fastapi_app._job_store_lock:
                 if dw_job_id in fastapi_app._job_store:
-                        fastapi_app._job_store[dw_job_id]["thread_id"] = threading.get_ident()
-                        # Only stamp auto_execute if this job wasn't approved by a human
-                        # (post-approval resume also calls execute_automation but must
-                        # keep decision_mode="await_approval" for the WAEC filter)
-                        if not fastapi_app._job_store[dw_job_id].get("approved_by_human"):
-                            fastapi_app._job_store[dw_job_id]["decision_mode"] = "auto_execute"
-        
+                    fastapi_app._job_store[dw_job_id]["thread_id"] = threading.get_ident()
+                    # Only stamp auto_execute if this job wasn't approved by a human
+                    # (post-approval resume also calls execute_automation but must
+                    # keep decision_mode="await_approval" for the WAEC filter)
+                    if not fastapi_app._job_store[dw_job_id].get("approved_by_human"):
+                        fastapi_app._job_store[dw_job_id]["decision_mode"] = "auto_execute"
+
         # Run it synchronously
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=None,
             reference_folder=None,
             command_timeout=cmd_timeout,
-            thread_id=exec_thread_id
+            thread_id=exec_thread_id,
         )
-        
+
         if response.statusCode == 202:
             # Propagate pause to Digital Worker graph
-            user_answers = interrupt({
-                "type": "clarification",
-                "questions": response.questions,
-                "summary": response.summary,
-            })
+            user_answers = interrupt(
+                {
+                    "type": "clarification",
+                    "questions": response.questions,
+                    "summary": response.summary,
+                }
+            )
             # When resumed, re-invoke with the SAME thread_id so it finds the checkpoint
             response = orchestrator.RunPipeline(
                 action=action_dict,
@@ -403,30 +414,33 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
                 reference_folder=None,
                 command_timeout=300,
                 thread_id=exec_thread_id,
-                answers=user_answers if isinstance(user_answers, list) else [user_answers]
+                answers=user_answers if isinstance(user_answers, list) else [user_answers],
             )
-        
-        from src.chandra.digital_worker.schemas import ExecutionOutcome
+
+        from src.chandra.digital_worker.schemas import ExecutionOutcome  # noqa: PLC0415
+
         status_map = {
             200: "executed",
             # We treat failed or needs_clarification as failed from the graph's perspective
         }
         status_str = status_map.get(response.statusCode, "failed")
-        
+
         errors = []
         if response.exception:
             errors.append(response.exception)
-            
+
         # Parse output logs if available
         execution_logs = ""
         if response.execution_results:
             log_lines = []
             for res in response.execution_results:
                 log_lines.append(f"Command: {res.command}")
-                if res.stdout: log_lines.append(res.stdout)
-                if res.stderr: log_lines.append(res.stderr)
+                if res.stdout:
+                    log_lines.append(res.stdout)
+                if res.stderr:
+                    log_lines.append(res.stderr)
             execution_logs = "\n".join(log_lines)
-            
+
         outcome = ExecutionOutcome(
             status=status_str,
             dry_run=dry_run,
@@ -435,9 +449,9 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:
             execution_logs=execution_logs,
             execution_code=json.dumps([step.model_dump() for step in plan.steps]),
             sandbox_path=response.sandbox_path,
-            pipeline_response=response.model_dump()
+            pipeline_response=response.model_dump(),
         )
-    
+
     logger.info(
         "graph.execute_automation",
         request_id=request.request_id,
@@ -485,16 +499,24 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
-    from src.chandra.digital_worker.verifier import verify_execution
-    
+    from src.chandra.digital_worker.verifier import verify_execution  # noqa: PLC0415
+
     execution = state["execution"]
-    
+
     if state.get("guidance_md") and execution.status == "skipped":
         # Guidance path, no real execution to verify
-        from src.chandra.digital_worker.schemas import ValidationCheck, ValidationResult
+        from src.chandra.digital_worker.schemas import (  # noqa: PLC0415
+            ValidationCheck,
+            ValidationResult,
+        )
+
         validation = ValidationResult(
             passed=True,
-            checks=[ValidationCheck(name="guidance_produced", passed=True, detail="engineer guidance rendered")]
+            checks=[
+                ValidationCheck(
+                    name="guidance_produced", passed=True, detail="engineer guidance rendered"
+                )
+            ],
         )
     else:
         validation = verify_execution(
@@ -503,11 +525,16 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
             plan=state["plan"],
             execution=execution,
         )
-        
+
     return {
         "validation": validation,
         "audit_trail": [
-            _audit("validate_result", "validated", passed=validation.passed, checks=len(validation.checks))
+            _audit(
+                "validate_result",
+                "validated",
+                passed=validation.passed,
+                checks=len(validation.checks),
+            )
         ],
     }
 

@@ -11,6 +11,7 @@ Detector IDs:
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from src.chandra.briefing.schemas import Finding
@@ -34,6 +35,8 @@ def check_rds_multi_az(ctx: DetectorContext) -> list[Finding]:
         with detector_guard(ctx, detector_id=detector_id, region=region):
             for page in paginate(rds, "describe_db_instances"):
                 for db in page.get("DBInstances", []):
+                    if db.get("DBInstanceStatus") == "deleting":
+                        continue
                     tags = {t["Key"]: t["Value"] for t in db.get("TagList", []) or []}
                     env = tags.get("Environment", "").lower()
                     if env not in PROD_VALUES:
@@ -106,7 +109,7 @@ def check_s3_versioning(ctx: DetectorContext) -> list[Finding]:
                     severity="high",
                     resource_arn=arn,
                     resource_type="AWS::S3::Bucket",
-                    region="us-east-1",
+                    region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
                     title=(
                         f"S3 bucket {name} is tagged "
                         f"{CRITICAL_TAG_KEY}={tags[CRITICAL_TAG_KEY]} "

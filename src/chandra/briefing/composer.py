@@ -26,7 +26,6 @@ from src.chandra.briefing.schemas import (
     Finding,
     Scorecard,
 )
-from src.chandra.config import settings
 from src.chandra.logging import get_logger
 from src.chandra.observability.callbacks import UsageCapture
 
@@ -124,7 +123,7 @@ def llm_rank(findings: list[Finding]) -> list[AnalyzedFinding]:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
+        import json_repair  # noqa: PLC0415
 
         parsed = json_repair.loads(text)
         ranked = parsed.get("ranked", []) if isinstance(parsed, dict) else []
@@ -285,7 +284,7 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
             config={"callbacks": [cb]},
         )
         text = response.content if isinstance(response.content, str) else str(response.content)
-        import json_repair
+        import json_repair  # noqa: PLC0415
 
         parsed = json_repair.loads(text)
         if not isinstance(parsed, dict) or "steps" not in parsed:
