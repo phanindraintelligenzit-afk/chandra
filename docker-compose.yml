@@ -35,7 +35,7 @@ services:
       - FRONTEND_URL=${FRONTEND_URL:-http:54.160.31.20:3000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http:54.160.31.20:3000/api/backend}
       # Inside the compose network the database host is the service name.
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql+psycopg://chandra:chandra@postgres:5432/chandra}
+      - POSTGRES_URL=postgresql+psycopg://chandra:chandra@postgres:5432/chandra
     depends_on:
       postgres:
         condition: service_healthy
