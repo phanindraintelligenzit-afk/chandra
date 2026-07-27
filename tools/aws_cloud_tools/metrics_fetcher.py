@@ -106,21 +106,27 @@ class CloudWatchMetricsFetcher:
         start_time = end_time - timedelta(hours=last_hours)
 
         # --- discover ---
-        logger.info("Discovering metrics...")
-        first_resp  = await asyncio.to_thread(client.list_metrics)
-        all_metrics = list(first_resp.get("Metrics", []))
-        token       = first_resp.get("NextToken")
-        while token:
-            resp = await asyncio.to_thread(client.list_metrics, NextToken=token)
-            all_metrics.extend(resp.get("Metrics", []))
-            token = resp.get("NextToken")
-        logger.info("Found %d total metrics.", len(all_metrics))
+        logger.info("Discovering metrics selectively by namespace...")
+        
+        all_metrics = []
+        for namespace in IMPORTANT_METRICS.keys():
+            token = None
+            while True:
+                kwargs = {"Namespace": namespace}
+                if token:
+                    kwargs["NextToken"] = token
+                resp = await asyncio.to_thread(client.list_metrics, **kwargs)
+                all_metrics.extend(resp.get("Metrics", []))
+                token = resp.get("NextToken")
+                if not token:
+                    break
+                    
+        logger.info("Found %d metrics matching target namespaces.", len(all_metrics))
 
         # --- filter ---
         filtered = [
             m for m in all_metrics
-            if m["Namespace"] in IMPORTANT_METRICS
-            and m["MetricName"] in IMPORTANT_METRICS[m["Namespace"]]
+            if m["MetricName"] in IMPORTANT_METRICS.get(m["Namespace"], [])
         ]
         logger.info(
             "Filtered to %d core metrics across %d namespaces.",

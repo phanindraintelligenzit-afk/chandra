@@ -356,6 +356,24 @@ class ActionAnalysis(BaseModel):
             "created."
         ),
     )
+    aws_discovery_commands: List[str] = Field(
+        default_factory=list,
+        description=(
+            "List of safe READ-ONLY AWS CLI commands (describe-*, list-*, get-*) needed to "
+            "fetch the current account state relevant to this action. The backend will execute "
+            "these commands and feed the results into the Terraform generator as grounding context. "
+            "Always include 'aws sts get-caller-identity' and 'aws ec2 describe-availability-zones'. "
+            "Only include commands relevant to THIS action. Examples: "
+            "S3 action -> ['aws s3api list-buckets', 'aws kms list-aliases']. "
+            "EC2 action -> ['aws ec2 describe-vpcs', 'aws ec2 describe-subnets', "
+            "'aws ec2 describe-key-pairs', 'aws ec2 describe-security-groups']. "
+            "Lambda action -> ['aws lambda list-functions', 'aws iam list-roles']. "
+            "RDS action -> ['aws rds describe-db-instances', 'aws rds describe-db-subnet-groups', "
+            "'aws ec2 describe-vpcs', 'aws ec2 describe-subnets', 'aws ec2 describe-security-groups']. "
+            "NEVER include commands that create, modify, or delete resources (e.g. no 'aws s3 rm', "
+            "no 'aws ec2 terminate-instances')."
+        ),
+    )
 
 class GeneratedFile(BaseModel):
     filename: str
@@ -439,8 +457,10 @@ class AgentState(TypedDict):
     terraform_state_context: str
     service_quotas_context: str
     terraform_docs: str
+    terraform_docs_dict: Dict[str, str]
     permission_issues: List[str]
     caller_arn: str
+    timings: Dict[str, float]
 
     analysis: Optional[Dict]
     clarification: Optional[Dict]
@@ -846,640 +866,249 @@ async def _mcp_fetch_terraform_docs_async(
         return ""
 
 
-#: Dynamic Context Builder — keyword → AWS service scopes. When an action's
-#: text matches a keyword, only the mapped services' inventory is fetched
-#: (plus the always-on identity/AZ base). An S3 KRA no longer pulls EC2, RDS,
-#: Lambda, Route53, CloudFront, DynamoDB, ELB and the whole AMI catalog into
-#: the prompt. Unmatched text falls back to the full fetch (safe default).
-_SERVICE_KEYWORDS: List[Tuple[str, Tuple[str, ...]]] = [
-    ("s3", ("s3", "kms", "iam")),
-    ("bucket", ("s3", "kms", "iam")),
-    ("ec2", ("ec2", "iam")),
-    ("instance", ("ec2", "iam")),
-    ("ami", ("ec2",)),
-    ("ssh", ("ec2",)),
-    ("key pair", ("ec2",)),
-    ("keypair", ("ec2",)),
-    ("security group", ("ec2",)),
-    ("vpc", ("ec2",)),
-    ("subnet", ("ec2",)),
-    ("nat", ("ec2",)),
-    ("internet gateway", ("ec2",)),
-    ("route table", ("ec2",)),
-    ("rds", ("rds", "ec2", "kms")),
-    ("database", ("rds", "ec2", "kms")),
-    ("postgres", ("rds", "ec2", "kms")),
-    ("mysql", ("rds", "ec2", "kms")),
-    ("aurora", ("rds", "ec2", "kms")),
-    ("lambda", ("lambda", "iam")),
-    ("serverless", ("lambda", "iam")),
-    ("dynamodb", ("dynamodb", "iam")),
-    ("iam", ("iam",)),
-    ("role", ("iam",)),
-    ("policy", ("iam",)),
-    ("permission", ("iam",)),
-    ("route53", ("route53", "acm")),
-    ("route 53", ("route53", "acm")),
-    ("dns", ("route53", "acm")),
-    ("hosted zone", ("route53", "acm")),
-    ("cloudfront", ("cloudfront", "acm", "s3")),
-    ("cdn", ("cloudfront", "acm", "s3")),
-    ("load balancer", ("elbv2", "ec2", "acm")),
-    ("alb", ("elbv2", "ec2", "acm")),
-    ("elb", ("elbv2", "ec2", "acm")),
-    ("nlb", ("elbv2", "ec2", "acm")),
-    ("target group", ("elbv2", "ec2", "acm")),
-    ("kms", ("kms", "iam")),
-    ("encrypt", ("kms", "iam")),
-    ("certificate", ("acm",)),
-    ("acm", ("acm",)),
-    ("tls", ("acm",)),
-    ("https", ("acm",)),
-    ("eks", ("ec2", "iam")),
-    ("kubernetes", ("ec2", "iam")),
-    ("ecs", ("ec2", "iam")),
-    ("fargate", ("ec2", "iam")),
-    ("cloudwatch", ("ec2", "iam")),
-    ("alarm", ("ec2", "iam")),
-]
 
 
-def _required_aws_services(action_text: str) -> Optional[set]:
-    """Deterministic intent → service-scope detection for the context builder.
-
-    Returns the set of AWS service scopes the action needs, or ``None`` when
-    nothing matches — in which case the caller falls back to the full fetch
-    (identical to the legacy behavior, so unknown intents lose nothing).
-    """
-    text = (action_text or "").lower()
-    if not text.strip():
-        return None
-    matched: set = set()
-    for keyword, scopes in _SERVICE_KEYWORDS:
-        if re.search(rf"\b{re.escape(keyword)}\b", text):
-            matched.update(scopes)
-    return matched or None
 
 
-async def _gather_aws_context_async(
-    log: logging.Logger = logger, services: Optional[set] = None
+# ── Terraform Golden Rules (generic best practices, not service-specific) ──────
+_TERRAFORM_GOLDEN_RULES = (
+    "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, "
+    "Key Pairs, Route53 Zones, AMI, RDS Subnet Groups, Elastic IPs, NAT Gateways, "
+    "ACM Certs, KMS Aliases), hardcode it directly in your Terraform code to avoid "
+    "data source filter errors. ONLY use Terraform data sources (e.g. data \"aws_vpc\") "
+    "if the required resource is marked as '(none found)' or is missing from the context.\n"
+    "\nTERRAFORM GOLDEN RULES:\n"
+    "1. S3 Buckets: Names must be globally unique. Always use random_id or random_pet to append a suffix.\n"
+    "2. IAM Roles/Policies: Always use name_prefix instead of name to avoid conflicts.\n"
+    "3. Security Groups: Prefer using existing security groups if they match your needs.\n"
+    "4. Circular Dependencies: Never make a Security Group depend on an EC2 instance's IP if the EC2 instance also depends on that Security Group.\n"
+    "5. Hardcoding: Hardcode environment IDs only if provided above. NEVER hardcode ARNs or Regions.\n"
+    "6. Stateful Resources: Always set lifecycle { prevent_destroy = true } for RDS/DynamoDB/S3 unless instructed otherwise.\n"
+    "7. Provider Version: hashicorp/aws ~> 5.0.\n"
+    "8. Local Files: use the Terraform local_file resource instead of shell commands.\n"
+    "9. AMIs: pick the catalog entry matching the target OS/arch and hardcode that AMI ID. Only use a data \"aws_ami\" lookup if the AMI Catalog is empty or the OS you need isn't in it.\n"
+    "10. RDS: reuse an existing DB Subnet Group if listed and spans the needed AZs.\n"
+    "11. Elastic IPs: reuse an unassociated EIP if listed.\n"
+    "12. HTTPS/ACM: provision with DNS validation or default to HTTP-only and flag it.\n"
+    "13. Subnet CIDRs: must be non-overlapping sub-blocks of the VPC CIDR; use cidrsubnet().\n"
+    "14. CloudFront + ACM: cert MUST be in us-east-1 regardless of deployment region.\n"
+    "15. VPC selection: prefer [DEFAULT] VPC when ambiguous, else ask.\n"
+    "16. Public vs private subnets: trust the computed PUBLIC/PRIVATE label above.\n"
+    "17. Subnet IP exhaustion: check AvailableIPs before placing IP-hungry resources.\n"
+    "18. Private subnet AWS service access: verify NAT Gateway or VPC Endpoint exists before placing resources there."
+)
+
+# ── Safety regex: only allow read-only AWS CLI commands ─────────────────────────
+_SAFE_DISCOVERY_PATTERN = re.compile(
+    r"^aws\s+\S+\s+(describe-|list-|get-)", re.IGNORECASE
+)
+
+# ── Generic identifiers to extract from AWS API JSON responses ──────────────────
+_GENERIC_ID_KEYS = (
+    "Name", "Id", "Arn", "VpcId", "SubnetId", "GroupId", "GroupName",
+    "FunctionName", "DBInstanceIdentifier", "BucketName", "KeyName",
+    "RoleName", "UserName", "DomainName", "CertificateArn", "AliasName",
+    "LoadBalancerName", "TableName", "TopicArn", "QueueUrl", "ClusterName",
+    "ServiceName", "HostedZoneId", "PolicyName", "StackName", "Engine",
+    "DBInstanceStatus", "State", "Status", "CidrBlock", "PublicIp",
+    "PrivateIpAddress", "AvailabilityZone", "InstanceId", "ImageId",
+    "KeyId", "Description", "Type", "Endpoint", "Port",
+    "IsDefault", "NatGatewayId", "InternetGatewayId", "RouteTableId",
+    "AllocationId", "AssociationId", "AvailableIpAddressCount",
+)
+
+
+def _format_discovery_results(
+    results: Dict[str, Any], region: str, log: logging.Logger
 ) -> str:
-    """Fetches the AWS account-grounding context. All independent
-    describe/list calls fire concurrently in one asyncio.gather() round; a
-    second small round fetches per-role policies for roles that are actually
-    attached to an instance profile. Pure post-processing (no more network
-    calls) builds the final grounding text from the results dict.
+    """Generic Discovery Engine formatter.
 
-    ``services`` (Dynamic Context Builder): when given, only commands for
-    those service scopes run — an S3 action fetches buckets/KMS/IAM, not the
-    entire account. ``None`` keeps the legacy fetch-everything behavior.
-    Post-processing already guards every section with ``results.get(...)``,
-    so unfetched sections simply render empty."""
-    check_cancelled()
-    region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
+    Converts raw AWS CLI JSON results into structured grounding text
+    WITHOUT any service-specific parsing branches. Each result is rendered
+    by extracting common identifier keys from the JSON objects.
+    """
+    lines = ["AWS ACCOUNT GROUNDING (live discovery — treat as ground truth):"]
 
-    def _want(*scopes: str) -> bool:
-        return services is None or bool(set(scopes) & services)
+    # ── Identity (always present from base commands) ──
+    identity = results.get("aws sts get-caller-identity")
+    if identity:
+        lines.append(f"  Account ID : {identity.get('Account')}")
+        lines.append(f"  Caller ARN : {identity.get('Arn')}")
+    else:
+        lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
+    lines.append(f"  Region     : {region}")
 
-    try:
-        # Warms up (or reuses) BOTH the aws_api and terraform MCP servers —
-        # so the terraform server is already hot by the time gather_docs runs.
-        tools = await _mcp_session.get_tools_async()
-        aws_tool = tools["aws_tool"]
-        if aws_tool is None:
-            log.warning("aws_context.failed: aws_api 'call_aws' tool unavailable")
-            return ""
-
-        # SSM public-parameter paths to pull the FULL AMI catalog from, instead
-        # of one hardcoded parameter name. get-parameters-by-path returns every
-        # variant under the path in one call (AL2 vs AL2023, x86_64 vs arm64,
-        # full vs minimal, gp2 vs gp3), so Terraform can pick the AMI that
-        # actually matches the target instance architecture/generation.
-        AMI_SSM_PATHS = [
-            "/aws/service/ami-amazon-linux-latest",
+    # ── AZs (always present from base commands) ──
+    azs = results.get(f"aws ec2 describe-availability-zones --region {region}")
+    if azs:
+        az_names = [
+            az["ZoneName"]
+            for az in (azs.get("AvailabilityZones") or [])
+            if az.get("State") == "available"
         ]
-        ami_commands = [
-            f"aws ssm get-parameters-by-path --path {path} --recursive --region {region}"
-            for path in AMI_SSM_PATHS
-        ] if _want("ec2") else []
-
-        # ---- Build the command list, scoped to the services the action
-        # ---- actually needs (Dynamic Context Builder). Base identity + AZs
-        # ---- always run; every other group is gated on its scope.
-        commands = [
-            "aws sts get-caller-identity",
-            f"aws ec2 describe-availability-zones --region {region}",
-        ]
-        if _want("ec2", "rds", "elbv2", "lambda"):
-            commands += [
-                f"aws ec2 describe-vpcs --region {region}",
-                f"aws ec2 describe-subnets --region {region}",
-                f"aws ec2 describe-internet-gateways --region {region}",
-                f"aws ec2 describe-route-tables --region {region}",
-                f"aws ec2 describe-security-groups --region {region}",
-                f"aws ec2 describe-vpc-endpoints --region {region}",
-            ]
-        if _want("ec2"):
-            commands += [
-                f"aws ec2 describe-key-pairs --region {region}",
-                f"aws ec2 describe-addresses --region {region}",
-                f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}",
-                *ami_commands,
-            ]
-        if _want("route53"):
-            commands.append(f"aws route53 list-hosted-zones --region {region}")
-        if _want("iam", "ec2", "lambda"):
-            commands += [
-                "aws iam list-roles",
-                "aws iam list-users",
-                "aws iam list-instance-profiles",
-            ]
-        if _want("s3"):
-            commands.append("aws s3api list-buckets")
-        if _want("rds"):
-            commands += [
-                f"aws rds describe-db-instances --region {region}",
-                f"aws rds describe-db-subnet-groups --region {region}",
-            ]
-        if _want("dynamodb"):
-            commands.append(f"aws dynamodb list-tables --region {region}")
-        if _want("elbv2"):
-            commands.append(f"aws elbv2 describe-load-balancers --region {region}")
-        if _want("acm"):
-            commands.append(f"aws acm list-certificates --region {region}")
-        if _want("cloudfront"):
-            commands.append("aws cloudfront list-distributions")
-        if _want("kms"):
-            commands.append(f"aws kms list-aliases --region {region}")
-        if _want("lambda"):
-            commands.append(f"aws lambda list-functions --region {region}")
-
-        log.info(
-            "Dynamic Grounding: AWS context scope=%s -> %d commands",
-            sorted(services) if services else "ALL(full fetch)", len(commands),
-        )
-
-        acm_use1_cmd = None
-        if region != "us-east-1" and _want("acm", "cloudfront"):
-            acm_use1_cmd = "aws acm list-certificates --region us-east-1"
-            commands.append(acm_use1_cmd)
-
-        # ---- Round 1: fire ALL independent commands concurrently, no cap ----
-        results = await _mcp_run_aws_commands_parallel_async(commands, log=log)
-
-        # ---- Round 2: permissions for ALL users and ALL non-service roles ----
-        instance_profiles_result = results.get("aws iam list-instance-profiles")
-        profile_role_map = {}  # instance_profile_name -> role_name or None
-        if instance_profiles_result:
-            for p in instance_profiles_result.get("InstanceProfiles") or []:
-                prof_name = p.get("InstanceProfileName")
-                roles_on_profile = p.get("Roles") or []
-                profile_role_map[prof_name] = roles_on_profile[0].get("RoleName") if roles_on_profile else None
-
-        iam_roles = results.get("aws iam list-roles")
-        role_objs = [
-            r for r in (iam_roles.get("Roles") or [])
-            if not r.get("Path", "/").startswith("/aws-service-role/")
-        ] if iam_roles else []
-        
-        iam_users = results.get("aws iam list-users")
-        user_objs = iam_users.get("Users") or [] if iam_users else []
-
-        roles_needing_policies = sorted({r.get("RoleName") for r in role_objs if r.get("RoleName")}.union({r for r in profile_role_map.values() if r}))
-        users_needing_policies = sorted({u.get("UserName") for u in user_objs if u.get("UserName")})
-
-        policy_commands = []
-        for role_name in roles_needing_policies:
-            policy_commands.append(f"aws iam list-attached-role-policies --role-name {role_name}")
-            policy_commands.append(f"aws iam list-role-policies --role-name {role_name}")
-        for user_name in users_needing_policies:
-            policy_commands.append(f"aws iam list-attached-user-policies --user-name {user_name}")
-            policy_commands.append(f"aws iam list-user-policies --user-name {user_name}")
-
-        if policy_commands:
-            results.update(await _mcp_run_aws_commands_parallel_async(policy_commands, log=log))
-
-    except Exception as exc:
-        log.warning("aws_context.failed (fetch phase): %s", exc)
-        return ""
-
-    # ============================================================
-    # Everything below is pure post-processing on already-fetched
-    # data — no more network calls.
-    # ============================================================
-    try:
-        lines = ["AWS ACCOUNT GROUNDING (live, fetched at pipeline start — treat as ground truth):"]
-
-        identity = results.get("aws sts get-caller-identity")
-        if identity:
-            lines.append(f"  Account ID : {identity.get('Account')}")
-            lines.append(f"  Caller ARN : {identity.get('Arn')}")
-        else:
-            lines.append("  Account ID : (unavailable — could not call sts:GetCallerIdentity via MCP)")
-
-        lines.append(f"  Region     : {region}")
-
-        def _name_tag(tags):
-            return next((t["Value"] for t in (tags or []) if t.get("Key") == "Name"), None)
-
-        all_vpcs = results.get(f"aws ec2 describe-vpcs --region {region}")
-        vpc_list = all_vpcs.get("Vpcs") or [] if all_vpcs else []
-
-        all_subnets = results.get(f"aws ec2 describe-subnets --region {region}")
-        subnet_list = all_subnets.get("Subnets") or [] if all_subnets else []
-        subnets_by_vpc = {}
-        for s in subnet_list:
-            subnets_by_vpc.setdefault(s["VpcId"], []).append(s)
-
-        all_igws = results.get(f"aws ec2 describe-internet-gateways --region {region}")
-        igw_list = all_igws.get("InternetGateways") or [] if all_igws else []
-        igw_by_vpc = {}
-        for igw in igw_list:
-            for att in igw.get("Attachments") or []:
-                if att.get("State") == "available":
-                    igw_by_vpc[att["VpcId"]] = igw["InternetGatewayId"]
-
-        all_route_tables = results.get(f"aws ec2 describe-route-tables --region {region}")
-        rt_list = all_route_tables.get("RouteTables") or [] if all_route_tables else []
-        main_rt_by_vpc = {}
-        subnet_rt_map = {}
-        for rt in rt_list:
-            vpc_id = rt.get("VpcId")
-            for assoc in rt.get("Associations") or []:
-                if assoc.get("Main"):
-                    main_rt_by_vpc[vpc_id] = rt
-                if assoc.get("SubnetId"):
-                    subnet_rt_map[assoc["SubnetId"]] = rt
-
-        def _is_public_subnet(subnet_id, vpc_id):
-            rt = subnet_rt_map.get(subnet_id) or main_rt_by_vpc.get(vpc_id)
-            if not rt:
-                return False
-            for route in rt.get("Routes") or []:
-                gw = route.get("GatewayId") or ""
-                dest = route.get("DestinationCidrBlock") or route.get("DestinationIpv6CidrBlock") or ""
-                if gw.startswith("igw-") and dest in ("0.0.0.0/0", "::/0"):
-                    return True
-            return False
-
-        all_sgs = results.get(f"aws ec2 describe-security-groups --region {region}")
-        sg_list = all_sgs.get("SecurityGroups") or [] if all_sgs else []
-        sgs_by_vpc = {}
-        for sg in sg_list:
-            sgs_by_vpc.setdefault(sg["VpcId"], []).append(sg)
-
-        all_endpoints = results.get(f"aws ec2 describe-vpc-endpoints --region {region}")
-        endpoint_list = all_endpoints.get("VpcEndpoints") or [] if all_endpoints else []
-        endpoints_by_vpc = {}
-        for ep in endpoint_list:
-            endpoints_by_vpc.setdefault(ep["VpcId"], []).append(ep)
-
-        default_vpc = None
-        if not vpc_list:
-            lines.append("  VPCs: (none found in this account/region)")
-        else:
-            lines.append(f"  VPCs found in {region}: {len(vpc_list)}")
-            for vpc in vpc_list:
-                vpc_id = vpc["VpcId"]
-                is_default = vpc.get("IsDefault", False)
-                if is_default:
-                    default_vpc = vpc_id
-                name = _name_tag(vpc.get("Tags"))
-                label = f"{vpc_id}{' (' + name + ')' if name else ''}{' [DEFAULT]' if is_default else ''}"
-                lines.append(f"\n  --- VPC: {label} ---")
-                lines.append(f"    Primary CIDR: {vpc.get('CidrBlock')}")
-
-                secondary_cidrs = [
-                    c["CidrBlock"] for c in (vpc.get("CidrBlockAssociationSet") or [])
-                    if c.get("CidrBlock") != vpc.get("CidrBlock") and c.get("CidrBlockState", {}).get("State") == "associated"
-                ]
-                if secondary_cidrs:
-                    lines.append(f"    Secondary CIDR blocks: {', '.join(secondary_cidrs)}")
-
-                ipv6_cidrs = [
-                    c["Ipv6CidrBlock"] for c in (vpc.get("Ipv6CidrBlockAssociationSet") or [])
-                    if c.get("Ipv6CidrBlockState", {}).get("State") == "associated"
-                ]
-                if ipv6_cidrs:
-                    lines.append(f"    IPv6 CIDR blocks: {', '.join(ipv6_cidrs)}")
-
-                igw_id = igw_by_vpc.get(vpc_id)
-                lines.append(f"    Internet Gateway: {igw_id if igw_id else '(none attached — no route to the internet is possible without one)'}")
-
-                vpc_subnets = subnets_by_vpc.get(vpc_id, [])
-                if vpc_subnets:
-                    for s in vpc_subnets:
-                        sid = s["SubnetId"]
-                        s_name = _name_tag(s.get("Tags"))
-                        public = _is_public_subnet(sid, vpc_id)
-                        lines.append(
-                            f"    Subnet {sid}{' (' + s_name + ')' if s_name else ''}: "
-                            f"CIDR={s.get('CidrBlock')}, AZ={s.get('AvailabilityZone')}, "
-                            f"AvailableIPs={s.get('AvailableIpAddressCount')}, "
-                            f"{'PUBLIC (has IGW route)' if public else 'PRIVATE (no IGW route)'}"
-                        )
-                else:
-                    lines.append("    Subnets: (none found in this VPC)")
-
-                vpc_sgs = sgs_by_vpc.get(vpc_id, [])
-                if vpc_sgs:
-                    sg_info = [f"{sg['GroupName']} ({sg['GroupId']})" for sg in vpc_sgs]
-                    lines.append(f"    Security Groups: {', '.join(sg_info)}")
-                else:
-                    lines.append("    Security Groups: (none found)")
-
-                vpc_endpoints = endpoints_by_vpc.get(vpc_id, [])
-                if vpc_endpoints:
-                    ep_info = [
-                        f"{ep.get('ServiceName')} ({ep.get('VpcEndpointType')}, {ep.get('State')})"
-                        for ep in vpc_endpoints
-                    ]
-                    lines.append(f"    VPC Endpoints: {', '.join(ep_info)}")
-                else:
-                    lines.append("    VPC Endpoints: (none — private subnets with no NAT Gateway will NOT be able to reach S3/DynamoDB/other AWS services)")
-
-            lines.append("")
-            if default_vpc:
-                lines.append(f"  Default VPC for this account/region: {default_vpc} (use this VPC unless the request specifies otherwise or names a different VPC above)")
-            else:
-                lines.append("  Default VPC for this account/region: (none — you MUST pick one of the VPCs listed above, or ask which VPC to target if ambiguous)")
-
-        azs = results.get(f"aws ec2 describe-availability-zones --region {region}")
-        az_names = [az["ZoneName"] for az in (azs.get("AvailabilityZones") or []) if az["State"] == "available"] if azs else []
         if az_names:
             lines.append(f"  Available AZs: {', '.join(az_names)}")
 
-        key_pairs = results.get(f"aws ec2 describe-key-pairs --region {region}")
-        kp_names = [kp["KeyName"] for kp in (key_pairs.get("KeyPairs") or [])] if key_pairs else []
-        if kp_names:
-            lines.append(f"  Existing Key Pairs: {', '.join(kp_names)}")
-        else:
-            lines.append("  Existing Key Pairs: (none found, you must generate one if needed)")
+    # ── Generic rendering for all other command results ──
+    for cmd, result in sorted(results.items()):
+        if cmd.startswith("aws sts ") or "describe-availability-zones" in cmd:
+            continue  # Already handled above
+        if result is None:
+            continue
 
-        zones = results.get(f"aws route53 list-hosted-zones --region {region}")
-        zone_info = [f"{z['Name']} (ID: {z['Id']})" for z in (zones.get("HostedZones") or []) if not z.get("Config", {}).get("PrivateZone")] if zones else []
-        if zone_info:
-            lines.append(f"  Public Route53 Zones: {', '.join(zone_info)}")
-        else:
-            lines.append("  Public Route53 Zones: (none found)")
+        # Extract the primary data key(s) — skip metadata
+        data_keys = [
+            k for k in result.keys()
+            if k not in ("ResponseMetadata", "NextToken", "Marker", "IsTruncated", "nextToken")
+        ]
 
-        if role_objs:
-            lines.append(f"  Existing IAM Roles in account ({len(role_objs)}):")
-            for r in role_objs:
-                r_name = r.get("RoleName")
-                lines.append(
-                    f"    {r_name}  ARN={r.get('Arn')}  "
-                    f"(ID={r.get('RoleId')}, Path={r.get('Path')}, Created={r.get('CreateDate')})"
-                )
-                attached = results.get(f"aws iam list-attached-role-policies --role-name {r_name}") or {}
-                managed_policies = [ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])]
-                inline = results.get(f"aws iam list-role-policies --role-name {r_name}") or {}
-                inline_policies = inline.get("PolicyNames") or []
-                
-                if managed_policies:
-                    lines.append(f"      Managed Policies: {', '.join(managed_policies)}")
-                if inline_policies:
-                    lines.append(f"      Inline Policies: {', '.join(inline_policies)}")
-        else:
-            lines.append("  Existing IAM Roles: (none found)")
+        # Build a human-readable label from the command
+        parts = cmd.split()
+        service_label = parts[1] if len(parts) > 1 else "unknown"
+        operation = parts[2] if len(parts) > 2 else ""
 
-        if user_objs:
-            lines.append(f"  Existing IAM Users in account ({len(user_objs)}):")
-            for u in user_objs:
-                u_name = u.get("UserName")
-                lines.append(
-                    f"    {u_name}  ARN={u.get('Arn')}  "
-                    f"(ID={u.get('UserId')}, Path={u.get('Path')}, Created={u.get('CreateDate')})"
-                )
-                attached = results.get(f"aws iam list-attached-user-policies --user-name {u_name}") or {}
-                managed_policies = [ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])]
-                inline = results.get(f"aws iam list-user-policies --user-name {u_name}") or {}
-                inline_policies = inline.get("PolicyNames") or []
-                
-                if managed_policies:
-                    lines.append(f"      Managed Policies: {', '.join(managed_policies)}")
-                if inline_policies:
-                    lines.append(f"      Inline Policies: {', '.join(inline_policies)}")
-        else:
-            lines.append("  Existing IAM Users: (none found)")
+        for key in data_keys:
+            items = result[key]
+            if isinstance(items, list):
+                lines.append(f"\n  {service_label} {operation} → {key} ({len(items)} found):")
+                for item in items[:25]:  # Cap at 25 items per result to control prompt size
+                    if isinstance(item, dict):
+                        summary_parts = []
+                        for id_key in _GENERIC_ID_KEYS:
+                            if id_key in item:
+                                val = item[id_key]
+                                if isinstance(val, (str, int, float, bool)):
+                                    summary_parts.append(f"{id_key}={val}")
+                        if summary_parts:
+                            lines.append(f"    {', '.join(summary_parts[:8])}")
+                        else:
+                            # Fallback: show first 4 key=value pairs
+                            pairs = [
+                                f"{k}={v}" for k, v in list(item.items())[:4]
+                                if not isinstance(v, (dict, list))
+                            ]
+                            if pairs:
+                                lines.append(f"    {', '.join(pairs)}")
+                    elif isinstance(item, str):
+                        lines.append(f"    {item}")
+            elif isinstance(items, dict):
+                # Some commands return a single object (e.g. DistributionList)
+                sub_items = None
+                for sk, sv in items.items():
+                    if isinstance(sv, list):
+                        sub_items = sv
+                        lines.append(f"\n  {service_label} {operation} → {key}.{sk} ({len(sv)} found):")
+                        for si in sv[:25]:
+                            if isinstance(si, dict):
+                                sp = []
+                                for id_key in _GENERIC_ID_KEYS:
+                                    if id_key in si:
+                                        val = si[id_key]
+                                        if isinstance(val, (str, int, float, bool)):
+                                            sp.append(f"{id_key}={val}")
+                                if sp:
+                                    lines.append(f"    {', '.join(sp[:8])}")
+                        break
+                if sub_items is None:
+                    sp = []
+                    for id_key in _GENERIC_ID_KEYS:
+                        if id_key in items:
+                            val = items[id_key]
+                            if isinstance(val, (str, int, float, bool)):
+                                sp.append(f"{id_key}={val}")
+                    if sp:
+                        lines.append(f"  {key}: {', '.join(sp[:8])}")
+            elif isinstance(items, (str, int, bool)):
+                lines.append(f"  {key}: {items}")
 
-        instance_profiles_list = instance_profiles_result.get("InstanceProfiles") or [] if instance_profiles_result else []
-        if instance_profiles_list:
-            lines.append(f"  Existing IAM Instance Profiles ({len(instance_profiles_list)}) — role and permissions each one actually grants:")
-            for p in instance_profiles_list:
-                prof_name = p.get("InstanceProfileName")
-                prof_arn = p.get("Arn")
-                prof_id = p.get("InstanceProfileId")
-                prof_created = p.get("CreateDate")
-                role_name = profile_role_map.get(prof_name)
+    # Append generic Terraform golden rules
+    lines.append(_TERRAFORM_GOLDEN_RULES)
 
-                lines.append(f"    {prof_name}")
-                lines.append(f"      Profile ARN: {prof_arn}  (ID: {prof_id}, Created: {prof_created})")
+    ctx_str = "\n".join(lines)
+    log.info("Discovery Engine: generated grounding context (%d chars)", len(ctx_str))
+    return ctx_str
 
-                if not role_name:
-                    lines.append("      Role: (none attached — cannot be used as-is)")
-                    continue
 
-                # Already embedded on the instance profile's Roles list — no
-                # extra call needed to get the role's ARN/ID/CreateDate.
-                role_obj = next(
-                    (r for r in (p.get("Roles") or []) if r.get("RoleName") == role_name),
-                    {},
-                )
-                role_arn = role_obj.get("Arn")
-                role_id = role_obj.get("RoleId")
-                role_created = role_obj.get("CreateDate")
+async def _gather_aws_context_async(
+    log: logging.Logger = logger,
+    discovery_commands: Optional[List[str]] = None,
+) -> str:
+    """Generic Discovery Engine.
 
-                attached = results.get(f"aws iam list-attached-role-policies --role-name {role_name}") or {}
-                managed_policies = [
-                    ap.get("PolicyName") for ap in (attached.get("AttachedPolicies") or [])
-                ]
+    Executes the LLM-specified discovery commands (all read-only),
+    then formats the raw JSON results into structured grounding text.
 
-                inline = results.get(f"aws iam list-role-policies --role-name {role_name}") or {}
-                inline_policies = inline.get("PolicyNames") or []
+    No service-specific conditionals. No keyword matching. No hardcoded
+    command lists. The LLM (via ActionAnalysis.aws_discovery_commands)
+    tells us what to fetch; we just execute and format.
 
-                lines.append(f"      Role: {role_name}")
-                lines.append(f"      Role ARN: {role_arn}  (ID: {role_id}, Created: {role_created})")
-                lines.append(f"      Managed Policies: {', '.join(managed_policies) if managed_policies else '(none)'}")
-                lines.append(f"      Inline Policies: {', '.join(inline_policies) if inline_policies else '(none)'}")
-        else:
-            lines.append("  Existing IAM Instance Profiles: (none found)")
+    Safety: A regex filter ensures only read-only commands (describe-*,
+    list-*, get-*) are executed. Mutating commands are blocked.
+    """
+    check_cancelled()
+    region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or "us-east-1"
 
-        s3_buckets = results.get("aws s3api list-buckets")
-        bucket_names = [b["Name"] for b in (s3_buckets.get("Buckets") or [])] if s3_buckets else []
-        if bucket_names:
-            lines.append(f"  Existing S3 Buckets in account ({len(bucket_names)}): {', '.join(bucket_names)}")
-        else:
-            lines.append("  Existing S3 Buckets in account: (none found)")
+    # ── Always-run baseline commands ──
+    BASE_COMMANDS = [
+        "aws sts get-caller-identity",
+        f"aws ec2 describe-availability-zones --region {region}",
+    ]
 
-        # ---- AMI catalog: parse every variant instead of one hardcoded
-        # parameter, so Terraform can match AMI to the actual target
-        # architecture (x86_64 vs arm64/Graviton) and generation (AL2 vs
-        # AL2023, full vs minimal, gp2 vs gp3) instead of always defaulting
-        # to one image.
-        ami_catalog = {}  # friendly_name -> ami_id
-        for path, cmd in zip(AMI_SSM_PATHS, ami_commands):
-            ami_result = results.get(cmd)
-            if not ami_result:
-                continue
-            for p in ami_result.get("Parameters") or []:
-                full_name = p.get("Name") or ""
-                value = p.get("Value")
-                if not full_name or not value:
-                    continue
-                friendly = full_name[len(path):].lstrip("/")
-                ami_catalog[friendly] = value
+    # Global-service commands that should NOT get --region appended
+    GLOBAL_SERVICES = {"sts", "iam", "s3api", "s3", "cloudfront", "route53", "organizations"}
 
-        if ami_catalog:
-            lines.append(f"  Amazon Linux AMI Catalog (latest, {len(ami_catalog)} variants found):")
-            for name in sorted(ami_catalog):
-                lines.append(f"    {name}: {ami_catalog[name]}")
-            default_ami_id = next(
-                (v for k, v in sorted(ami_catalog.items())
-                 if k.startswith("al2023-ami-kernel-") and k.endswith("-x86_64") and "minimal" not in k),
-                None,
-            )
-            if default_ami_id:
-                lines.append(f"  Recommended default if OS/arch unspecified (AL2023, x86_64): {default_ami_id}")
-        else:
-            lines.append("  Amazon Linux AMI Catalog: (unavailable — use a data \"aws_ami\" lookup instead)")
+    commands = list(BASE_COMMANDS)
+    for cmd in (discovery_commands or []):
+        cmd = cmd.strip()
+        if not cmd:
+            continue
 
-        rds_instances_result = results.get(f"aws rds describe-db-instances --region {region}")
-        rds_instance_list = rds_instances_result.get("DBInstances") or [] if rds_instances_result else []
+        # Inject --region if not present and not a global service
+        if "--region" not in cmd:
+            cmd_parts = cmd.split()
+            svc = cmd_parts[1] if len(cmd_parts) > 1 else ""
+            if svc not in GLOBAL_SERVICES:
+                cmd = f"{cmd} --region {region}"
 
-        rds_subnet_groups_result = results.get(f"aws rds describe-db-subnet-groups --region {region}")
-        rds_subnet_group_list = rds_subnet_groups_result.get("DBSubnetGroups") or [] if rds_subnet_groups_result else []
+        # De-duplicate base commands
+        if cmd in BASE_COMMANDS:
+            continue
 
-        if rds_instance_list:
-            lines.append(f"  Existing RDS Instances ({len(rds_instance_list)}) — VPC/subnets each one actually runs in:")
-            for db in rds_instance_list:
-                db_id = db.get("DBInstanceIdentifier")
-                engine = db.get("Engine")
-                status = db.get("DBInstanceStatus")
-                db_sg = db.get("DBSubnetGroup") or {}
-                db_vpc = db_sg.get("VpcId")
-                db_sg_name = db_sg.get("DBSubnetGroupName")
-                db_subnet_ids = [s.get("SubnetIdentifier") for s in (db_sg.get("Subnets") or []) if s.get("SubnetIdentifier")]
-                lines.append(
-                    f"    {db_id} (engine={engine}, status={status}): VPC={db_vpc}, "
-                    f"DBSubnetGroup={db_sg_name}, Subnets=[{', '.join(db_subnet_ids) if db_subnet_ids else '(none)'}]"
-                )
-        else:
-            lines.append("  Existing RDS Instances: (none found)")
+        # Safety: only allow read-only commands
+        if not _SAFE_DISCOVERY_PATTERN.match(cmd):
+            log.warning("Discovery Engine: BLOCKED unsafe command: %s", cmd)
+            continue
 
-        if rds_subnet_group_list:
-            lines.append(f"  Existing RDS Subnet Groups ({len(rds_subnet_group_list)}) — VPC + AZ spread each one covers (check this against golden rule #10, 'spans the needed AZs'):")
-            for g in rds_subnet_group_list:
-                g_name = g.get("DBSubnetGroupName")
-                g_vpc = g.get("VpcId")
-                subnet_az_pairs = [
-                    f"{s.get('SubnetIdentifier')}({(s.get('SubnetAvailabilityZone') or {}).get('Name', '?')})"
-                    for s in (g.get("Subnets") or [])
-                ]
-                lines.append(f"    {g_name}: VPC={g_vpc}, Subnets=[{', '.join(subnet_az_pairs) if subnet_az_pairs else '(none)'}]")
-        else:
-            lines.append("  Existing RDS Subnet Groups: (none found — you must create one for any RDS instance)")
+        commands.append(cmd)
 
-        dynamo_tables = results.get(f"aws dynamodb list-tables --region {region}")
-        table_names = dynamo_tables.get("TableNames") or [] if dynamo_tables else []
-        if table_names:
-            lines.append(f"  Existing DynamoDB Tables: {', '.join(table_names)}")
-        else:
-            lines.append("  Existing DynamoDB Tables: (none found)")
+    log.info("Discovery Engine: executing %d commands (LLM requested %d)",
+             len(commands), len(discovery_commands or []))
 
-        albs = results.get(f"aws elbv2 describe-load-balancers --region {region}")
-        alb_info = [f"{lb['LoadBalancerName']} ({lb['Type']}, {lb['DNSName']})" for lb in (albs.get("LoadBalancers") or [])] if albs else []
-        if alb_info:
-            lines.append(f"  Existing Load Balancers (ALB/NLB): {', '.join(alb_info)}")
-        else:
-            lines.append("  Existing Load Balancers (ALB/NLB): (none found)")
+    try:
+        tools = await _mcp_session.get_tools_async()
+        aws_tool = tools["aws_tool"]
+        if aws_tool is None:
+            log.warning("Discovery Engine: aws_api 'call_aws' tool unavailable")
+            return ""
 
-        eips = results.get(f"aws ec2 describe-addresses --region {region}")
-        unassociated_eips = [e["PublicIp"] for e in (eips.get("Addresses") or []) if not e.get("AssociationId")] if eips else []
-        if unassociated_eips:
-            lines.append(f"  Unassociated Elastic IPs available for reuse: {', '.join(unassociated_eips)}")
-        else:
-            lines.append("  Unassociated Elastic IPs: (none — a new EIP will consume account quota)")
-
-        nats = results.get(f"aws ec2 describe-nat-gateways --filter Name=state,Values=available --region {region}")
-        nat_ids = [n["NatGatewayId"] for n in (nats.get("NatGateways") or [])] if nats else []
-        if nat_ids:
-            lines.append(f"  Existing NAT Gateways: {', '.join(nat_ids)}")
-        else:
-            lines.append("  Existing NAT Gateways: (none found — private subnets have no internet egress unless one is created)")
-
-        acm_certs = results.get(f"aws acm list-certificates --region {region}")
-        cert_info = [f"{c['DomainName']} ({c['CertificateArn']})" for c in (acm_certs.get("CertificateSummaryList") or [])] if acm_certs else []
-        if cert_info:
-            lines.append(f"  Existing ACM Certificates ({region}): {', '.join(cert_info)}")
-        else:
-            lines.append(f"  Existing ACM Certificates ({region}): (none found — HTTPS listeners will need a new cert, which requires DNS validation)")
-
-        if acm_use1_cmd:
-            acm_certs_use1 = results.get(acm_use1_cmd)
-            cert_info_use1 = [f"{c['DomainName']} ({c['CertificateArn']})" for c in (acm_certs_use1.get("CertificateSummaryList") or [])] if acm_certs_use1 else []
-            if cert_info_use1:
-                lines.append(f"  Existing ACM Certificates (us-east-1, for CloudFront use only): {', '.join(cert_info_use1)}")
-            else:
-                lines.append("  Existing ACM Certificates (us-east-1, for CloudFront use only): (none found)")
-
-        cf_dists = results.get("aws cloudfront list-distributions")
-        dist_info = [
-            f"{d['Id']} ({d.get('DomainName')})"
-            for d in ((cf_dists.get("DistributionList") or {}).get("Items") or [])
-        ] if cf_dists else []
-        if dist_info:
-            lines.append(f"  Existing CloudFront Distributions: {', '.join(dist_info)}")
-        else:
-            lines.append("  Existing CloudFront Distributions: (none found)")
-
-        kms_aliases = results.get(f"aws kms list-aliases --region {region}")
-        alias_names = [
-            a["AliasName"] for a in (kms_aliases.get("Aliases") or [])
-            if not a["AliasName"].startswith("alias/aws/")
-        ] if kms_aliases else []
-        if alias_names:
-            lines.append(f"  Existing customer-managed KMS Key Aliases: {', '.join(alias_names)}")
-        else:
-            lines.append("  Existing customer-managed KMS Key Aliases: (none found — will use AWS-managed keys by default)")
-
-        lambdas = results.get(f"aws lambda list-functions --region {region}")
-        fn_names = [f["FunctionName"] for f in (lambdas.get("Functions") or [])] if lambdas else []
-        if fn_names:
-            lines.append(f"  Existing Lambda Functions: {', '.join(fn_names)}")
-        else:
-            lines.append("  Existing Lambda Functions: (none found)")
-
-        lines.append(
-            "\nIf an ID is provided in the context above (VPC, Subnets, Security Groups, Key Pairs, Route53 Zones, AMI, RDS Subnet Groups, Elastic IPs, NAT Gateways, ACM Certs, KMS Aliases), hardcode it directly in your Terraform code to avoid data source filter errors. "
-            "ONLY use Terraform data sources (e.g. data \"aws_vpc\") if the required resource is marked as '(none found)' or is missing from the context.\n"
-            "\nTERRAFORM GOLDEN RULES:\n"
-            "1. S3 Buckets: Names must be globally unique. Always use random_id or random_pet to append a suffix to bucket names.\n"
-            "2. IAM Roles/Policies: Always use name_prefix instead of name to avoid conflicts with existing roles.\n"
-            "3. EC2/RDS Security Groups: Prefer using existing security groups if they match your needs.\n"
-            "4. Circular Dependencies: Never make a Security Group depend on an EC2 instance's IP if the EC2 instance also depends on that Security Group.\n"
-            "5. Hardcoding: Hardcode environment IDs only if provided above. NEVER hardcode ARNs or Regions.\n"
-            "6. Stateful Resources: Always set lifecycle { prevent_destroy = true } for RDS/DynamoDB/S3 unless instructed otherwise.\n"
-            "7. Provider Version: hashicorp/aws ~> 5.0.\n"
-            "8. Local Files: use the Terraform local_file resource instead of shell commands.\n"
-            "9. AMIs: pick the catalog entry matching the target OS/arch (AL2 vs AL2023, x86_64 vs arm64/Graviton, full vs minimal) and hardcode that AMI ID. Only use a data \"aws_ami\" lookup if the AMI Catalog above is empty or the OS you need isn't in it.\n"
-            "10. RDS: reuse an existing DB Subnet Group if listed and spans the needed AZs.\n"
-            "11. Elastic IPs: reuse an unassociated EIP if listed.\n"
-            "12. HTTPS/ACM: provision with DNS validation or default to HTTP-only and flag it.\n"
-            "13. Subnet CIDRs: must be non-overlapping sub-blocks of the VPC CIDR; use cidrsubnet().\n"
-            "14. CloudFront + ACM: cert MUST be in us-east-1 regardless of deployment region.\n"
-            "15. VPC selection: prefer [DEFAULT] VPC when ambiguous, else ask.\n"
-            "16. Public vs private subnets: trust the computed PUBLIC/PRIVATE label above.\n"
-            "17. Subnet IP exhaustion: check AvailableIPs before placing IP-hungry resources.\n"
-            "18. Private subnet AWS service access: verify NAT Gateway or VPC Endpoint exists before placing resources there."
-        )
-        ctx_str = "\n".join(lines)
-        log.info("Dynamic Grounding: _gather_aws_context output generated (%d chars)", len(ctx_str))
-        return ctx_str
+        # Fire ALL commands concurrently
+        results = await _mcp_run_aws_commands_parallel_async(commands, log=log)
     except Exception as exc:
-        log.warning("aws_context.failed (processing phase): %s", exc)
+        log.warning("Discovery Engine failed (fetch phase): %s", exc)
         return ""
 
+    # Format results generically
+    try:
+        return _format_discovery_results(results, region, log)
+    except Exception as exc:
+        log.warning("Discovery Engine failed (formatting phase): %s", exc)
+        return ""
+
+
+
+_GLOBAL_DOCS_CACHE = {}
+_GLOBAL_AWS_CONTEXT_CACHE = {"value": None, "time": 0}
+_GLOBAL_AWS_CONTEXT_LOCK = threading.Lock()
 
 class ExecutionAgents:
 
@@ -1487,11 +1116,11 @@ class ExecutionAgents:
         self.max_iterations = max_iterations
         self.job_id = job_id or "default"
         self._quotas_cache = {}
-        self._docs_cache = {}
-        self._aws_context_cache = {"value": None}
-        self._aws_context_cache_lock = threading.Lock()
-        self._terraform_docs_context_cache = {"value": None}
-        self._terraform_docs_context_lock = threading.Lock()
+        
+        self._docs_cache = _GLOBAL_DOCS_CACHE
+        self._aws_context_cache = _GLOBAL_AWS_CONTEXT_CACHE
+        self._aws_context_cache_lock = _GLOBAL_AWS_CONTEXT_LOCK
+        
         self.logger = logging.getLogger(f"ExecutionAgents.{self.job_id}")
         self.logger.propagate = True
         
@@ -1613,11 +1242,7 @@ class ExecutionAgents:
 
     def _cleanup_sandbox(self, sandbox_path: Optional[str]) -> None:
         if sandbox_path and Path(sandbox_path).exists():
-            try:
-                shutil.rmtree(sandbox_path)
-                self.logger.info("Cleaned up sandbox: %s", sandbox_path)
-            except Exception as exc:
-                self.logger.warning("Failed to clean up sandbox %s: %s", sandbox_path, exc)
+            self.logger.info("Preserving terraform_runs directory: %s", sandbox_path)
 
     def _read_files_from_folder(self, folder_path: str, purpose: str = "files") -> List[Dict]:
         if not folder_path:
@@ -1684,57 +1309,44 @@ class ExecutionAgents:
             self.logger.warning(f"MCP Terraform docs failed: {exc}")
             return ""
 
-    def _gather_aws_context(self, force_refresh: bool = False, action_text: str = "") -> str:
-        """Returns the AWS account-grounding context.
+    def _gather_aws_context(self, force_refresh: bool = False, discovery_commands: Optional[List[str]] = None) -> str:
+        """Synchronous wrapper for the Generic Discovery Engine.
 
-        Optimization vs the old version:
-          - All ~24 independent `describe`/`list` AWS calls fire concurrently
-            via asyncio.gather() on the persistent MCP session, instead of one
-            at a time (each paying its own subprocess round trip).
-          - The aws_api AND terraform MCP servers are both initialised
-            together, at once, on the very first call in this process.
-          - The composed result is cached at the instance (job) level. Every
-            later call in this job's retry iteration reuses the FIRST
-            fetched context instantly, with zero additional MCP calls.
-
-        Pass force_refresh=True to intentionally bust the cache and re-fetch
-        live state (e.g. a long-lived worker process starting a brand-new,
-        unrelated run where account state may have changed).
+        Executes the LLM-specified discovery_commands (read-only AWS CLI
+        commands) and returns formatted grounding context. Caches the result
+        for 5 minutes to avoid redundant API calls within the same pipeline run.
         """
+        import time
+        now = time.time()
+        
         if not force_refresh:
-            cached = self._aws_context_cache.get("value")
-            if cached:
-                self.logger.info(
-                    "Dynamic Grounding: reusing first-fetched AWS context "
-                    "(job-cached, %d chars, no MCP calls made).",
-                    len(cached),
-                )
-                return cached
+            cache_entry = self._aws_context_cache.get("value")
+            cache_time = self._aws_context_cache.get("time", 0)
+            if cache_entry and (now - cache_time < 300): # 5 min TTL
+                self.logger.info("Discovery Engine: reusing cached context (TTL %ds remaining).", 300 - (now - cache_time))
+                return cache_entry
 
         with self._aws_context_cache_lock:
-            # Re-check inside the lock in case another thread/job populated
-            # the cache while this call was waiting.
             if not force_refresh:
-                cached = self._aws_context_cache.get("value")
-                if cached:
-                    return cached
+                cache_entry = self._aws_context_cache.get("value")
+                cache_time = self._aws_context_cache.get("time", 0)
+                if cache_entry and (now - cache_time < 300):
+                    return cache_entry
 
             try:
-                # Dynamic Context Builder: scope the fetch to the services this
-                # action needs. Bedrock keeps the legacy full fetch (large
-                # context absorbs it); unmatched intents also fall back to full.
-                provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
-                services = None if provider == "bedrock" else _required_aws_services(action_text)
+                start_t = time.time()
                 ctx_str = _mcp_session.run_coro(
-                    _gather_aws_context_async, self.logger, services
+                    _gather_aws_context_async, self.logger, discovery_commands
                 )
+                self.logger.info("Discovery Engine: gathered context in %.1fs", time.time() - start_t)
             except Exception as exc:
-                self.logger.warning("aws_context.failed: %s", exc)
+                self.logger.warning("Discovery Engine failed: %s", exc)
                 return ""
 
             if ctx_str:
                 self._aws_context_cache["value"] = ctx_str
-                self.logger.info("Dynamic Grounding: _gather_aws_context output:\n%s", ctx_str)
+                self._aws_context_cache["time"] = time.time()
+                self.logger.info("Discovery Engine: context generated (%d chars)", len(ctx_str))
             return ctx_str
 
     def _get_terraform_state_list(self, sandbox_dir: str) -> str:
@@ -1850,13 +1462,36 @@ Determine:
 9. reasoning — Brief justification. If agent memory above contains lessons for this action,
    incorporate them.
 
+10. aws_discovery_commands — List of safe READ-ONLY AWS CLI commands (describe-*, list-*, get-*)
+    needed to fetch the current account state relevant to this action. The backend will execute
+    these and feed the results to the Terraform generator as grounding context.
+    Always include 'aws sts get-caller-identity' and 'aws ec2 describe-availability-zones'.
+    Only include commands relevant to THIS action. Examples by resource type:
+    - S3 action: ['aws s3api list-buckets', 'aws kms list-aliases']
+    - EC2 action: ['aws ec2 describe-vpcs', 'aws ec2 describe-subnets', 'aws ec2 describe-key-pairs', 'aws ec2 describe-security-groups', 'aws ssm get-parameters-by-path --path /aws/service/ami-amazon-linux-latest --recursive']
+    - Lambda action: ['aws lambda list-functions', 'aws iam list-roles']
+    - RDS action: ['aws rds describe-db-instances', 'aws rds describe-db-subnet-groups', 'aws ec2 describe-vpcs', 'aws ec2 describe-subnets', 'aws ec2 describe-security-groups']
+    - IAM action: ['aws iam list-roles', 'aws iam list-users', 'aws iam list-policies --scope Local']
+    Think about what existing resources the Terraform generator will need to see to avoid
+    conflicts, reuse existing infrastructure, and generate correct code. 
+    NEVER include commands that create, modify, or delete resources.
+
 Generally be conservative with clarification requests (use sensible defaults when possible), but be AGGRESSIVELY 
 cautious regarding IAM and security: ALWAYS ask the user if target identities or permissions are underspecified."""
 
         try:
             structured_llm = self._structured_llm(ActionAnalysis)
             analysis: ActionAnalysis = structured_llm.invoke([HumanMessage(content=prompt)])
-            return {"analysis": analysis.model_dump()}
+            
+            self.logger.info("Discovery Engine: LLM requested %d discovery commands for services %s",
+                             len(analysis.aws_discovery_commands), analysis.aws_services_involved)
+            aws_ctx = self._gather_aws_context(discovery_commands=analysis.aws_discovery_commands)
+            aws_ctx = ExecutionAgents._budget_context(aws_ctx, "CHANDRA_AWS_CTX_MAX_CHARS", 6000, "AWS grounding")
+            
+            return {
+                "analysis": analysis.model_dump(),
+                "aws_context": aws_ctx
+            }
         except Exception as exc:
             self.logger.exception("Analysis failed: %s", exc)
             raise
@@ -2111,6 +1746,8 @@ Attached Policies:
         )
 
     def _generate_node(self, state: AgentState) -> dict:
+        import time
+        start_t = time.time()
         check_cancelled()
         action = state["action"]
         analysis = state["analysis"]
@@ -2131,12 +1768,6 @@ Attached Policies:
         # prompts explode (full Terraform resource docs + live AWS inventory
         # + memory). Bedrock is exempt; local providers get bounded so the
         # completion isn't truncated (LengthFinishReasonError). Env-tunable.
-        terraform_docs_context = self._budget_context(
-            terraform_docs_context, "CHANDRA_TF_DOCS_MAX_CHARS", 8000, "Terraform docs"
-        )
-        aws_ctx = self._budget_context(
-            aws_ctx, "CHANDRA_AWS_CTX_MAX_CHARS", 6000, "AWS grounding"
-        )
         memory_ctx = self._budget_context(
             memory_ctx, "CHANDRA_MEMORY_MAX_CHARS", 3000, "Resolution memory"
         )
@@ -2279,12 +1910,45 @@ each referencing the real resource attribute it corresponds to (no placeholders)
 {outputs_list}
 The executableSteps after apply MUST include a single step running `terraform output` (or `terraform output -json`) so all these details are printed for the user at once."""
 
-        prompt = f"""You are a senior AWS automation engineer. {mode_instruction}
+        resources = analysis.get("expected_resources") or ["all"]
+        batch_size = len(resources) if resources and resources != ["all"] else 1
+        max_retries = 3
 
-Action Name: {action["actionName"]}
-Action Description: {action["actionDescription"]}
+        tf_docs_dict = state.get("terraform_docs_dict") or {}
+
+        for attempt in range(max_retries):
+            try:
+                all_generated_files = {}
+                all_exec_steps = []
+                summaries = []
+                
+                # Split resources into chunks of batch_size
+                for i in range(0, len(resources), batch_size):
+                    batch = resources[i:i+batch_size]
+                    
+                    # 1. Build batch-specific docs context
+                    batch_docs_ctx = ""
+                    for res in batch:
+                        if res in tf_docs_dict:
+                            batch_docs_ctx += tf_docs_dict[res]
+                    if batch_docs_ctx:
+                        batch_docs_ctx = "\nTERRAFORM DOCUMENTATION (Argument References) for this batch:\n" + batch_docs_ctx
+                        batch_docs_ctx = self._budget_context(batch_docs_ctx, "CHANDRA_TF_DOCS_MAX_CHARS", 8000, "Terraform docs")
+                        
+                    # 2. Build existing files context from previous batches (if any)
+                    prev_batch_ctx = ""
+                    if all_generated_files:
+                        prev_batch_ctx = "\n\nFILES GENERATED IN PREVIOUS BATCHES (Do not duplicate providers or variables. Append or update these files):\n"
+                        for fname, fdata in all_generated_files.items():
+                            prev_batch_ctx += f"=== {fname} ===\n{fdata['content']}\n\n"
+
+                    # 3. Construct the prompt
+                    batch_prompt = f"""You are a senior AWS automation engineer. {mode_instruction}
+
+Action Name: {action.get("actionName")}
+Action Description: {action.get("actionDescription")}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}
-Recommended approach: {analysis["recommended_approach"]}
+Recommended approach: {analysis.get("recommended_approach")}
 Execution environment: {os_name}. {shell_note} {creds_note}
 {dynamic_context}
 {credential_context}
@@ -2292,200 +1956,89 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 {memory_section}
 {aws_section}
 {service_quotas_context}
-{terraform_docs_context}
+{batch_docs_ctx}
 {state_section}
 {validate_section}
 {plan_review_section}
 {reference_context}{clarification_context}{feedback_context}{existing_context}
+{prev_batch_ctx}
 
 ═══════════════════════════════════════════════════════════════
 ABSOLUTE RULES — violating any of these causes immediate failure
 ═══════════════════════════════════════════════════════════════
 
 RULE 0 — HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
-  Terraform/HCL does NOT support Python-style triple-quotes (\'\'\'  or \"\"\").
+  Terraform/HCL does NOT support Python-style triple-quotes (''' or \"\"\").
   For any multi-line string value (user_data, inline policy JSON, etc.) you MUST
-  use HCL heredoc syntax:
+  use HCL heredoc syntax.
 
-    WRONG  (causes parse error):
-      user_data = <<< triple-quotes >>>
-      #!/bin/bash
-      echo hello
-      <<< end triple-quotes >>>
+RULE 1 — NEVER HARDCODE ENVIRONMENT-SPECIFIC VALUES (use data sources).
+RULE 2 — REMOTE ACCESS CREDENTIALS: Use tf resources to gen them, don't hardcode.
+RULE 3 — TERRAFORM BLOCK UNIQUENESS: Exact ONE provider, terraform {{}}, and output block.
+RULE 4 — NO INVENTED PROVIDER ARGUMENTS.
+RULE 5 — tfvars CONVENTION: Write terraform.tfvars.example.
+RULE 6 — LEARN FROM FEEDBACK: Do not repeat errors.
+RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE.
+RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
 
-    CORRECT — heredoc:
-      user_data = <<-EOT
-        #!/bin/bash
-        echo hello
-      EOT
-
-  Single-line strings still use normal double-quotes: name = "my-instance"
-
-RULE 1 — NEVER HARDCODE ENVIRONMENT-SPECIFIC VALUES:
-  This rule applies to ANY AWS resource type. The examples below cover several common resource
-  types so you have a concrete pattern to follow — only apply the ones relevant to what this
-  action actually creates; do not add irrelevant data sources for a resource type this action
-  does not provision.
-
-  ✗ WRONG:  ami = "ami-0c55b159cbfafe1f0"   ← region-specific, breaks everywhere else
-  ✓ CORRECT: Use a data source:
-      data "aws_ami" "latest" {{
-        most_recent = true
-        owners      = ["amazon"]          # or "099720109477" for Canonical Ubuntu
-        filter {{
-          name   = "name"
-          values = ["al2023-ami-*-x86_64"] # Amazon Linux 2023; adjust for the OS needed
-        }}
-        filter {{
-          name   = "virtualization-type"
-          values = ["hvm"]
-        }}
-      }}
-      # Then reference: ami = data.aws_ami.latest.id
-
-  ✗ WRONG:  vpc_id = "vpc-0abc123"
-  ✓ CORRECT: data "aws_vpc" "default" {{ default = true }}
-             vpc_id = data.aws_vpc.default.id
-
-  ✗ WRONG:  subnet_id = "subnet-0abc123"
-  ✓ CORRECT: data "aws_subnets" "default" {{
-               filter {{ name = "vpc-id" values = [data.aws_vpc.default.id] }}
-             }}
-             subnet_id = data.aws_subnets.default.ids[0]
-
-  ✗ WRONG:  availability_zone = "us-east-1a"
-  ✓ CORRECT (when you also set subnet_id): DO NOT set availability_zone at all —
-             AWS infers it automatically from the subnet. Setting both causes
-             InvalidParameterValue if they don't match.
-  ✓ CORRECT (if you must set it): fetch the subnet's own AZ:
-             data "aws_subnet" "selected" {{ id = data.aws_subnets.default.ids[0] }}
-             availability_zone = data.aws_subnet.selected.availability_zone
-             (This guarantees AZ and subnet are always consistent.)
-
-  ✗ WRONG:  bucket = "my-app-data"   ← S3 bucket names are globally unique across ALL AWS
-             accounts; a fixed name will collide and fail on any account where it's taken.
-  ✓ CORRECT: derive a unique suffix at plan time:
-      resource "random_id" "suffix" {{ byte_length = 4 }}
-      resource "aws_s3_bucket" "this" {{
-        bucket = "${{var.bucket_prefix}}-${{random_id.suffix.hex}}"
-      }}
-
-  ✗ WRONG:  master_password = "ChangeMe123!"   ← hardcoded DB credential, also a secret leak
-  ✓ CORRECT: generate and store it, never inline it:
-      resource "random_password" "db" {{
-        length  = 20
-        special = true
-      }}
-      resource "aws_secretsmanager_secret" "db_password" {{
-        name = "${{var.db_identifier}}-master-password"
-      }}
-      resource "aws_secretsmanager_secret_version" "db_password" {{
-        secret_id     = aws_secretsmanager_secret.db_password.id
-        secret_string = random_password.db.result
-      }}
-      # Then reference: password = random_password.db.result
-
-  ✗ WRONG:  account_id = "123456789012"
-  ✓ CORRECT: data "aws_caller_identity" "current" {{}}
-             account_id = data.aws_caller_identity.current.account_id
-
-RULE 2 — REMOTE ACCESS CREDENTIALS (only applies if this action needs them):
-  If — and only if — this action provisions something a human needs to directly connect to
-  (the analysis step flagged requires_remote_access_credentials), generate that credential
-  dynamically using the Terraform pattern appropriate to the resource type. See
-  "REMOTE ACCESS CREDENTIALS REQUIRED" above for the specific strategy for THIS action.
-  General pattern for any generated secret material:
-    - Generate it with Terraform (e.g. tls_private_key for SSH keys, random_password for DB
-      passwords) — never invent or hardcode a literal credential value.
-    - Persist it where the user can retrieve it: a local_sensitive_file for keys, or an
-      aws_secretsmanager_secret(+_version) for passwords, or a Terraform output marked
-      sensitive = true.
-    - Never print the raw secret to plain stdout/logs.
-  If this action does NOT need remote-access credentials (e.g. S3, IAM, SNS, most Lambda/DynamoDB
-  cases), do NOT generate any SSH key pair, password, or other credential — doing so adds
-  unnecessary resources and will confuse the user.
-
-RULE 3 — TERRAFORM BLOCK UNIQUENESS:
-  Each of `provider`, `terraform {{}}`, and any given `output` name must be defined
-  EXACTLY ONCE across all files. Check ALL files before adding a block. When updating
-  existing files, remove duplicate declarations — never add a new output or provider
-  that already exists elsewhere.
-
-RULE 4 — NO INVENTED PROVIDER ARGUMENTS:
-  The AWS provider only supports documented arguments (region, profile, assume_role,
-  default_tags, etc.). Do NOT invent arguments like timeout_client or timeout_server.
-
-RULE 5 — tfvars CONVENTION:
-  Write terraform.tfvars.example with placeholder values appropriate to this action's variables.
-  Do NOT write a real terraform.tfvars. Sensible defaults belong in variables.tf.
-
-RULE 6 — LEARN FROM FEEDBACK:
-  If the feedback_summary above contains a specific error (e.g. InvalidAMIID.NotFound,
-  DuplicateOutputDefinition, provider argument error), fix THAT EXACT issue in this
-  iteration. Do not repeat errors from previous iterations.
-
-RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE:
-  Include all steps needed: terraform init → terraform validate → terraform plan
-  → terraform apply -auto-approve → then run terraform output for every output declared in
-  outputs.tf (see "MANDATORY OUTPUTS" above, derived from this action's actual resources)
-  so the user gets every useful detail in the final summary. Do not run `terraform output`
-  for names that don't exist in outputs.tf, and don't omit any that do. The terraform plan
-  step MUST be written as `terraform plan -out=tfplan` (not just `terraform plan`) so the
-  plan can be reviewed before apply.
-
-RULE 8 — SELF-VALIDATING TERRAFORM (native checks, not just data sources):
-  Where it materially reduces risk of a bad apply, add Terraform's own
-  validation primitives so problems surface at `terraform plan` instead of
-  `terraform apply`:
-  - variable "validation" blocks for any variable with a constrained valid
-    range or format (e.g. reject empty strings, validate CIDR format, ensure
-    a count variable is >= 0).
-  - resource-level `lifecycle {{ precondition {{ ... }} }}` / `postcondition`
-    blocks for assumptions the config relies on but can't express as plain
-    HCL constraints (e.g. "the chosen AMI must exist in this region",
-    "the S3 bucket name must be globally available" — where a data source
-    result can be checked).
-  - top-level `check` blocks (Terraform 1.5+) for cross-resource invariants
-    that don't map to a single resource (e.g. "the RDS instance's subnet
-    group must span at least 2 AZs").
-  Do not add validation blocks reflexively to every variable — only where a
-  bad value would otherwise fail late (at apply, or worse, silently succeed
-  with wrong behavior). A single well-placed precondition beats five
-  boilerplate ones.
-
-═══════════════════════════════════════════════════════════════
-OUTPUT CONTRACT — this response is machine-parsed, not read by a human
-═══════════════════════════════════════════════════════════════
-  - Return ONLY the structured result (files[] + executableSteps[] + summary).
-    No prose, no markdown code fences, no commentary outside those fields.
-  - Every file's content MUST be COMPLETE and apply-ready: no "...", no
-    "# TODO", no "# rest unchanged", no omitted blocks, no truncation. A
-    partially-written file is worse than no file — it fails at apply.
-  - Multi-line HCL strings use heredoc (RULE 0). Any JSON embedded in a
-    policy/parameter must be valid JSON.
-  - If a detail is missing, pick a safe, documented default and proceed —
-    never emit a placeholder literal that would fail at apply.
+--- BATCH INSTRUCTIONS ---
+This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
+If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
+Keep your explanations extremely short. Do not generate resources not in this list.
 
 Generate the complete set of files now."""
-
-        try:
-            structured_llm = self._structured_llm(CodeGenerationResult)
-            result: CodeGenerationResult = structured_llm.invoke([HumanMessage(content=prompt)])
-            return {
-                "generated_files": [f.model_dump() for f in result.files],
-                "executable_steps": [s.model_dump() for s in result.executableSteps],
-                "generator_summary": result.summary,
-            }
-        except Exception as exc:
-            self.logger.exception("Generation failed: %s", exc)
-            raise
+                    
+                    structured_llm = self._structured_llm(CodeGenerationResult)
+                    result: CodeGenerationResult = structured_llm.invoke([HumanMessage(content=batch_prompt)])
+                    
+                    # Merge files (overwrite with the latest full file from the LLM)
+                    for f in result.files:
+                        all_generated_files[f.filename] = f.model_dump()
+                            
+                    all_exec_steps = [s.model_dump() for s in result.executableSteps] # Only keep the final steps
+                    summaries.append(result.summary)
+                
+                timings = state.get("timings") or {}
+                timings["llm_generate"] = time.time() - start_t
+                
+                return {
+                    "generated_files": list(all_generated_files.values()),
+                    "executable_steps": all_exec_steps,
+                    "generator_summary": " ".join(summaries),
+                    "timings": timings,
+                }
+            except Exception as exc:
+                self.logger.warning("Generation failed on attempt %d: %s", attempt + 1, exc)
+                # Some models throw generic Exceptions containing 'LengthFinishReasonError' in string
+                if batch_size > 1 and ("length" in str(exc).lower() or "context" in str(exc).lower() or "token" in str(exc).lower() or "finish" in str(exc).lower()):
+                    batch_size = max(1, batch_size // 2)
+                    self.logger.info("Reducing batch size to %d and retrying...", batch_size)
+                elif attempt == max_retries - 1:
+                    raise  summaries.append(result.summary)
+                
+                timings = state.get("timings") or {}
+                timings["llm_generate"] = time.time() - start_t
+                
+                return {
+                    "generated_files": list(all_generated_files.values()),
+                    "executable_steps": all_exec_steps,
+                    "generator_summary": " ".join(summaries),
+                    "timings": timings,
+                }
+            except Exception as exc:
+                self.logger.warning("Generation failed on attempt %d: %s", attempt + 1, exc)
+                if batch_size > 1 and ("length" in str(exc).lower() or "context" in str(exc).lower() or "token" in str(exc).lower()):
+                    batch_size = max(1, batch_size // 2)
+                    self.logger.info("Reducing batch size to %d and retrying...", batch_size)
+                elif attempt == max_retries - 1:
+                    raise
 
     def _write_files_node(self, state: AgentState) -> dict:
         input_path = state.get("input_sandbox_path") or ""
         if input_path:
             sandbox_dir = str(Path(input_path).resolve())
         else:
-            sandbox_dir = str(Path(f"aws_executed_files/sandbox_{secrets.token_hex(6)}").resolve())
+            sandbox_dir = str(Path(f"terraform_runs/run_{secrets.token_hex(6)}").resolve())
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
         self.logger.info("Using sandbox directory: %s", sandbox_dir)
@@ -2523,6 +2076,21 @@ Generate the complete set of files now."""
                 )
             write_tool.invoke({"file_path": filename, "text": file_info["content"]})
             self.logger.info("Wrote %s", filename)
+
+        # Write execution metadata
+        metadata = {
+            "action": state.get("action", {}),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "timings": state.get("timings", {}),
+            "generated_files": [f["filename"] for f in state.get("generated_files", [])],
+        }
+        write_tool.invoke({"file_path": "metadata.json", "text": json.dumps(metadata, indent=2)})
+        
+        execution = {
+            "executable_steps": state.get("executable_steps", []),
+            "generator_summary": state.get("generator_summary", "")
+        }
+        write_tool.invoke({"file_path": "execution.json", "text": json.dumps(execution, indent=2)})
 
         return {"sandbox_path": sandbox_dir, "input_sandbox_path": sandbox_dir}
 
@@ -2975,12 +2543,16 @@ Determine:
         flagged = (not review.matches_intent) or review.destroy_or_replace_detected
         next_iteration = state.get("plan_review_iteration", 0) + (1 if flagged else 0)
 
+        timings = state.get("timings") or {}
+        timings["terraform_plan"] = time.time() - start_t
+
         return {
             "pre_apply_results": results,
             "plan_review": review_dict,
             "plan_review_iteration": next_iteration,
             "plan_review_skipped": False,
             "plan_review_precheck_failed": False,
+            "timings": timings,
         }
 
     @staticmethod
@@ -3002,6 +2574,49 @@ Determine:
             )
             return "precheck_failed"
         return "retry_generate"
+
+    def _human_approval_center_node(self, state: AgentState) -> dict:
+        """
+        Pauses execution for Human Approval Center.
+        Exports the pending job state and waits. Once approved, the job resumes directly to execute (terraform apply).
+        """
+        check_cancelled()
+        sandbox_dir = state.get("sandbox_path") or "."
+        action = state.get("action", {})
+        
+        # Determine plan payload
+        plan_results = state.get("pre_apply_results", [])
+        tf_plan_output = ""
+        for res in plan_results:
+            if "plan" in res.get("command", ""):
+                tf_plan_output = res.get("stdout", "") or res.get("stderr", "")
+                
+        approval_payload = {
+            "job_id": self.job_id or action.get("actionName", "unknown"),
+            "custom_kra": action.get("kraCode", "Unknown"),
+            "terraform_files": state.get("generated_files", []),
+            "terraform_plan": tf_plan_output,
+            "status": "Pending Approval",
+            "message": "Please approve the Terraform execution plan."
+        }
+        
+        approval_file = Path(sandbox_dir) / "human_approval_state.json"
+        try:
+            with open(approval_file, "w", encoding="utf-8") as f:
+                json.dump(approval_payload, f, indent=2)
+            self.logger.info("Exported pending job state to %s", approval_file)
+        except Exception as e:
+            self.logger.warning("Failed to write approval state: %s", e)
+            
+        self.logger.warning("Execution paused for Human Approval Center. Job ID: %s", approval_payload["job_id"])
+        
+        # Pause graph execution here
+        from langgraph.types import interrupt
+        approval_response = interrupt([approval_payload])
+        
+        self.logger.info("Human Approval Center: Job APPROVED. Resuming execution directly to apply phase.")
+        return {}
+
 
     def _plan_review_precheck_failed_node(self, state: AgentState) -> dict:
         """init/validate/plan itself failed during the review pass — treat exactly
@@ -3146,7 +2761,10 @@ Determine:
                 )
         self.logger.info("=" * 80)
 
-        return {"execution_results": results, "success": overall_success}
+        timings = state.get("timings") or {}
+        timings["terraform_apply"] = time.time() - start_t
+
+        return {"execution_results": results, "success": overall_success, "timings": timings}
 
     def _report_node(self, state: AgentState) -> dict:
         check_cancelled()
@@ -3558,85 +3176,121 @@ Rules:
         self.logger.info("memory.run_recorded  status=%s  lesson=%r", final_status, lesson[:80] if lesson else "")
         return {}
 
+    @staticmethod
+    def _extract_essential_tf_docs(markdown_text: str) -> str:
+        """Aggressively strips out all examples, import details, long histories, 
+        and prose descriptions, leaving ONLY bare schema definitions (Arguments & Attributes)."""
+        if not markdown_text:
+            return ""
+        
+        extracted = []
+        capture = False
+        
+        # We only care about the actual schema references
+        keep_headers = ["argument reference", "attributes reference"]
+        
+        # We absolutely want to drop these massive token hogs
+        drop_headers = ["example usage", "import", "migration", "timeouts", "version", "history", "nested blocks"]
+
+        lines = markdown_text.splitlines()
+        
+        for line in lines:
+            lower_line = line.lower().strip()
+            
+            # Start of a new header block
+            if line.startswith("#"):
+                # If it's a header we want to drop, turn off capture
+                if any(dh in lower_line for dh in drop_headers):
+                    capture = False
+                    continue
+                
+                # If it's a core schema header, turn on capture
+                if any(kh in lower_line for kh in keep_headers):
+                    capture = True
+                    extracted.append(line)
+                    continue
+                    
+                # For any other H1/H2 (like resource name), keep the header line 
+                # but don't capture the prose beneath it to save tokens
+                if line.startswith("# ") or line.startswith("## "):
+                    extracted.append(line)
+                    capture = False
+                    continue
+                
+            if capture:
+                # Strip out long paragraph descriptions and only keep bullet points (the actual arguments/attributes)
+                # or nested headers inside the reference blocks
+                if line.startswith("- ") or line.startswith("* ") or line.startswith("#"):
+                    # Further trim long descriptions within bullet points by cutting at the first period
+                    if "- " in line or "* " in line:
+                        parts = line.split(". ", 1)
+                        if len(parts) > 1:
+                            line = parts[0] + "."
+                    extracted.append(line)
+                    
+        return "\n".join(extracted)
+                
+        # If extraction logic failed completely (e.g. format is weird), fallback to original but truncated
+        if len(extracted) < 10:
+            return markdown_text[:4000] + "\n...[truncated]..."
+            
+        result = "\n".join(extracted)
+        # Final safety truncation just in case
+        if len(result) > 5000:
+            result = result[:5000] + "\n...[truncated]..."
+        return result
+
     def _gather_docs_and_quotas_node(self, state: AgentState) -> dict:
         check_cancelled()
         analysis = state.get("analysis") or {}
         services = analysis.get("aws_services_involved") or []
         resources = analysis.get("expected_resources") or []
 
-        # Fetch from MCP exactly once for the life of this job. Every
-        # later call — next retry iteration — reuses that first
-        # result as-is. No MCP calls, no re-looping, regardless of whether
-        # the resource list differs on a later iteration.
-        cached = self._terraform_docs_context_cache.get("value")
-        if cached is not None:
-            self.logger.info(
-                "Dynamic Grounding: reusing first-fetched Terraform docs "
-                "(job-cached, %d chars, no MCP calls made).",
-                len(cached),
-            )
-            return {
-                "service_quotas_context": "",
-                "terraform_docs": cached,
-            }
+        docs_dict = {}
+        if resources:
+            for res_type in resources:
+                if res_type in self._docs_cache:
+                    docs_dict[res_type] = self._docs_cache[res_type]
+                    continue
+                if not res_type.startswith("aws_"):
+                    continue
 
-        with self._terraform_docs_context_lock:
-            # Re-check inside the lock in case another thread/job populated
-            # the cache while this call was waiting.
-            cached = self._terraform_docs_context_cache.get("value")
-            if cached is not None:
-                return {
-                    "service_quotas_context": "",
-                    "terraform_docs": cached,
-                }
+                try:
+                    raw_markdown = self._run_mcp_terraform_docs(
+                        provider_name="aws",
+                        provider_namespace="hashicorp",
+                        service_slug=res_type,
+                        provider_document_type="resources"
+                    )
 
-            docs_context = ""
-            if resources:
-                docs_context += "\nTERRAFORM DOCUMENTATION (Argument References):\n"
-                for res_type in resources:
-                    if res_type in self._docs_cache:
-                        docs_context += self._docs_cache[res_type]
-                        continue
-                    if not res_type.startswith("aws_"):
-                        continue
+                    markdown = self._extract_essential_tf_docs(raw_markdown)
 
-                    try:
-                        markdown = self._run_mcp_terraform_docs(
-                            provider_name="aws",
-                            provider_namespace="hashicorp",
-                            service_slug=res_type,
-                            provider_document_type="resources"
-                        )
+                    if markdown:
+                        res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
+                        self.logger.info("Fetched TF docs for %s (%d chars, condensed from %d chars)", res_type, len(markdown), len(raw_markdown))
+                    else:
+                        res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
+                        self.logger.info("No TF docs returned for %s", res_type)
 
-                        if markdown:
-                            res_ctx = f"\n--- {res_type} Documentation ---\n{markdown}\n"
-                        else:
-                            res_ctx = f"\n--- {res_type} ---\nNo docs returned from MCP.\n"
+                    self._docs_cache[res_type] = res_ctx
+                    docs_dict[res_type] = res_ctx
+                except Exception as e:
+                    self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
 
-                        self._docs_cache[res_type] = res_ctx
-                        docs_context += res_ctx
-                    except Exception as e:
-                        self.logger.warning("Failed to fetch TF docs for %s: %s", res_type, e)
+        self.logger.info(
+            "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
+            services, resources
+        )
+        self.logger.info(
+            "Dynamic Grounding: Fetched docs for %d resources.",
+            len(resources) if resources else 0
+        )
 
-            self.logger.info(
-                "Dynamic Grounding: Analyzer identified services=%s and resources=%s",
-                services, resources
-            )
-            self.logger.info(
-                "Dynamic Grounding: Fetched docs for %d resources.",
-                len(resources)
-            )
-            if docs_context:
-                self.logger.info("Dynamic Grounding: Docs context output:\n%s", docs_context)
-
-            # Cache whatever was fetched (even if empty/partial) so no
-            # iteration after this one ever calls MCP for docs again.
-            self._terraform_docs_context_cache["value"] = docs_context
-
-            return {
-                "service_quotas_context": "",
-                "terraform_docs": docs_context
-            }
+        return {
+            "service_quotas_context": "",
+            "terraform_docs": "",
+            "terraform_docs_dict": docs_dict
+        }
 
 
     @staticmethod
@@ -3670,6 +3324,7 @@ Rules:
         builder.add_node("plan", self._plan_node)
         builder.add_node("plan_review", self._plan_review_node)
         builder.add_node("plan_review_precheck_failed", self._plan_review_precheck_failed_node)
+        builder.add_node("human_approval_center", self._human_approval_center_node)
         builder.add_node("execute", self._execute_node)
         builder.add_node("report", self._report_node)
 
@@ -3711,11 +3366,12 @@ Rules:
             "plan_review",
             self._route_after_plan_review,
             {
-                "proceed": "execute",
+                "proceed": "human_approval_center",
                 "retry_generate": "generate",
                 "precheck_failed": "plan_review_precheck_failed",
             },
         )
+        builder.add_edge("human_approval_center", "execute")
         builder.add_edge("plan_review_precheck_failed", "report")
 
         builder.add_edge("execute", "report")
@@ -3780,11 +3436,7 @@ Rules:
                 *(action.get("steps") or []),
             )
         )
-        aws_ctx = (
-            self._gather_aws_context(force_refresh=True, action_text=_action_scope_text)
-            if not answers
-            else ""
-        )
+        aws_ctx = ""
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
@@ -3829,6 +3481,7 @@ Rules:
                         "terraform_state_context": "",
                         "service_quotas_context": "",
                         "terraform_docs": "",
+                        "terraform_docs_dict": {},
                         "permission_issues": [],
                         "caller_arn": "",
 
@@ -3894,7 +3547,15 @@ Rules:
             results = [ExecutionResult(**r) for r in final.get("execution_results", [])]
             final_status = final.get("final_status", "failed")
             sandbox_path_final: Optional[str] = final.get("sandbox_path") or None
-            final_summary_text = final.get("final_summary") or final.get("executor_summary")
+            final_summary_text = final.get("final_summary") or final.get("executor_summary") or ""
+            timings = final.get("timings", {})
+            if timings:
+                timing_str = "\n\n### Execution Timings\n"
+                timing_str += "| Stage | Duration (s) |\n|---|---|\n"
+                for stage, duration in timings.items():
+                    timing_str += f"| {stage} | {duration:.2f} |\n"
+                final_summary_text += timing_str
+                self.logger.info("Execution Timings: %s", timings)
 
             jira_url = action.get("jiraUrl")
             skip_jira = action.get("skipJiraUpdate", False)

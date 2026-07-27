@@ -572,7 +572,14 @@ def _run_detector_task(job_id: str):
             _job_store[job_id]["thread_id"] = threading.get_ident()
 
         # Use shared bg loop — avoids competing event loops crashing uvicorn
-        findings = _run_async(run_all_detectors())
+        selected = [k["name"].lower() for k in _load_custom_kras_from_disk() if k.get("selected")]
+        valid_modules = [m for m in ["compliance", "security", "reliability", "performance", "cost"] if m in selected]
+        
+        if valid_modules:
+            findings = _run_async(run_predefined_kra_detectors(valid_modules))
+        else:
+            findings = {}
+            
         if isinstance(findings, dict):
             total_issues = sum(len(g) for g in findings.values())
             output = findings
