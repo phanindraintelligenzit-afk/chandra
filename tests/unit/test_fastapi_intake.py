@@ -14,14 +14,16 @@ from typing import Any
 
 import pytest
 
-os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-
-import fastapi_app
-from fastapi.testclient import TestClient
+# fastapi_app is imported lazily below to avoid pulling in the
+# digitalworker_agents dependency chain at module-collection time
+# (aws_execution_agent.py has a pre-existing syntax error in some
+# Python versions that prevents module-level import).
 
 
 @pytest.fixture(scope="module")
 def client() -> Iterator[TestClient]:
+    import fastapi_app  # noqa: PLC0415 — lazy import to avoid broken dependency chain
+    from fastapi.testclient import TestClient  # noqa: PLC0415
     with TestClient(fastapi_app.app) as test_client:
         yield test_client
 

@@ -1940,8 +1940,8 @@ Use your internal knowledge of AWS and Terraform to generate the correct HCL.
 Keep the output compact — the user already scoped what they need.
 """
 
-        prompt = f"""You are a senior AWS automation engineer. {mode_instruction}
-        resources = analysis.get("expected_resources") or ["all"]
+        prompt = f'''You are a senior AWS automation engineer. {mode_instruction}
+                resources = analysis.get("expected_resources") or ["all"]
         batch_size = len(resources) if resources and resources != ["all"] else 1
         max_retries = 3
 
@@ -1996,12 +1996,12 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 {reference_context}{clarification_context}{feedback_context}{existing_context}
 {prev_batch_ctx}
 
-═══════════════════════════════════════════════════════════════
-ABSOLUTE RULES — violating any of these causes immediate failure
-═══════════════════════════════════════════════════════════════
+=========================================================================
+ABSOLUTE RULES - violating any of these causes immediate failure
+=========================================================================
 
-RULE 0 — HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
-  Terraform/HCL does NOT support Python-style triple-quotes (''' or \"\"\").
+RULE 0 \u2014 HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
+  Terraform/HCL does NOT support Python-style triple-quotes (' ' ' or \"\"\").
   For any multi-line string value (user_data, inline policy JSON, etc.) you MUST
   use HCL heredoc syntax.
 

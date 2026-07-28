@@ -112,3 +112,32 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     raise ValueError(
         f"Unsupported LLM_PROVIDER {provider!r}; expected one of {', '.join(SUPPORTED_PROVIDERS)}"
     )
+
+
+def build_chat_model_with_fallback(model: str | None = None, provider: str | None = None, **kwargs: Any) -> Any:
+    """Build a chat model with automatic fallback to Bedrock when local LLM is unavailable.
+
+    Tries the configured provider first. If the connection fails (timeout,
+    connection refused, 5xx), falls back to Bedrock. This ensures zero-downtime
+    even when the local vLLM server is down or restarting.
+
+    Returns a tuple of (model, actual_provider) so callers can log which
+    provider served the request.
+    """
+    provider = (provider or settings.llm_provider or "bedrock").strip().lower()
+    tried_provider = provider
+
+    try:
+        return (build_chat_model(model=model, provider=provider, **kwargs), provider)
+    except Exception as exc:
+        logger.warning(
+            "LLM provider '%s' failed (%s: %s). Falling back to Bedrock.",
+            provider, type(exc).__name__, exc,
+        )
+        if provider != "bedrock":
+            try:
+                return (build_chat_model(model=settings.bedrock_model_id, provider="bedrock", **kwargs), "bedrock")
+            except Exception as fallback_exc:
+                logger.error("Bedrock fallback also failed: %s", fallback_exc)
+                raise  # Raise original if both fail
+        raise  # Already on Bedrock, re-raise original
