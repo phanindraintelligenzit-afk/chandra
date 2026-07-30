@@ -1940,8 +1940,8 @@ Use your internal knowledge of AWS and Terraform to generate the correct HCL.
 Keep the output compact — the user already scoped what they need.
 """
 
-        prompt = f'''You are a senior AWS automation engineer. {mode_instruction}
-                resources = analysis.get("expected_resources") or ["all"]
+        # prompt generation
+        resources = analysis.get("expected_resources") or ["all"]
         batch_size = len(resources) if resources and resources != ["all"] else 1
         max_retries = 3
 
