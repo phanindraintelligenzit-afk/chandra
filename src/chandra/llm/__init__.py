@@ -60,6 +60,7 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     if provider == "bedrock":
         from langchain_aws import ChatBedrockConverse  # lazy: provider-specific
 
+        kwargs.setdefault("timeout", 60)
         return ChatBedrockConverse(
             model_id=model or settings.bedrock_model_id,
             region_name=settings.aws_default_region,
@@ -68,6 +69,9 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
 
     if provider in ("openai", "openai_compatible", "vllm"):
         from langchain_openai import ChatOpenAI  # lazy: provider-specific
+
+        kwargs.setdefault("timeout", 60)
+        kwargs.setdefault("max_retries", 2)
 
         # vLLM reads its own VLLM_* vars first, then falls back to the generic
         # OPENAI_* pair so any OpenAI-compatible server keeps working.
