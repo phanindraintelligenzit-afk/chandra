@@ -1,14 +1,16 @@
+# ruff: noqa: N806, E501
 import os
+
 import requests
-from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
 from jira import JIRA
 from jira.exceptions import JIRAError
-from dotenv import load_dotenv
+from requests.auth import HTTPBasicAuth
 
 # Load variables from your .env file
 load_dotenv() 
 
-def create_jira_ticket(project_key: str, summary: str, description: str = "", issuetype: str = "Task", priority: str = None, labels: list = None):
+def create_jira_ticket(project_key: str, summary: str, description: str = "", issuetype: str = "Task", priority: str | None = None, labels: list | None = None):  # type: ignore
     """
     Checks if a Jira project exists, creates it if necessary, 
     and creates a ticket using the provided string arguments including priority.
@@ -38,7 +40,7 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
         # 2. Authenticate with the jira library
         jira = JIRA(
             server=JIRA_SERVER, 
-            basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN)
+            basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN)  # type: ignore
         )
 
         # 3. Check if the project already exists
@@ -52,7 +54,7 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
                 print(f"Project '{project_key}' not found. Creating it now...")
                 
                 # Setup requests auth for the REST API calls
-                auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
+                auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)  # type: ignore
                 headers = {"Accept": "application/json", "Content-Type": "application/json"}
                 
                 # Get your Account ID (Required to make you the project owner)
@@ -95,7 +97,7 @@ def create_jira_ticket(project_key: str, summary: str, description: str = "", is
         return {"status": "error", "message": str(e)}
 
 
-def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
+def add_comment_to_ticket(issue_key: str, steps: list) -> dict:  # type: ignore
     """Add implementation steps as a comment on an existing Jira ticket."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
@@ -109,7 +111,7 @@ def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
     )
 
     try:
-        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         jira.add_comment(issue_key, comment_body)
         print(f"Steps comment added to {issue_key}")
         return {"status": "success"}
@@ -118,7 +120,7 @@ def add_comment_to_ticket(issue_key: str, steps: list) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
+def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:  # type: ignore
     """Add an approval-status comment indicating whether the action is auto-approved or awaiting human review."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
@@ -138,7 +140,7 @@ def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
         )
 
     try:
-        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         jira.add_comment(issue_key, body)
         print(f"Approval comment added to {issue_key}")
         return {"status": "success"}
@@ -147,7 +149,7 @@ def add_approval_comment(issue_key: str, human_review_needed: bool) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def add_summary_comment(issue_key: str, summary: str) -> dict:
+def add_summary_comment(issue_key: str, summary: str) -> dict:  # type: ignore
     """Add a final summary comment on an existing Jira ticket."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
@@ -157,7 +159,7 @@ def add_summary_comment(issue_key: str, summary: str) -> dict:
         return {"status": "skipped", "message": "No summary provided"}
 
     try:
-        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         jira.add_comment(issue_key, summary)
         print(f"Summary comment added to {issue_key}")
         return {"status": "success"}
@@ -166,14 +168,14 @@ def add_summary_comment(issue_key: str, summary: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def update_ticket_status(issue_key: str, status_name: str) -> dict:
+def update_ticket_status(issue_key: str, status_name: str) -> dict:  # type: ignore
     """Transition a Jira ticket to a new status (e.g., 'Done', 'Backlog')."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 
     try:
-        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         transitions = jira.transitions(issue_key)
         
         transition_id = None
@@ -193,14 +195,14 @@ def update_ticket_status(issue_key: str, status_name: str) -> dict:
         print(f"Failed to transition {issue_key}: {e}")
         return {"status": "error", "message": str(e)}
 
-def add_label_to_ticket(issue_key: str, label: str) -> dict:
+def add_label_to_ticket(issue_key: str, label: str) -> dict:  # type: ignore
     """Add a label to an existing Jira ticket."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 
     try:
-        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         issue = jira.issue(issue_key)
         # Ensure we don't duplicate the label
         if label not in issue.fields.labels:

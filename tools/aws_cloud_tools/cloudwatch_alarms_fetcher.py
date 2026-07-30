@@ -1,13 +1,11 @@
 import asyncio
-import aioboto3
-import json
-from pathlib import Path
-from typing import Optional, Any
 from datetime import datetime
-from dotenv import load_dotenv
+from typing import Any
+
+import aioboto3
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -57,7 +55,7 @@ class AWSCloudWatchAlarmsFetcher:
 
         return parsed
 
-    async def _fetch_region_alarms(self, region: str, state_filter: Optional[str] = None) -> list[dict]:
+    async def _fetch_region_alarms(self, region: str, state_filter: str | None = None) -> list[dict]:
         """
         Worker function to fetch paginated CloudWatch alarms for a specific region.
         """
@@ -92,8 +90,8 @@ class AWSCloudWatchAlarmsFetcher:
 
     async def fetch_all_regions_alarms(
         self, 
-        state_filter: Optional[str] = None, 
-        regions: Optional[list[str]] = None
+        state_filter: str | None = None, 
+        regions: list[str] | None = None
     ) -> list[dict]:
         """
         Gathers raw alarm configurations concurrently across regions.
@@ -120,7 +118,7 @@ class AWSCloudWatchAlarmsFetcher:
 
     async def fetch_alarms_summary(
         self, 
-        state_filter: Optional[str] = None, 
+        state_filter: str | None = None, 
         max_total_alarms: int = 40
     ) -> dict[str, Any]:
         """

@@ -1,13 +1,11 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
 import aioboto3
-import json
-from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
-from dotenv import load_dotenv
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -52,7 +50,7 @@ class AWSConfigHistoryFetcher:
                     "DeliveryStatus": last_status
                 }
         except Exception as e:
-            return {"Region": region, "Status": f"ERROR: {str(e)}"}
+            return {"Region": region, "Status": f"ERROR: {e!s}"}
 
     async def _get_active_resource_types(self, config_client) -> list[str]:
         """
@@ -78,7 +76,7 @@ class AWSConfigHistoryFetcher:
         resource_id: str, 
         start_time: datetime, 
         end_time: datetime
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Fetches the configuration history of a single resource in the specified time window.
         Returns the before/after state so the LLM knows EXACTLY what changed.
@@ -201,7 +199,7 @@ class AWSConfigHistoryFetcher:
         and extracts the exact before/after configuration differences.
         """
         # AWS Config History API requires native timezone-aware datetime objects
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         start_time = end_time - timedelta(hours=hours_lookback)
         
         regions = await self._list_regions()

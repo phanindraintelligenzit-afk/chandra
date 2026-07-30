@@ -1,10 +1,8 @@
 import asyncio
-import aioboto3
-import json
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
-from agents import Agent, Runner, function_tool
+import aioboto3
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -71,7 +69,7 @@ class AWSGuardDutyFetcher:
         region: str,
         max_ids: int,
         min_severity: float,
-    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+    ) -> tuple[list[dict[str, Any]], str | None]:
         """
         Returns (slim findings, error_message).
         error_message is set when the API call fails (previously swallowed as empty).
@@ -109,7 +107,7 @@ class AWSGuardDutyFetcher:
         min_severity: float = DEFAULT_MIN_SEVERITY,
         max_findings_per_region: int = DEFAULT_MAX_PER_REGION,
         max_total_findings: int = DEFAULT_MAX_TOTAL,
-        regions: Optional[list[str]] = None,
+        regions: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Compact, LLM-friendly summary: counts + top findings only (no full API blobs).
@@ -153,7 +151,7 @@ class AWSGuardDutyFetcher:
         regions_with_data = [r for r, c in per_region_counts.items() if c > 0]
 
         summary: dict[str, Any] = {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
             "min_severity_filter": min_severity if min_severity > 0 else None,
             "limits": {
                 "max_findings_per_region": max_findings_per_region,

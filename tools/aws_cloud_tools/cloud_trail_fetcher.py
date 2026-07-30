@@ -1,14 +1,13 @@
 import asyncio
+import json
+from datetime import datetime, timedelta
+from typing import Any
+
 import aioboto3
 import pytz
-import json
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional, Any
-from dotenv import load_dotenv
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -71,7 +70,7 @@ class AWSCloudTrailFetcher:
         region: str,
         start_time: datetime,
         end_time: datetime,
-        lookup_attribute: Optional[dict],
+        lookup_attribute: dict | None,
         max_events_per_region: int,
     ) -> list[dict]:
         """Worker function to look up events within a single region."""
@@ -103,9 +102,9 @@ class AWSCloudTrailFetcher:
     async def fetch_all_regions_events(
         self,
         last_hours: int = 2,
-        event_name: Optional[str] = None,
+        event_name: str | None = None,
         max_events_per_region: int = 50,
-        regions: Optional[list[str]] = None,
+        regions: list[str] | None = None,
     ) -> list[dict]:
         """
         Gathers raw, multi-region management API logs concurrently.
@@ -142,7 +141,7 @@ class AWSCloudTrailFetcher:
     async def fetch_events_summary(
         self,
         last_hours: int = 2,
-        event_name: Optional[str] = None,
+        event_name: str | None = None,
         max_total_events: int = 30,
     ) -> dict[str, Any]:
         """

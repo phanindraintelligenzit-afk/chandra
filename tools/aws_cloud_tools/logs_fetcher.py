@@ -1,13 +1,11 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
 import aioboto3
-import json
-from pathlib import Path
-from typing import Optional, Any
-from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
 
 # Framework imports (Uncomment when running in your pipeline)
-from agents import Agent, Runner, trace, function_tool
+from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -28,7 +26,7 @@ class AWSCloudWatchLogsFetcher:
         return sorted(region["RegionName"] for region in response.get("Regions", []))
 
     async def _execute_query_in_region(
-        self, region: str, log_group_prefix: Optional[str], query: str, start_time: int, end_time: int
+        self, region: str, log_group_prefix: str | None, query: str, start_time: int, end_time: int
     ) -> list[dict]:
         try:
             async with self._session.client("logs", region_name=region) as logs_client:
@@ -69,7 +67,7 @@ class AWSCloudWatchLogsFetcher:
             return []
 
     async def fetch_critical_errors(
-        self, log_group_prefix: Optional[str] = None, hours_lookback: int = 24, max_results: int = 50
+        self, log_group_prefix: str | None = None, hours_lookback: int = 24, max_results: int = 50
     ) -> dict[str, Any]:
         """High-priority tool: Specifically scans for ERROR, Exception, or Critical logs."""
         query = (
@@ -81,14 +79,14 @@ class AWSCloudWatchLogsFetcher:
         return await self.fetch_global_logs(log_group_prefix, query, hours_lookback, max_results)
 
     async def fetch_global_logs(
-        self, log_group_prefix: Optional[str] = None, 
+        self, log_group_prefix: str | None = None, 
         query: str = "fields @timestamp, @message | sort @timestamp desc | limit 50", 
         hours_lookback: int = 24, 
         max_total_results: int = 20
     ) -> dict[str, Any]:
         """Generic tool: Runs a custom Insights query across all regions."""
-        end_time = int(datetime.now(timezone.utc).timestamp())
-        start_time = int((datetime.now(timezone.utc) - timedelta(hours=hours_lookback)).timestamp())
+        end_time = int(datetime.now(UTC).timestamp())
+        start_time = int((datetime.now(UTC) - timedelta(hours=hours_lookback)).timestamp())
         
         regions = await self._list_regions()
         results = await asyncio.gather(
