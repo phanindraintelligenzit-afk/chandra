@@ -11,6 +11,8 @@ interface AwsTask {
   title: string;
   description: string;
   resource_type: string;
+  operation: string;
+  resource_config: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -29,7 +31,8 @@ export default function AwsTasksPage() {
   const [filterType, setFilterType] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editingTask, setEditingTask] = useState<AwsTask | null>(null);
-  const [form, setForm] = useState({ title: "", description: "", resource_type: "S3" });
+  const [form, setForm] = useState({ title: "", description: "", resource_type: "S3", operation: "", resource_config: "" });
+  const [currentUser, setCurrentUser] = useState("nagendra");
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -52,11 +55,11 @@ export default function AwsTasksPage() {
       const res = await fetch(`${API_BASE}/aws-tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, created_by: currentUser, operation: form.operation, resource_config: form.resource_config }),
       });
       if (res.ok) {
         setShowCreate(false);
-        setForm({ title: "", description: "", resource_type: "S3" });
+        setForm({ title: "", description: "", resource_type: "S3", operation: "", resource_config: "" });
         fetchTasks();
       }
     } catch (e) {
@@ -74,7 +77,7 @@ export default function AwsTasksPage() {
       });
       if (res.ok) {
         setEditingTask(null);
-        setForm({ title: "", description: "", resource_type: "S3" });
+        setForm({ title: "", description: "", resource_type: "S3", operation: "", resource_config: "" });
         fetchTasks();
       }
     } catch (e) {
@@ -94,7 +97,7 @@ export default function AwsTasksPage() {
 
   const openEdit = (task: AwsTask) => {
     setEditingTask(task);
-    setForm({ title: task.title, description: task.description, resource_type: task.resource_type });
+    setForm({ title: task.title, description: task.description, resource_type: task.resource_type, operation: task.operation || "", resource_config: task.resource_config || "" });
   };
 
   return (
@@ -107,7 +110,7 @@ export default function AwsTasksPage() {
             <h1 className="text-2xl font-bold text-white">AWS Tasks</h1>
           </div>
           <button
-            onClick={() => { setShowCreate(true); setEditingTask(null); setForm({ title: "", description: "", resource_type: "S3" }); }}
+            onClick={() => { setShowCreate(true); setEditingTask(null); setForm({ title: "", description: "", resource_type: "S3", operation: "", resource_config: "" }); }}
             className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-white transition-all"
           >
             <Plus className="w-4 h-4" />
