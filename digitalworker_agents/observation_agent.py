@@ -143,6 +143,22 @@ class AwsObservabilityAgent:
             logger.exception("Failed to initialise agent: %s", exc)
             raise
 
+    def _structured_llm(self, schema: Any) -> Any:
+        """Return a structured-output runnable using the right method per provider.
+
+        For local LLM providers (vLLM/Ollama), uses json_schema guided decoding
+        which works with any model without requiring tool-call support. Bedrock/Claude
+        keeps the proven function_calling path. Override with
+        ``CHANDRA_STRUCTURED_OUTPUT_METHOD`` env var.
+        """
+        provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+        openai_family = {"openai", "openai_compatible", "vllm", "ollama"}
+        default_method = "json_schema" if provider in openai_family else "function_calling"
+        method = (os.getenv("CHANDRA_STRUCTURED_OUTPUT_METHOD") or default_method).strip()
+        if method == "function_calling":
+            return self.Llm.with_structured_output(schema)
+        return self.Llm.with_structured_output(schema, method=method)
+
     @staticmethod
     def _build_kras_str(kras: Optional[List[Any]]) -> str:
         if not kras:
@@ -362,7 +378,7 @@ Never fabricate data not present in the tool results. For operational KRAs, step
                 raw_data_chars, prompt_chars, prompt_chars // 4,
             )
 
-            structured_llm = self.Llm.with_structured_output(ObservabilityReport)
+            structured_llm = self._structured_llm(ObservabilityReport)
             report: ObservabilityReport = structured_llm.invoke(
                 [HumanMessage(content=prompt)],
                 config={"callbacks": [_TokenUsageCallback()]},

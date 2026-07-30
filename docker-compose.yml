@@ -27,7 +27,7 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http:54.160.31.20:3000/api/backend}
     image: chandra-app
-    command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001"]
+    command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001", "--workers", "4"]
     ports:
       - "6001:6001"
     env_file: .env
@@ -40,6 +40,9 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 120s
+    mem_limit: 4g
+    mem_reservation: 2g
     networks:
       - chandra-network
 

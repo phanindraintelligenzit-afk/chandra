@@ -40,15 +40,12 @@ class GenerationParams:
     max_retries: int = 2
 
     def model_kwargs(self) -> dict[str, Any]:
-        # Only pass params the LangChain constructors accept directly; the
-        # rest (timeout/retries) are handled by the retry loop below.
         return {"temperature": self.temperature, "max_tokens": self.max_tokens}
 
 
 class BaseLLM(ABC):
     """Uniform reasoning surface. Text/JSON only — never executes anything."""
 
-    #: Provider key understood by ``build_chat_model`` (LLM_PROVIDER value).
     provider: str = "bedrock"
 
     def __init__(self, model: str | None = None, params: GenerationParams | None = None) -> None:
@@ -58,6 +55,27 @@ class BaseLLM(ABC):
     @abstractmethod
     def _build(self) -> Any:
         """Construct the underlying LangChain chat model for this provider."""
+
+    def _build_with_timeout(self, **overrides: Any) -> Any:
+        """Build the model with the BaseLLM's timeout, falling back to _build().
+
+        Ensures the LangChain constructor uses the BaseLLM's configured
+        timeout (via request_timeout) instead of the factory default, so the
+        retry loop controls the actual wall-clock timeout rather than stacking
+        on top of LangChain's own long timeout.
+
+        Falls back to ``_build()`` for test/mock providers that aren't
+        registered in the ``build_chat_model`` factory.
+        """
+        params = self.params
+        kwargs = params.model_kwargs()
+        kwargs["timeout"] = overrides.get("timeout", params.timeout_s)
+        kwargs["max_retries"] = 0  # retries handled by BaseLLM loop
+        try:
+            return build_chat_model(self.model, provider=self.provider, **kwargs)
+        except ValueError:
+            # Provider not registered in the factory (e.g. test stubs).
+            return self._build()
 
     def complete(self, system: str, user: str, **overrides: Any) -> str:
         """Return the model's text completion, with retries + timeout.
@@ -70,11 +88,11 @@ class BaseLLM(ABC):
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                llm = self._build()
+                llm = self._build_with_timeout(**overrides)
                 response = llm.invoke([("system", system), ("user", user)])
                 content = response.content
                 return content if isinstance(content, str) else str(content)
-            except Exception as exc:  # provider-agnostic retry boundary
+            except Exception as exc:
                 last_exc = exc
                 logger.warning(
                     "llm.complete_attempt_failed",
@@ -88,21 +106,22 @@ class BaseLLM(ABC):
         raise last_exc
 
     def health_check(self) -> bool:
-        """Cheap reachability probe. True when the backend answers."""
+        """Cheap reachability probe. True when the backend answers.
+
+        Uses a 5s timeout with no retries so it never blocks the health
+        endpoint for more than a few seconds.
+        """
         try:
-            reply = self.complete("You are a health probe.", "Reply with the single word OK.")
-            return bool(reply)
-        except Exception as exc:  # health check must never raise
+            llm = self._build_with_timeout(timeout=5)
+            reply = llm.invoke([("system", "You are a health probe."), ("user", "Reply with OK.")])
+            return bool(reply.content)
+        except Exception as exc:
             logger.warning("llm.health_check_failed", provider=self.provider, error=str(exc))
             return False
 
 
 class VLLMProvider(BaseLLM):
-    """vLLM (or any OpenAI-compatible) endpoint — the local-LLM target.
-
-    Uses ``OPENAI_API_BASE`` + ``OPENAI_MODEL_NAME`` via the factory's
-    ``openai``/``vllm`` path.
-    """
+    """vLLM (or any OpenAI-compatible) endpoint — the local-LLM target."""
 
     provider = "vllm"
 
@@ -140,7 +159,6 @@ class BedrockProvider(BaseLLM):
         )
 
 
-#: Legacy name — Claude on Bedrock is the same backend path.
 ClaudeProvider = BedrockProvider
 
 _PROVIDERS: dict[str, type[BaseLLM]] = {
@@ -154,19 +172,11 @@ _PROVIDERS: dict[str, type[BaseLLM]] = {
 
 
 def get_provider(name: str | None = None, **kwargs: Any) -> BaseLLM:
-    """Instantiate the configured provider (``LLM_PROVIDER`` when unset).
-
-    A single seam: business logic calls ``get_provider()`` and receives a
-    ``BaseLLM`` — swapping Claude→vLLM is an env change (``LLM_PROVIDER``),
-    exactly like the factory, but now behind the richer provider surface.
-    """
+    """Instantiate the configured provider (``LLM_PROVIDER`` when unset)."""
     key = (name or settings.llm_provider or "bedrock").strip().lower()
     cls = _PROVIDERS.get(key)
     if cls is None:
         raise ValueError(
             f"Unknown LLM provider {key!r}; expected one of {', '.join(sorted(_PROVIDERS))}"
         )
-    # Each class already carries the correct ``build_chat_model`` factory key
-    # in its ``provider`` attribute (e.g. OpenAICompatibleProvider→"openai",
-    # BedrockProvider→"bedrock"), so no post-hoc override is needed.
     return cls(**kwargs)

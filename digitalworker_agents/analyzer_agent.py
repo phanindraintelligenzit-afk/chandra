@@ -20,7 +20,6 @@ from src.chandra.llm import build_chat_model
 from langgraph.graph import END, StateGraph
 
 from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket
-from src.chandra.escalation.publisher import SNSPublisher
 from src.chandra.escalation.schemas import EscalationPayload
 
 load_dotenv(override=True)
@@ -82,6 +81,25 @@ class AnalyzerAgent:
             logger.exception("Failed to initialise AnalyzerAgent: %s", exc)
             raise
 
+    def _structured_llm(self, schema: Any) -> Any:
+        """Return a structured-output runnable using the right method per provider.
+
+        For local LLM providers (vLLM/Ollama), uses json_schema guided decoding
+        which works with any model without requiring tool-call support (the
+        ``--enable-auto-tool-choice`` vLLM flag). Bedrock/Claude keeps the
+        proven function_calling path. Override with
+        ``CHANDRA_STRUCTURED_OUTPUT_METHOD`` env var.
+        """
+        from src.chandra.config import settings as chandra_settings
+
+        provider = (chandra_settings.llm_provider or "bedrock").strip().lower()
+        openai_family = {"openai", "openai_compatible", "vllm", "ollama"}
+        default_method = "json_schema" if provider in openai_family else "function_calling"
+        method = (os.getenv("CHANDRA_STRUCTURED_OUTPUT_METHOD") or default_method).strip()
+        if method == "function_calling":
+            return self.Llm.with_structured_output(schema)
+        return self.Llm.with_structured_output(schema, method=method)
+
     def _analyze_node(self, state: AgentState) -> dict:
         actions = state["actionsDict"].get("actions", [])
         logger.info("Analyzing %d actions", len(actions))
@@ -112,7 +130,7 @@ Actions to analyze:
 Return a structured analysis for ALL {len(actions)} actions, preserving the exact actionName from the input."""
 
         try:
-            structured_llm = self.Llm.with_structured_output(AnalysisResult)
+            structured_llm = self._structured_llm(AnalysisResult)
             result: AnalysisResult = structured_llm.invoke([HumanMessage(content=prompt)])
             logger.info("Analysis complete for %d actions", len(result.actions))
             return {"analyzed_actions": [a.model_dump() for a in result.actions]}

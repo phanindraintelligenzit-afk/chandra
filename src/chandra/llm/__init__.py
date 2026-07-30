@@ -16,7 +16,23 @@ SUPPORTED_PROVIDERS = ("bedrock", "openai", "openai_compatible", "vllm", "ollama
 
 
 def build_chat_model(model: str | None = None, provider: str | None = None, **kwargs: Any) -> Any:
-    """[... same docstring ...]"""
+    """Build a chat model for the given provider. Returns the model object
+    without connecting — the actual connection is lazily established on the
+    first ``invoke()`` call.
+
+    Parameters
+    ----------
+    model:
+        Model name (overrides the provider-specific env var).
+    provider:
+        One of ``bedrock``, ``openai``, ``vllm``, ``ollama``.
+        Defaults to ``LLM_PROVIDER`` env var.
+    **kwargs:
+        Passed to the underlying LangChain constructor. Use ``timeout`` to
+        control the per-request timeout (default 60s for Bedrock, 10s for
+        local providers). Use ``max_retries`` to control LangChain's own
+        retry count (default 2 for local providers, 0 for Bedrock).
+    """
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
 
     if provider == "bedrock":
@@ -30,8 +46,10 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
 
     if provider in ("openai", "openai_compatible", "vllm"):
         from langchain_openai import ChatOpenAI
-        kwargs.setdefault("timeout", 60)
-        kwargs.setdefault("max_retries", 2)
+        # Local providers should fail fast — use 10s timeout, no LangChain retries
+        # (retries are handled by the BaseLLM retry loop in providers.py)
+        kwargs.setdefault("timeout", 10)
+        kwargs.setdefault("max_retries", 0)
         base_url = settings.vllm_api_base or settings.openai_api_base
         api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
         if not base_url:
@@ -43,6 +61,8 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
 
     if provider == "ollama":
         from langchain_openai import ChatOpenAI
+        kwargs.setdefault("timeout", 10)
+        kwargs.setdefault("max_retries", 0)
         resolved = model or settings.ollama_model
         if not resolved:
             raise ValueError("LLM_PROVIDER=ollama requires OLLAMA_MODEL")
@@ -65,17 +85,53 @@ def get_llm_with_tools(tools: list | None = None, model: str | None = None, **kw
     return llm
 
 
-def build_chat_model_with_fallback(model: str | None = None, provider: str | None = None, **kwargs: Any) -> Any:
-    """Build a chat model with automatic fallback to Bedrock when local LLM is unavailable."""
+def build_chat_model_with_fallback(
+    model: str | None = None,
+    provider: str | None = None,
+    **kwargs: Any,
+) -> tuple[Any, str]:
+    """Build a chat model with automatic fallback to Bedrock when local LLM
+    is unavailable.
+
+    Unlike ``build_chat_model`` (which returns a model object without
+    connecting), this function performs a lightweight connectivity probe
+    against the primary provider. If the probe fails, it falls back to
+    Bedrock. This ensures the caller never hangs on a downed endpoint.
+
+    Returns
+    -------
+    (model, provider_name)
+        The working chat model and the provider that ultimately succeeded.
+    """
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
-    try:
+
+    # Bedrock is the ultimate fallback — no need to probe it.
+    if provider == "bedrock":
         return (build_chat_model(model=model, provider=provider, **kwargs), provider)
+
+    # Probe the primary provider with a short timeout. If it fails, fall back.
+    try:
+        from src.chandra.llm.providers import get_provider, GenerationParams
+
+        test_llm = get_provider(
+            provider,
+            model=model,
+            params=GenerationParams(max_tokens=4, timeout_s=5, max_retries=0),
+        )
+        if test_llm.health_check():
+            logger.info("LLM fallback: primary provider '%s' is healthy, using it.", provider)
+            return (build_chat_model(model=model, provider=provider, **kwargs), provider)
+
+        logger.warning("LLM fallback: primary provider '%s' health check failed, falling back to Bedrock.", provider)
     except Exception as exc:
-        logger.warning("LLM provider '%s' failed (%s: %s). Falling back to Bedrock.", provider, type(exc).__name__, exc)
-        if provider != "bedrock":
-            try:
-                return (build_chat_model(model=settings.bedrock_model_id, provider="bedrock", **kwargs), "bedrock")
-            except Exception as fallback_exc:
-                logger.error("Bedrock fallback also failed: %s", fallback_exc)
-                raise
+        logger.warning(
+            "LLM fallback: primary provider '%s' probe failed (%s: %s). Falling back to Bedrock.",
+            provider, type(exc).__name__, exc,
+        )
+
+    # Fallback to Bedrock
+    try:
+        return (build_chat_model(model=settings.bedrock_model_id, provider="bedrock", **kwargs), "bedrock")
+    except Exception as fallback_exc:
+        logger.error("LLM fallback: Bedrock also failed: %s", fallback_exc)
         raise
