@@ -759,10 +759,10 @@ export default function AwsPermissionsPage() {
                 ) : (
                   <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-1.5">
                     {availableActions.map((aa, actIdx) => {
-                                          const checked = form.actions.includes(aa.action);
-                                          return (
-                                            <label
-                                              key={`${aa.action}-${actIdx}`}
+                      const checked = form.actions.includes(aa.action);
+                      return (
+                        <label
+                          key={`${aa.action}-${actIdx}`}
                           className={`flex items-start gap-2.5 p-1.5 rounded-md cursor-pointer transition-colors ${
                             checked
                               ? "bg-emerald-900/20 border border-emerald-700/30"
