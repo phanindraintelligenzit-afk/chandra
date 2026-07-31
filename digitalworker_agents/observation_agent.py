@@ -66,6 +66,7 @@ class IssueItem(BaseModel):
     issue: str = Field(description="Concise description of the issue or anomaly detected")
     priorityLevel: str = Field(description="Priority level: P1 (critical/immediate) | P2 (high/urgent) | P3 (medium/scheduled)")
     service: str = Field(description="Primary AWS service affected (e.g. S3, RDS, EC2, IAM, Bedrock, EKS, CloudTrail)")
+    kra: Optional[str] = Field(default=None, description="KRA this issue belongs to (e.g. 'Cost Optimization', 'Security Hardening')")
     region: Optional[str] = Field(default=None, description="AWS region where the issue was detected, if applicable")
     resourceId: Optional[str] = Field(default=None, description="Specific resource ID or name involved, if identifiable")
 
@@ -303,73 +304,63 @@ class AwsObservabilityAgent:
 
         try:
             raw_str = self._bound_input(json.dumps(raw_results, indent=2, default=str))
-            prompt = f"""You are an autonomous AWS Cloud Engineer Agent capable of handling both observability analysis and operational tasks.
+            prompt = f"""You are an AWS Cloud Operations Analyst. Your task is to evaluate AWS infrastructure against the user's defined Key Result Areas (KRAs).
 
-**User-defined KRAs (Key Result Areas):**
-{self.Kras}
+            **User-defined KRAs (Key Result Areas):**
+            {self.Kras}
 
-**AWS environment data collected by tools:**
-{raw_str}
+            **AWS environment data collected by tools:**
+            {raw_str}
 
-Produce a structured report following these rules:
+            **Your Task:**
+            For EACH KRA listed above, produce a focused evaluation based on the AWS tool data. Do NOT generate infrastructure deployment tasks (like "Create S3 Bucket", "Deploy EC2", "Run Terraform"). Those belong to a separate execution engine. Your job is only to ANALYZE and EVALUATE.
 
-1. **issues** — Enumerate problems found in the AWS data across cost, security, compliance, performance, and reliability.
-   - `issue`: one-sentence description of what is wrong.
-   - `priorityLevel`: P1 = active breach or outage, P2 = high risk / cost anomaly, P3 = best-practice gap.
-   - `service`: primary AWS service (S3, RDS, EC2, IAM, Bedrock, EKS, CloudTrail, Config, etc.).
-   - `region`: AWS region if determinable, else omit.
-   - `resourceId`: specific resource name or ID if identifiable, else omit.
+            Produce a structured report following these rules:
 
-2. **observations** — All noteworthy findings from the tool data even when no fix is required.
+            1. **health** — Overall health status: "Healthy" | "Degraded" | "Critical"
 
-3. **actions** — Recommended actions MUST be generated EXCLUSIVELY to fulfill the User-defined KRAs provided above. 
-   - Do NOT create actions to fix general issues, alerts, or observations found by the tools unless they directly map to a specific input KRA.
-   - The tool data (observations/alerts) is ONLY provided as context to help you write accurate `steps` for the requested KRA (e.g., finding existing VPCs, regions, or current state). It is NOT to be used to invent unrequested actions or cleanup tasks.
+            2. **kra_status** — For EACH KRA provide:
+               - `kra_code`: the KRA identifier
+               - `status`: Green (on track) | Yellow (at risk) | Red (behind)
+               - `achievement`: Current performance in plain language
+               - `completedPercentage`: 0-100 integer
+               - `note`: Optional context
 
-   For EVERY KRA provided, reason about its objective type and generate the appropriate actions:
+            3. **issues** — Problems found in the AWS data, organized by KRA:
+               - `issue`: One-sentence description
+               - `priorityLevel`: P1 | P2 | P3
+               - `service`: AWS service (S3, EC2, IAM, etc.)
+               - `kra`: Which KRA this issue belongs to
+               - `region`: AWS region if applicable
+               - `resourceId`: Specific resource if identifiable
 
-   - **Observability / monitoring KRAs** (e.g. cost anomaly detection, IAM drift, compliance): Recommend what must be done to achieve or maintain the KRA target.
-   - **Operational / task KRAs** (e.g. "deploy code from GitHub to EC2", "migrate database", "set up CI/CD pipeline"): Produce a concrete action plan with ordered `steps` strictly to achieve the KRA.
-   - **Any other KRA type**: Assess what the KRA requires, and recommend actions that directly advance it.
+            4. **observations** — Notable findings from tool data, organized by KRA
 
-   **CRITICAL RULES FOR ACTIONS & STEPS:**
-   - **NO HARDCODED IDS OF ANY KIND**: NEVER hallucinate or assume hardcoded infrastructure IDs (e.g. AMIs like `ami-0c55b159cbfafe1f0`, VPC IDs like `vpc-12345`, Subnet IDs, Security Group IDs, Role ARNs, Account IDs, etc.). LLMs often memorize these from training data tutorials — DO NOT DO THIS. **Exception:** If an ID is EXPLICITLY provided in the User-defined KRA input, you MUST use it. Otherwise, if an existing resource ID is required, you MUST instruct the step to use a Terraform `data` source (e.g. `data "aws_ami"`, `data "aws_vpc"`) to fetch it dynamically, or use AWS CLI queries. You may use standard string constants (e.g. `instance_type="t2.micro"`, standard IAM policies, resource names, or tags).
-   - **NO UNREQUESTED DESTRUCTION/CLEANUP**: Do NOT add steps to terminate, delete, or clean up existing resources based on observations (e.g. "Terminate problematic instances") UNLESS the KRA explicitly requests it. Actions must strictly fulfill the KRA and not proactively alter existing infrastructure based on unrelated observations.
+            5. **actions** — For each KRA, list RECOMMENDATIONS (not infrastructure tasks):
+               - Cost Optimization: "Review EC2 instance right-sizing", "Enable S3 Intelligent-Tiering"
+               - Security Hardening: "Rotate IAM keys older than 90 days", "Enable S3 Block Public Access"
+               - Compliance: "Enable CloudTrail in all regions", "Enable AWS Config rules"
+               These are ADVISORY recommendations, not deployment tasks.
 
-   For each action:
-   - `kraCode`: must exactly match one of the KRA codes listed above.
-   - `actionName`: concise imperative title (≤10 words).
-   - `actionDescription`: what to do, why it advances the KRA, and which resource is involved.
-   - `service`: primary AWS service.
-   - `priorityLevel`: P1 = do immediately, P2 = this sprint, P3 = backlog.
-   - `steps`: ordered list of concrete steps — required for operational/task KRAs, optional for observability KRAs.
+               For each action:
+               - `kraCode`: must match the KRA code
+               - `actionName`: concise title (<=10 words)
+               - `actionDescription`: what to do and why
+               - `service`: primary AWS service
+               - `priorityLevel`: P1 | P2 | P3
 
-   Every KRA must have at least one action. Multiple actions per KRA are encouraged when data supports it.
-   Order by KRA sequence, then P1 → P3 within each KRA.
+            6. **cost_snapshot** — Notable costs or anomalies from tool data
 
-4. **cost_snapshot** — Every service with notable spend or anomaly.
+            7. **security_posture** — Security findings from tool data
 
-5. **security_posture** — List of IAM drift findings, Security Hub findings, and misconfigurations detected. Extract from tool data (e.g. fetch_active_threats, fetch_account_audit, check_recorder_status).
+            8. **compliance_summary** — Compliance readiness assessment
 
-6. **compliance_summary** — A brief statement about the compliance readiness or posture based on available data.
-
-7. **health** — Overall health status: "Healthy" if no critical issues, "Degraded" if issues present, "Critical" if P1 issues exist.
-
-8. **kra_status** — For each KRA provide:
-   - `status`: Green (on track) | Yellow (at risk) | Red (behind). Base on available tool data and actions needed.
-   - `achievement`: Current performance against the KRA target in plain language.
-   - `completedPercentage`: An integer from 0 to 100 estimating how close this KRA is to its target.
-     Ground the value in concrete, countable evidence from the tool data, for example:
-       • "Config enabled in 1 of 17 regions → 6%"
-       • "3 of 6 public S3 buckets remediated → 50%"
-       • "No cost anomaly alerts configured → 10%"
-     General guidance (not a hard rule — let the evidence decide):
-       0–33  → typically Red
-       34–66 → typically Yellow
-       67–100 → typically Green
-   - `note` (optional): any additional context or caveat.
-
-Never fabricate data not present in the tool results. For operational KRAs, steps may use AWS best practices when the tools provide partial context."""
+            **CRITICAL RULES:**
+            - Evaluate EACH KRA separately against the tool data
+            - Do NOT generate infrastructure deployment tasks (Terraform, S3 bucket creation, EC2 launch, etc.)
+            - Base all analysis on actual tool data — do not fabricate findings
+            - If tool data is insufficient for a KRA, state that clearly
+            - Custom KRAs should be evaluated using the same approach as built-in ones"""
 
             prompt_chars = len(prompt)
             raw_data_chars = len(raw_str)
@@ -431,20 +422,6 @@ Never fabricate data not present in the tool results. For operational KRAs, step
 
             report = ObservabilityReport.model_validate_json(raw_json)
             
-            # Filter out any hallucinated predefined KRAs (KRA-01 through KRA-05)
-            # since the observation agent is now strictly for Custom KRAs.
-            import re
-            def is_predefined(code: str | None) -> bool:
-                if not code:
-                    return False
-                norm = re.sub(r'[^A-Z0-9]', '', str(code).upper())
-                return norm in {"KRA1", "KRA01", "KRA2", "KRA02", "KRA3", "KRA03", "KRA4", "KRA04", "KRA5", "KRA05"}
-
-            if report.kra_status:
-                report.kra_status = [k for k in report.kra_status if not is_predefined(k.kra_code)]
-            if report.actions:
-                report.actions = [a for a in report.actions if not is_predefined(a.kraCode)]
-
             logger.info("RunPipeline completed. health=%s, issues=%d", report.health, len(report.issues))
             return PipelineResponse(
                 statusCode=200,
