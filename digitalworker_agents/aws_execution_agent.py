@@ -1923,23 +1923,29 @@ each referencing the real resource attribute it corresponds to (no placeholders)
 {outputs_list}
 The executableSteps after apply MUST include a single step running `terraform output` (or `terraform output -json`) so all these details are printed for the user at once."""
 
-        # ── Custom KRA instruction (when user-defined payload replaces MCP docs) ──
+        # ── Explicit KRA and Permission Set Evaluation ──
         kra_data = state.get("kra_data")
         custom_kra_instruction = ""
         if kra_data and isinstance(kra_data, dict):
-            resources = kra_data.get("resources", [])
-            perms = kra_data.get("iam_permissions", [])
-            region = kra_data.get("region", "us-east-1")
+            kras = kra_data.get("kras", [])
+            permissions = kra_data.get("permissions", {})
+            task_info = kra_data.get("task", {})
+            
             custom_kra_instruction = f"""
-CUSTOM KRA — USER-DEFINED RESOURCES (this is NOT an MCP/Terraform doc fetch):
-The user has already specified exactly which AWS resources they want.
-Resources: {json.dumps(resources, indent=2) if resources else '(none explicitly listed — infer from the action name/description)'}
-IAM Permissions: {json.dumps(perms, indent=2) if perms else '(infer from the resource types needed)'}
-Target Region: {region}
+EVALUATION OBJECTIVES (KRAs) & CONSTRAINTS:
+You must implement the requested AWS Task strictly within these operational objectives:
+KRAs: {json.dumps(kras, indent=2) if kras else '(None explicitly listed — apply general best practices)'}
 
-IMPORTANT: DO NOT attempt to call MCP or fetch external Terraform documentation.
-Use your internal knowledge of AWS and Terraform to generate the correct HCL.
-Keep the output compact — the user already scoped what they need.
+AUTHORIZATION BOUNDARY:
+You must restrict your Terraform generation to the following IAM role and permission set:
+Role: {permissions.get('role', 'Unknown')}
+Allowed Permissions: {json.dumps(permissions.get('permissions', []), indent=2)}
+
+TASK CONTEXT:
+Task: {task_info.get('title', 'N/A')}
+Description: {task_info.get('description', 'N/A')}
+
+IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandates 'Cost Optimization', ensure instances are right-sized or spot instances are preferred. If 'Security', ensure encryption and private subnets are used. Do NOT exceed the Authorization Boundary.
 """
 
         # prompt generation

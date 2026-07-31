@@ -424,7 +424,7 @@ export default function OnboardingWizard() {
                 <div>
                   <div className="mb-3 text-[0.62rem] uppercase tracking-[0.2em] text-amber">SELECT AVATAR</div>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-                    {agentAvatars.map((avatar) => {
+                    {agentAvatars.filter((a) => !gender || gender === "Neutral / Synthetic AI" || a.gender === gender).map((avatar) => {
                       const selected = avatarId === avatar.id;
                       return (
                         <button

@@ -6,6 +6,7 @@ export type AgentAvatar = {
   specialty: string;
   signal: string;
   image: string;
+  gender: AgentGender;
 };
 
 export type AgentPermission = {
@@ -20,42 +21,48 @@ export const agentAvatars: AgentAvatar[] = [
     label: "Operations Lead",
     specialty: "supervised operations",
     signal: "OPS",
-    image: "Manager Avatar.png"
+    image: "Manager Avatar.png",
+    gender: "Male"
   },
   {
     id: "male-operator",
     label: "Cloud Operator",
     specialty: "AWS control plane",
     signal: "CLD",
-    image: "Male Avatars.png"
+    image: "Male Avatars.png",
+    gender: "Male"
   },
   {
     id: "female-operator",
     label: "Telemetry Analyst",
     specialty: "telemetry synthesis",
     signal: "ANL",
-    image: "Female Characters.png"
+    image: "Female Characters.png",
+    gender: "Female"
   },
   {
     id: "long-hair-glasses",
     label: "Governance Copilot",
     specialty: "policy & approvals",
     signal: "GOV",
-    image: "Long Hair Woman with Glasses.png"
+    image: "Long Hair Woman with Glasses.png",
+    gender: "Female"
   },
   {
     id: "short-hair-glasses",
     label: "Cyber Operator",
     specialty: "security posture",
     signal: "SEC",
-    image: "Short Hair Man with Glasses.png"
+    image: "Short Hair Man with Glasses.png",
+    gender: "Male"
   },
   {
     id: "hijab",
     label: "Compliance Lead",
     specialty: "audit & evidence",
     signal: "AUD",
-    image: "Woman with Hijab.png"
+    image: "Woman with Hijab.png",
+    gender: "Female"
   }
 ];
 

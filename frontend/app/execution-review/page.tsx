@@ -100,6 +100,7 @@ function ExecutionReviewContent() {
   // State
   const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
   const [permissionSet, setPermissionSet] = useState<PermissionSet | null>(null);
+  const [kras, setKras] = useState<string[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [executionResult, setExecutionResult] = useState<ExecutionResponse | null>(null);
@@ -114,6 +115,7 @@ function ExecutionReviewContent() {
   useEffect(() => {
     const taskParam = searchParams.get("task");
     const permParam = searchParams.get("permissions");
+    const krasParam = searchParams.get("kras");
 
     if (taskParam) {
       try {
@@ -134,6 +136,16 @@ function ExecutionReviewContent() {
     } else {
       setPermissionSet(MOCK_PERMISSIONS);
     }
+
+    if (krasParam) {
+      try {
+        setKras(JSON.parse(decodeURIComponent(krasParam)));
+      } catch {
+        setKras([]);
+      }
+    } else {
+      setKras([]);
+    }
   }, [searchParams]);
 
   // ── Validation ─────────────────────────────────────────────────────────────────
@@ -150,6 +162,7 @@ function ExecutionReviewContent() {
         body: JSON.stringify({
           task: selectedTask,
           permissions: permissionSet,
+          kras: kras,
         }),
       });
 
@@ -232,6 +245,7 @@ function ExecutionReviewContent() {
         body: JSON.stringify({
           task: selectedTask,
           permissions: permissionSet,
+          kras: kras,
           dry_run: true,
         }),
       });
@@ -283,6 +297,7 @@ function ExecutionReviewContent() {
         body: JSON.stringify({
           task: selectedTask,
           permissions: permissionSet,
+          kras: kras,
           dry_run: false,
         }),
       });
@@ -470,6 +485,25 @@ function ExecutionReviewContent() {
                     </div>
                   </div>
                 </div>
+              )}
+            </div>
+
+            {/* Monitoring KRAs Card */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Eye className="w-5 h-5 text-amber-400" />
+                <h2 className="text-lg font-semibold text-white">Monitoring KRAs (Evaluation Objectives)</h2>
+              </div>
+              {kras.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {kras.map((kra, idx) => (
+                    <span key={idx} className="text-sm bg-gray-800 text-gray-300 px-3 py-1.5 rounded-md border border-gray-700">
+                      {kra}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">No specific KRAs selected for this execution.</p>
               )}
             </div>
 

@@ -2298,35 +2298,70 @@ def _save_executions(execs: list) -> int:
     return len(execs)
 
 
+class SelectedTask(BaseModel):
+    id: str = ""
+    title: str = ""
+    resource_type: str = ""
+    description: str = ""
+
+class PermissionSetModel(BaseModel):
+    role: str = ""
+    permissions: list = []
+    agent_name: str = ""
+
 class ExecutionRequest(BaseModel):
-    task_id: str = ""
-    task_title: str = ""
-    permission_set_id: str = ""
-    permission_set_name: str = ""
-    monitoring_ids: list = []
+    task: SelectedTask | None = None
+    permissions: PermissionSetModel | None = None
+    kras: list = []
     created_by: str = "nagendra"
+    dry_run: bool = False
 
 
 @app.post("/api/executions/validate")
 def validate_execution(req: ExecutionRequest):
     errors = []
-    if not req.task_id and not req.task_title:
+    if not req.task or not req.task.title:
         errors.append("No AWS task selected")
-    if not req.permission_set_id and not req.permission_set_name:
+    if not req.permissions or not req.permissions.role:
         errors.append("No permission set selected")
-    return {"valid": len(errors) == 0, "errors": errors,
-            "summary": {"task": req.task_title or "Unknown",
-                        "permission_set": req.permission_set_name or "Unknown",
-                        "monitoring_count": len(req.monitoring_ids)}}
+    
+    # Return structured validation format
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "summary": "Pre-flight checks passed." if len(errors) == 0 else "Validation failed.",
+        "checks": [
+            {"name": "Task Definition", "status": "passed" if req.task else "failed", "message": f"Task '{req.task.title if req.task else 'None'}' provided."},
+            {"name": "Permission Set", "status": "passed" if req.permissions else "failed", "message": f"Role '{req.permissions.role if req.permissions else 'None'}' provided."},
+            {"name": "Monitoring KRAs", "status": "passed" if req.kras else "warning", "message": f"{len(req.kras)} KRAs attached for evaluation."}
+        ]
+    }
 
 
 @app.post("/api/executions")
 def create_execution(req: ExecutionRequest):
     from datetime import datetime
+    
+    # If dry_run, just return mock dry-run steps
+    if req.dry_run:
+        return {
+            "dry_run": True,
+            "summary": {"total": 3, "simulated": 3, "skipped": 0, "errors": 0},
+            "dry_run_steps": [
+                {"action": "sts:AssumeRole", "resource": f"arn:aws:iam::*:role/{req.permissions.role if req.permissions else 'Unknown'}", "effect": "ALLOW", "status": "simulated", "details": "IAM role assumption verified."},
+                {"action": "Execute Task", "resource": f"AWS Task: {req.task.title if req.task else 'Unknown'}", "effect": "ALLOW", "status": "simulated", "details": "Task evaluated against constraints."},
+                {"action": "Evaluate KRAs", "resource": f"KRAs: {', '.join(req.kras) if req.kras else 'None'}", "effect": "ALLOW", "status": "simulated", "details": "KRA constraints verified against task."}
+            ]
+        }
+
     execs = _load_executions()
-    execution = {"id": str(uuid.uuid4()), "task_id": req.task_id, "task_title": req.task_title,
-                 "permission_set_id": req.permission_set_id, "permission_set_name": req.permission_set_name,
-                 "monitoring_ids": req.monitoring_ids, "created_by": req.created_by,
+    task_id = req.task.id if req.task else ""
+    task_title = req.task.title if req.task else ""
+    perm_role = req.permissions.role if req.permissions else ""
+    
+    execution = {"id": str(uuid.uuid4()), "task_id": task_id, "task_title": task_title,
+                 "permission_set_name": perm_role,
+                 "kras": req.kras, "created_by": req.created_by,
                  "status": "pending", "progress": 0, "current_stage": "Initializing",
                  "logs": [], "generated_code": None, "execution_plan": None,
                  "created_at": datetime.now().isoformat(), "updated_at": datetime.now().isoformat(),

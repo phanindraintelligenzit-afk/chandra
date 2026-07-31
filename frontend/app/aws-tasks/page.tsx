@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Plus, Search, Edit3, Trash2, Play, X, Check, AlertTriangle, Server } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
 
@@ -33,6 +34,7 @@ export default function AwsTasksPage() {
   const [editingTask, setEditingTask] = useState<AwsTask | null>(null);
   const [form, setForm] = useState({ title: "", description: "", resource_type: "S3", operation: "", resource_config: "" });
   const [currentUser, setCurrentUser] = useState("nagendra");
+  const router = useRouter();
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -98,6 +100,11 @@ export default function AwsTasksPage() {
   const openEdit = (task: AwsTask) => {
     setEditingTask(task);
     setForm({ title: task.title, description: task.description, resource_type: task.resource_type, operation: task.operation || "", resource_config: task.resource_config || "" });
+  };
+
+  const executeTask = (task: AwsTask) => {
+    const taskPayload = encodeURIComponent(JSON.stringify(task));
+    router.push(`/execution-review?task=${taskPayload}`);
   };
 
   return (
@@ -193,6 +200,7 @@ export default function AwsTasksPage() {
                       <Trash2 className="w-4 h-4" />
                     </button>
                     <button
+                      onClick={() => executeTask(task)}
                       className="p-2 text-gray-500 hover:text-green-400 hover:bg-gray-800 rounded-lg transition-all"
                       title="Execute"
                     >
