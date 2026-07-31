@@ -3495,7 +3495,7 @@ Rules:
                 )
             )
             aws_ctx = ""
-            aws_ctx = self._gather_aws_context(force_refresh=True, action_text=_action_scope_text) if not answers else ""
+            aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
         self._banner("UNIFIED AGENT PIPELINE STARTED")
