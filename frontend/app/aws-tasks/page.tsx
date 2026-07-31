@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Plus, Search, Edit3, Trash2, Play, X, Check, AlertTriangle, Server } from "lucide-react";
+import { Plus, Search, Edit3, Trash2, Play, X, Check, AlertTriangle, Server, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useOnboarding } from "@/store/OnboardingContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
 
@@ -24,6 +25,30 @@ const RESOURCE_ICONS: Record<string, string> = {
   RDS: "🗃️", IAM: "🔑", DynamoDB: "📊", SQS: "📨", SNS: "🔔",
   ECS: "🐳", ELB: "⚖️", CloudFront: "🌍", ElastiCache: "⚡", APIGateway: "🔌",
 };
+
+function WorkflowNextStep({ stepKey, nextHref, label }: { stepKey: string; nextHref: string; label: string }) {
+  const { stepsCompleted, completeStep, dashboardOpened } = useOnboarding();
+  const router = useRouter();
+  if (dashboardOpened || stepsCompleted.includes(stepKey)) return null;
+  return (
+    <div className="mt-8 p-4 bg-gray-900 border border-emerald-800/40 rounded-xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium text-emerald-400">Step complete?</p>
+          <p className="text-xs text-gray-500 mt-0.5">Mark this step as finished and proceed to the next one.</p>
+        </div>
+        <button
+          onClick={() => { completeStep(stepKey); router.push(nextHref); }}
+          className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-sm transition-all"
+        >
+          <Check className="w-4 h-4" />
+          {label}
+          <ArrowRight className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function AwsTasksPage() {
   const [tasks, setTasks] = useState<AwsTask[]>([]);
@@ -175,43 +200,24 @@ export default function AwsTasksPage() {
                       <h3 className="text-lg font-semibold text-white">{task.title}</h3>
                       <p className="text-sm text-gray-400 mt-1">{task.description}</p>
                       <div className="flex items-center gap-3 mt-2">
-                        <span className="text-xs bg-gray-800 text-blue-400 px-2 py-0.5 rounded-full">
-                          {task.resource_type}
-                        </span>
-                        <span className="text-xs text-gray-500">
-                          Updated: {new Date(task.updated_at).toLocaleDateString()}
-                        </span>
+                        <span className="text-xs bg-gray-800 text-blue-400 px-2 py-0.5 rounded-full">{task.resource_type}</span>
+                        <span className="text-xs text-gray-500">Updated: {new Date(task.updated_at).toLocaleDateString()}</span>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openEdit(task)}
-                      className="p-2 text-gray-500 hover:text-blue-400 hover:bg-gray-800 rounded-lg transition-all"
-                      title="Edit"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => deleteTask(task.id)}
-                      className="p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-all"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => executeTask(task)}
-                      className="p-2 text-gray-500 hover:text-green-400 hover:bg-gray-800 rounded-lg transition-all"
-                      title="Execute"
-                    >
-                      <Play className="w-4 h-4" />
-                    </button>
+                    <button onClick={() => openEdit(task)} className="p-2 text-gray-500 hover:text-blue-400 hover:bg-gray-800 rounded-lg transition-all" title="Edit"><Edit3 className="w-4 h-4" /></button>
+                    <button onClick={() => deleteTask(task.id)} className="p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-all" title="Delete"><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={() => executeTask(task)} className="p-2 text-gray-500 hover:text-green-400 hover:bg-gray-800 rounded-lg transition-all" title="Execute"><Play className="w-4 h-4" /></button>
                   </div>
                 </div>
               </motion.div>
             ))}
           </div>
         )}
+
+        {/* Workflow: Next Step */}
+        <WorkflowNextStep stepKey="aws-tasks" nextHref="/aws-permissions" label="Continue to AWS Permissions" />
       </div>
 
       {/* Create/Edit Modal */}
@@ -223,62 +229,28 @@ export default function AwsTasksPage() {
             className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-lg mx-4"
           >
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-white">
-                {editingTask ? "Edit Task" : "Create New AWS Task"}
-              </h2>
-              <button onClick={() => { setShowCreate(false); setEditingTask(null); }} className="text-gray-500 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <h2 className="text-xl font-semibold text-white">{editingTask ? "Edit Task" : "Create New AWS Task"}</h2>
+              <button onClick={() => { setShowCreate(false); setEditingTask(null); }} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-1">Title</label>
-                <input
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  placeholder="e.g. Create S3 bucket for logs"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Create S3 bucket for logs" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-1">Description</label>
-                <textarea
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="Describe what this task does..."
-                  rows={3}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Describe what this task does..." rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-1">Resource Type</label>
-                <select
-                  value={form.resource_type}
-                  onChange={(e) => setForm({ ...form, resource_type: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {["S3", "EC2", "VPC", "Lambda", "CloudWatch", "RDS", "IAM", "DynamoDB", "SQS", "SNS", "ECS", "ELB", "CloudFront", "ElastiCache", "APIGateway"].map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
+                <select value={form.resource_type} onChange={(e) => setForm({ ...form, resource_type: e.target.value })} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  {["S3", "EC2", "VPC", "Lambda", "CloudWatch", "RDS", "IAM", "DynamoDB", "SQS", "SNS", "ECS", "ELB", "CloudFront", "ElastiCache", "APIGateway"].map((t) => (<option key={t} value={t}>{t}</option>))}
                 </select>
               </div>
             </div>
-
             <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-800">
-              <button
-                onClick={() => { setShowCreate(false); setEditingTask(null); }}
-                className="px-5 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={editingTask ? updateTask : createTask}
-                disabled={!form.title.trim()}
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg transition-all ${
-                  form.title.trim() ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-gray-800 text-gray-500 cursor-not-allowed"
-                }`}
-              >
+              <button onClick={() => { setShowCreate(false); setEditingTask(null); }} className="px-5 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">Cancel</button>
+              <button onClick={editingTask ? updateTask : createTask} disabled={!form.title.trim()} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg transition-all ${form.title.trim() ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-gray-800 text-gray-500 cursor-not-allowed"}`}>
                 <Check className="w-4 h-4" />
                 {editingTask ? "Update Task" : "Create Task"}
               </button>
