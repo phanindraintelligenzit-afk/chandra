@@ -144,19 +144,15 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Run alembic migrations on startup
-    # logger.info("Running database migrations (alembic upgrade head)...")
-    # try:
-    #     from alembic.config import Config
-    #     from alembic import command
-    #     alembic_cfg = Config("alembic.ini")
-    #     # Prevent Alembic from configuring logging and wiping out our structlog/fastapi setup
-    #     alembic_cfg.attributes['configure_logger'] = False
-    #     command.upgrade(alembic_cfg, "head")
-    #     logger.info("Database migrations applied successfully.")
-    # except Exception as e:
-    #     logger.error(f"Failed to run database migrations: {e}")
+    # Startup: nothing to do (agents are initialized at module level)
     yield
+    # ── Graceful shutdown ──────────────────────────────────────────
+    logger.info("Shutting down Chandra backend...")
+    # 1. Stop accepting new background tasks
+    _thread_pool.shutdown(wait=False, cancel_futures=True)
+    # 2. Stop the background async event loop
+    _bg_loop.call_soon_threadsafe(_bg_loop.stop)
+    logger.info("Shutdown complete.")
 
 app = FastAPI(
     title="AWS Observability Agent API",

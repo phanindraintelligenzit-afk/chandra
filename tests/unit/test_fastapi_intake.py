@@ -7,7 +7,6 @@ access happens in these tests beyond app import.
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -22,8 +21,9 @@ import pytest
 
 @pytest.fixture(scope="module")
 def client() -> Iterator[TestClient]:
-    import fastapi_app  # noqa: PLC0415 — lazy import to avoid broken dependency chain
-    from fastapi.testclient import TestClient  # noqa: PLC0415
+    import fastapi_app
+    from fastapi.testclient import TestClient
+
     with TestClient(fastapi_app.app) as test_client:
         yield test_client
 

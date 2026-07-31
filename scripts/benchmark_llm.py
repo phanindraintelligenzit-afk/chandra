@@ -220,6 +220,20 @@ def main() -> int:
 
     tickets = load_fixture(args.fixture, args.limit)
     llm = get_provider(args.provider)
+
+    # ── Pre-flight health check ────────────────────────────────────
+    logger.info("benchmark.preflight", provider=llm.provider)
+    if not llm.health_check():
+        import socket
+        try:
+            host = str(llm.params.__dict__.get('timeout_s', 'unknown'))
+        except Exception:
+            host = ""
+        print(f"\nERROR: LLM provider '{llm.provider}' is not reachable.")
+        print(f"  Run a health check manually:  python -c 'from src.chandra.llm.providers import get_provider; p = get_provider(\"{llm.provider}\"); print(\"healthy:\", p.health_check())'")
+        print(f"  If using vLLM, verify the GPU instance is running:\n    curl http://<host>:8000/v1/models\n")
+        return 1
+
     logger.info("benchmark.start", provider=llm.provider, tickets=len(tickets))
 
     report = BenchmarkReport(provider=llm.provider, total=len(tickets))

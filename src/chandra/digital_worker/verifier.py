@@ -33,18 +33,18 @@ class SecurityError(Exception):
 
 
 class SecurityVisitor(ast.NodeVisitor):
-    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+    def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.name.split(".")[0] in FORBIDDEN_MODULES:
                 raise SecurityError(f"Import of {alias.name} is forbidden by policy.")
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module and node.module.split(".")[0] in FORBIDDEN_MODULES:
             raise SecurityError(f"Import from {node.module} is forbidden by policy.")
         self.generic_visit(node)
 
-    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+    def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_FUNCTIONS:
             raise SecurityError(f"Function {node.func.id}() is forbidden by policy.")
         self.generic_visit(node)

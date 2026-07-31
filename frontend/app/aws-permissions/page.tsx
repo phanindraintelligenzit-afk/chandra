@@ -233,7 +233,7 @@ export default function AwsPermissionsPage() {
       const res = await fetch(
         `${API_BASE}/api/permission-sets/actions?aws_service=${encodeURIComponent(service)}`
       );
-      if (res.ok) setAvailableActions(await res.json());
+      if (res.ok) setAvailableActions((await res.json()).actions || []);
     } catch (e) {
       console.error("Failed to fetch actions:", e);
       setAvailableActions([]);
@@ -246,7 +246,7 @@ export default function AwsPermissionsPage() {
   const fetchResourceArns = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/permission-sets/resource-arns`);
-      if (res.ok) setResourceArns(await res.json());
+      if (res.ok) setResourceArns((await res.json()).templates?.map((t: {value: string}) => t.value) || []);
     } catch (e) {
       console.error("Failed to fetch resource ARNs:", e);
     }

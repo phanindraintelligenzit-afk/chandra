@@ -6,7 +6,6 @@ before sending prompts to avoid silent truncation.
 """
 
 import re
-from typing import Optional
 
 # Approximate token ratio (~4 chars per token for English)
 CHARS_PER_TOKEN = 4.0

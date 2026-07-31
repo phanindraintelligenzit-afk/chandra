@@ -1133,6 +1133,8 @@ class ExecutionAgents:
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
         if not any(isinstance(h, logging.FileHandler) and h.baseFilename == fh.baseFilename for h in self.logger.handlers):
             self.logger.addHandler(fh)
+        else:
+            fh.close()  # Don't leak the FD if handler already exists
             
         self.logger.info("Initialising ExecutionAgents (max_iterations=%d, job_id=%s)", max_iterations, self.job_id)
         try:
