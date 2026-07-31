@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         alias="BEDROCK_MODEL_ID",
     )
 
-    llm_provider: str | None = Field(default="bedrock", alias="LLM_PROVIDER")
+
     openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model_name: str | None = Field(default=None, alias="OPENAI_MODEL_NAME")

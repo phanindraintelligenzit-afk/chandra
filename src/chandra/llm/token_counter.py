@@ -6,6 +6,7 @@ before sending prompts to avoid silent truncation.
 """
 
 import re
+from typing import Any
 
 # Approximate token ratio (~4 chars per token for English)
 CHARS_PER_TOKEN = 4.0
@@ -35,7 +36,7 @@ def check_prompt_budget(
     prompt: str,
     max_tokens: int = 12000,
     output_budget: int = 4000,
-) -> dict:
+) -> dict[str, Any]:
     """Check if a prompt fits within the context budget.
 
     Returns a dict with:
@@ -67,7 +68,10 @@ def check_prompt_budget(
         "estimated_prompt_tokens": prompt_tokens,
         "estimated_total_tokens": total_estimated,
         "max_allowed": max_allowed,
-        "message": f"Prompt fits: ~{prompt_tokens} + {output_budget} = ~{total_estimated} ≤ {max_allowed}",
+        "message": (
+            f"Prompt fits: ~{prompt_tokens} + {output_budget} = "
+            f"~{total_estimated} ≤ {max_allowed}"
+        ),
     }
 
 

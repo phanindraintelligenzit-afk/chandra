@@ -1,0 +1,10 @@
+database/
+logs/
+*.log
+logs.txt
+agent_memory.json
+customKras.json
+digital_worker_config.json
+aws_tasks.json
+aws_permissions.json
+executions.json

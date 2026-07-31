@@ -26,7 +26,7 @@ def configure_logging(log_level: str | None = None) -> None:
     level = getattr(logging, level_str, logging.INFO)
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stderr,
+        stream=sys.stdout,
         level=level,
     )
 

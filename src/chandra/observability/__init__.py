@@ -90,8 +90,8 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                             f"node {node_name} exceeded timeout of {effective_timeout}s"
                         )
 
-                    previous_handler = signal.signal(signal.SIGALRM, _on_alarm)
-                    signal.setitimer(signal.ITIMER_REAL, float(effective_timeout))
+                    previous_handler = signal.signal(signal.SIGALRM, _on_alarm)  # type: ignore[attr-defined]
+                    signal.setitimer(signal.ITIMER_REAL, float(effective_timeout))  # type: ignore[attr-defined]
                     alarm_armed = True
                 try:
                     logger.info("node.start", extra={"node": node_name})
@@ -117,8 +117,8 @@ def traced_node(  # noqa: PLR0915  # sync+async wrappers inline
                     raise
                 finally:
                     if alarm_armed:
-                        signal.setitimer(signal.ITIMER_REAL, 0)
-                        signal.signal(signal.SIGALRM, previous_handler)
+                        signal.setitimer(signal.ITIMER_REAL, 0)  # type: ignore[attr-defined]
+                        signal.signal(signal.SIGALRM, previous_handler)  # type: ignore[attr-defined]
 
             return sync_wrapper
 

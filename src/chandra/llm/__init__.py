@@ -82,7 +82,9 @@ def get_llm(model: str | None = None, **kwargs: Any) -> Any:
     return build_chat_model(model=model, **kwargs)
 
 
-def get_llm_with_tools(tools: list | None = None, model: str | None = None, **kwargs: Any) -> Any:
+def get_llm_with_tools(
+    tools: list[Any] | None = None, model: str | None = None, **kwargs: Any
+) -> Any:
     """Get a chat model bound to tools. For tool-calling agents."""
     llm = build_chat_model(model=model, **kwargs)
     if tools:

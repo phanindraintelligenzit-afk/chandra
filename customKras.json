@@ -18,5 +18,10 @@
     "name": "Deploy Production RDS Instance with Terraform",
     "description": "Deploy a single-AZ PostgreSQL RDS instance (REL-001) tagged as production in the default VPC using Terraform. This provisions the database infrastructure with storage encryption enabled and applies production environment tags.",
     "selected": true
+  },
+  {
+    "name": "see",
+    "description": "fsds",
+    "selected": true
   }
 ]

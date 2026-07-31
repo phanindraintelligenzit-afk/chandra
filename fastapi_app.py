@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
     # ── Graceful shutdown ──────────────────────────────────────────
     logger.info("Shutting down Chandra backend...")
     # 1. Stop accepting new background tasks
-    _thread_pool.shutdown(wait=False, cancel_futures=True)
+    _thread_pool.shutdown(wait=True, cancel_futures=True)
     # 2. Stop the background async event loop
     _bg_loop.call_soon_threadsafe(_bg_loop.stop)
     logger.info("Shutdown complete.")

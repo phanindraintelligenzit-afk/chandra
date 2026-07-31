@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 # fastapi_app is imported lazily below to avoid pulling in the
 # digitalworker_agents dependency chain at module-collection time
