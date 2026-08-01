@@ -6,7 +6,7 @@ import { useOnboarding } from "@/store/OnboardingContext";
 
 export default function Home() {
   const router = useRouter();
-  const { hydrated, onboardingCompleted, stepsCompleted, dashboardOpened } = useOnboarding();
+  const { hydrated, onboardingCompleted, dashboardOpened } = useOnboarding();
 
   useEffect(() => {
     if (!hydrated) return;
@@ -15,24 +15,13 @@ export default function Home() {
       // Dashboard is open — go to dashboard
       router.replace("/dashboard");
     } else if (!onboardingCompleted) {
-      // Not onboarded yet — start onboarding
+      // Not onboarded yet — start onboarding (all steps in one flow)
       router.replace("/onboarding");
-    } else if (!stepsCompleted.includes("aws-tasks")) {
-      // Onboarding done — next step: AWS Tasks
-      router.replace("/aws-tasks");
-    } else if (!stepsCompleted.includes("aws-permissions")) {
-      router.replace("/aws-permissions");
-    } else if (!stepsCompleted.includes("execution-review")) {
-      router.replace("/execution-review");
-    } else if (!stepsCompleted.includes("deployment")) {
-      router.replace("/deployment");
-    } else if (!stepsCompleted.includes("execution-history")) {
-      router.replace("/executions");
     } else {
-      // All steps done — show dashboard
+      // Onboarding complete but dashboard not opened yet
       router.replace("/dashboard");
     }
-  }, [hydrated, onboardingCompleted, stepsCompleted, dashboardOpened, router]);
+  }, [hydrated, onboardingCompleted, dashboardOpened, router]);
 
   return null;
 }

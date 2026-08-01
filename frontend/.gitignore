@@ -14,3 +14,5 @@ pnpm-debug.log*
 
 next-dev.log
 next-dev.err.log
+next-env.d.ts
+tsconfig.tsbuildinfo

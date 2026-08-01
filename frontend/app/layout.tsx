@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import Providers from "@/app/providers";
-import AppNav from "@/components/AppNav";
 
 export const metadata: Metadata = {
   title: "Chandra | L3 Digital Cloud Engineer",
@@ -20,8 +19,7 @@ export default function RootLayout({
       <body>
         <Providers>
           <div className="flex min-h-screen bg-gray-950">
-            <AppNav />
-            <main className="flex-1 min-w-0">
+                      <main className="flex-1 min-w-0">
               {children}
             </main>
           </div>
