@@ -7,16 +7,18 @@ import { useOnboarding } from "@/store/OnboardingContext";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { hydrated, onboardingCompleted, agentName } = useOnboarding();
+  const { hydrated, onboardingCompleted, dashboardOpened, agentName } = useOnboarding();
 
   useEffect(() => {
     if (!hydrated) return;
-    if (!onboardingCompleted || !agentName) {
+    // Strict guard: must have completed onboarding AND dashboard must have been explicitly opened
+    // (dashboardOpened is set to true by openDashboard() only after deployment reaches 100%)
+    if (!onboardingCompleted || !dashboardOpened || !agentName) {
       router.replace("/onboarding");
     }
-  }, [hydrated, onboardingCompleted, agentName, router]);
+  }, [hydrated, onboardingCompleted, dashboardOpened, agentName, router]);
 
-  if (!hydrated || !onboardingCompleted || !agentName) {
+  if (!hydrated || !onboardingCompleted || !dashboardOpened || !agentName) {
     return null;
   }
 

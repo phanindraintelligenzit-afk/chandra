@@ -1092,3 +1092,72 @@ export async function saveCustomKras(
     signal: options.signal
   });
 }
+
+
+// ── AWS Tasks & Permissions ───────────────────────────────────────────────────
+export type AwsTaskItem = {
+  id: string;
+  title: string;
+  description: string;
+  resource_type: string;
+  operation: string;
+  resource_config: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AwsTaskResponse = {
+  status: string;
+  count: number;
+  tasks: AwsTaskItem[];
+};
+
+export type AwsPermissionItem = {
+  id: string;
+  name: string;
+  description: string;
+  aws_service: string;
+  actions: string[];
+  resource_arn: string;
+  is_predefined: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AwsPermissionResponse = {
+  status: string;
+  count: number;
+  permissions: AwsPermissionItem[];
+};
+
+export async function fetchAwsTasks(
+  options: { signal?: AbortSignal } = {}
+): Promise<AwsTaskItem[]> {
+  try {
+    const response = await request<AwsTaskResponse>("/awsTasks", {
+      method: "GET",
+      signal: options.signal
+    });
+    return Array.isArray(response?.tasks) ? response.tasks : [];
+  } catch (error) {
+    console.error("Failed to fetch aws_tasks.json:", error);
+    return [];
+  }
+}
+
+export async function fetchAwsPermissions(
+  options: { signal?: AbortSignal } = {}
+): Promise<AwsPermissionItem[]> {
+  try {
+    const response = await request<AwsPermissionResponse>("/awsPermissions", {
+      method: "GET",
+      signal: options.signal
+    });
+    return Array.isArray(response?.permissions) ? response.permissions : [];
+  } catch (error) {
+    console.error("Failed to fetch aws_permissions.json:", error);
+    return [];
+  }
+}

@@ -367,6 +367,321 @@ def put_custom_kras(payload: CustomKrasPayload):
         logger.exception("Failed to write customKras.json: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
+
+        # ── AWS Tasks & Permissions (JSON-backed) ──────────────────────────────────────
+        AWS_TASKS_FILE = Path(__file__).parent / "aws_tasks.json"
+        AWS_PERMISSIONS_FILE = Path(__file__).parent / "aws_permissions.json"
+
+
+        def _read_json_file(filepath: Path, default: list | dict | None = None):
+            """Read a JSON file from disk. Returns `default` (empty list) if missing/invalid."""
+            try:
+                if not filepath.exists():
+                    return default if default is not None else []
+                with filepath.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data if isinstance(data, (list, dict)) else (default if default is not None else [])
+            except Exception as exc:
+                logger.exception("Failed to read %s: %s", filepath.name, exc)
+                return default if default is not None else []
+
+
+@app.get("/awsTasks")
+def get_aws_tasks():
+    """Read all AWS tasks from aws_tasks.json."""
+    entries = _read_json_file(AWS_TASKS_FILE)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(entries) if isinstance(entries, list) else 0, "tasks": entries},
+    )
+
+
+@app.get("/awsPermissions")
+def get_aws_permissions():
+    """Read all AWS permissions from aws_permissions.json."""
+    entries = _read_json_file(AWS_PERMISSIONS_FILE)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(entries) if isinstance(entries, list) else 0, "permissions": entries},
+    )
+
+
+
+
+# ── AWS Tasks CRUD (direct JSON-backed) ──────────────────────────────────────
+AWS_TASKS_CRUD_FILE = Path(__file__).parent / "aws_tasks.json"
+_tasks_lock = threading.Lock()
+
+
+def _load_tasks_from_disk() -> list:
+    try:
+        if not AWS_TASKS_CRUD_FILE.exists():
+            return []
+        with AWS_TASKS_CRUD_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_tasks.json: %s", exc)
+        return []
+
+
+def _save_tasks_to_disk(tasks: list) -> int:
+    with _tasks_lock:
+        try:
+            tmp = AWS_TASKS_CRUD_FILE.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(tasks, f, indent=2, ensure_ascii=False)
+            tmp.replace(AWS_TASKS_CRUD_FILE)
+            return len(tasks)
+        except Exception as exc:
+            logger.exception("Failed to write aws_tasks.json: %s", exc)
+            return 0
+
+
+@app.get("/aws-tasks")
+def list_aws_tasks(search: str = "", resource_type: str = ""):
+    tasks = _load_tasks_from_disk()
+    if search:
+        search_lower = search.lower()
+        tasks = [t for t in tasks if search_lower in t.get("title", "").lower() or search_lower in t.get("description", "").lower()]
+    if resource_type:
+        tasks = [t for t in tasks if t.get("resource_type", "").lower() == resource_type.lower()]
+    return JSONResponse(content=tasks)
+
+
+@app.post("/aws-tasks")
+def create_aws_task(payload: dict):
+    tasks = _load_tasks_from_disk()
+    new_task = {
+        "id": str(uuid.uuid4()),
+        "title": payload.get("title", ""),
+        "description": payload.get("description", ""),
+        "resource_type": payload.get("resource_type", "S3"),
+        "operation": payload.get("operation", ""),
+        "resource_config": payload.get("resource_config", ""),
+        "created_by": payload.get("created_by", "system"),
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    tasks.append(new_task)
+    _save_tasks_to_disk(tasks)
+    return JSONResponse(status_code=201, content=new_task)
+
+
+@app.put("/aws-tasks/{task_id}")
+def update_aws_task(task_id: str, payload: dict):
+    tasks = _load_tasks_from_disk()
+    for t in tasks:
+        if t["id"] == task_id:
+            t["title"] = payload.get("title", t["title"])
+            t["description"] = payload.get("description", t["description"])
+            t["resource_type"] = payload.get("resource_type", t["resource_type"])
+            t["operation"] = payload.get("operation", t.get("operation", ""))
+            t["resource_config"] = payload.get("resource_config", t.get("resource_config", ""))
+            t["updated_at"] = datetime.now().isoformat()
+            _save_tasks_to_disk(tasks)
+            return JSONResponse(content=t)
+    return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+
+@app.delete("/aws-tasks/{task_id}")
+def delete_aws_task(task_id: str):
+    tasks = _load_tasks_from_disk()
+    updated = [t for t in tasks if t["id"] != task_id]
+    if len(updated) == len(tasks):
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    _save_tasks_to_disk(updated)
+    return JSONResponse(status_code=200, content={"ok": True, "deleted": task_id})
+
+
+# ── Permission Sets CRUD (direct JSON-backed) ────────────────────────────────
+PERMISSION_SETS_FILE = Path(__file__).parent / "aws_permissions.json"
+_perms_lock = threading.Lock()
+
+
+def _load_permissions_from_disk() -> list:
+    try:
+        if not PERMISSION_SETS_FILE.exists():
+            return []
+        with PERMISSION_SETS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_permissions.json: %s", exc)
+        return []
+
+
+def _save_permissions_to_disk(perms: list) -> int:
+    with _perms_lock:
+        try:
+            tmp = PERMISSION_SETS_FILE.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(perms, f, indent=2, ensure_ascii=False)
+            tmp.replace(PERMISSION_SETS_FILE)
+            return len(perms)
+        except Exception as exc:
+            logger.exception("Failed to write aws_permissions.json: %s", exc)
+            return 0
+
+
+PERMISSION_ACTION_CATALOG = {
+    "S3": [
+        {"action": "s3:ListBucket", "description": "List objects in a bucket"},
+        {"action": "s3:GetObject", "description": "Read objects from S3"},
+        {"action": "s3:PutObject", "description": "Upload objects to S3"},
+        {"action": "s3:DeleteObject", "description": "Delete objects from S3"},
+        {"action": "s3:GetBucketPolicy", "description": "Read bucket policies"},
+        {"action": "s3:PutBucketPolicy", "description": "Modify bucket policies"},
+        {"action": "s3:CreateBucket", "description": "Create new S3 buckets"},
+        {"action": "s3:DeleteBucket", "description": "Delete S3 buckets"},
+    ],
+    "EC2": [
+        {"action": "ec2:DescribeInstances", "description": "List EC2 instances"},
+        {"action": "ec2:RunInstances", "description": "Launch EC2 instances"},
+        {"action": "ec2:StartInstances", "description": "Start EC2 instances"},
+        {"action": "ec2:StopInstances", "description": "Stop EC2 instances"},
+        {"action": "ec2:TerminateInstances", "description": "Terminate EC2 instances"},
+        {"action": "ec2:CreateSecurityGroup", "description": "Create security groups"},
+        {"action": "ec2:AuthorizeSecurityGroupIngress", "description": "Add ingress rules"},
+        {"action": "ec2:DescribeVolumes", "description": "List EBS volumes"},
+    ],
+    "VPC": [
+        {"action": "ec2:CreateVpc", "description": "Create VPCs"},
+        {"action": "ec2:CreateSubnet", "description": "Create subnets"},
+        {"action": "ec2:CreateRouteTable", "description": "Create route tables"},
+        {"action": "ec2:CreateInternetGateway", "description": "Create internet gateways"},
+        {"action": "ec2:DescribeVpcs", "description": "List VPCs"},
+        {"action": "ec2:DescribeSubnets", "description": "List subnets"},
+    ],
+    "Lambda": [
+        {"action": "lambda:CreateFunction", "description": "Create Lambda functions"},
+        {"action": "lambda:InvokeFunction", "description": "Invoke Lambda functions"},
+        {"action": "lambda:UpdateFunctionCode", "description": "Update function code"},
+        {"action": "lambda:DeleteFunction", "description": "Delete Lambda functions"},
+        {"action": "lambda:ListFunctions", "description": "List Lambda functions"},
+    ],
+    "IAM": [
+        {"action": "iam:CreateRole", "description": "Create IAM roles"},
+        {"action": "iam:AttachRolePolicy", "description": "Attach managed policies"},
+        {"action": "iam:PutRolePolicy", "description": "Create inline policies"},
+        {"action": "iam:GetRole", "description": "Read IAM roles"},
+        {"action": "iam:ListRoles", "description": "List all roles"},
+    ],
+    "CloudWatch": [
+        {"action": "cloudwatch:PutMetricData", "description": "Publish custom metrics"},
+        {"action": "cloudwatch:GetMetricData", "description": "Query metrics"},
+        {"action": "cloudwatch:DescribeAlarms", "description": "List alarms"},
+        {"action": "cloudwatch:PutMetricAlarm", "description": "Create alarms"},
+        {"action": "cloudwatch:ListDashboards", "description": "List dashboards"},
+    ],
+    "ALL": [
+        {"action": "s3:Get*", "description": "All S3 read operations"},
+        {"action": "s3:List*", "description": "All S3 list operations"},
+        {"action": "ec2:Describe*", "description": "All EC2 describe operations"},
+        {"action": "cloudwatch:Describe*", "description": "All CloudWatch read operations"},
+        {"action": "cloudwatch:Get*", "description": "All CloudWatch get operations"},
+        {"action": "iam:Get*", "description": "All IAM get operations"},
+        {"action": "iam:List*", "description": "All IAM list operations"},
+    ],
+}
+
+DEFAULT_PERMISSION_ACTIONS = [
+    {"action": "*", "description": "All actions for this service"},
+]
+
+
+@app.get("/api/permission-sets")
+def list_permission_sets(search: str = "", aws_service: str = ""):
+    perms = _load_permissions_from_disk()
+    if search:
+        search_lower = search.lower()
+        perms = [p for p in perms if search_lower in p.get("name", "").lower() or search_lower in p.get("description", "").lower()]
+    if aws_service:
+        perms = [p for p in perms if p.get("aws_service", "").lower() == aws_service.lower()]
+    return JSONResponse(content=perms)
+
+
+@app.get("/api/permission-sets/{perm_id}")
+def get_permission_set(perm_id: str):
+    perms = _load_permissions_from_disk()
+    for p in perms:
+        if p["id"] == perm_id:
+            return JSONResponse(content=p)
+    return JSONResponse(status_code=404, content={"error": "Permission set not found"})
+
+
+@app.post("/api/permission-sets")
+def create_permission_set(payload: dict):
+    perms = _load_permissions_from_disk()
+    new_perm = {
+        "id": str(uuid.uuid4()),
+        "name": payload.get("name", ""),
+        "description": payload.get("description", ""),
+        "aws_service": payload.get("aws_service", "S3"),
+        "actions": payload.get("actions", []),
+        "resource_arn": payload.get("resource_arn", "*"),
+        "created_by": payload.get("created_by", "system"),
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    perms.append(new_perm)
+    _save_permissions_to_disk(perms)
+    return JSONResponse(status_code=201, content=new_perm)
+
+
+@app.put("/api/permission-sets/{perm_id}")
+def update_permission_set(perm_id: str, payload: dict):
+    perms = _load_permissions_from_disk()
+    for p in perms:
+        if p["id"] == perm_id:
+            p["name"] = payload.get("name", p["name"])
+            p["description"] = payload.get("description", p["description"])
+            p["aws_service"] = payload.get("aws_service", p["aws_service"])
+            p["actions"] = payload.get("actions", p["actions"])
+            p["resource_arn"] = payload.get("resource_arn", p["resource_arn"])
+            p["updated_at"] = datetime.now().isoformat()
+            _save_permissions_to_disk(perms)
+            return JSONResponse(content=p)
+    return JSONResponse(status_code=404, content={"error": "Permission set not found"})
+
+
+@app.delete("/api/permission-sets/{perm_id}")
+def delete_permission_set(perm_id: str, user: str = ""):
+    perms = _load_permissions_from_disk()
+    target = None
+    for p in perms:
+        if p["id"] == perm_id:
+            target = p
+            break
+    if not target:
+        return JSONResponse(status_code=404, content={"error": "Permission set not found"})
+    admin_users = ["admin@chandra.io", "superadmin@chandra.io"]
+    if user and user != target.get("created_by", "") and user not in admin_users:
+        return JSONResponse(status_code=403, content={"error": "Not authorized to delete this permission set"})
+    updated = [p for p in perms if p["id"] != perm_id]
+    _save_permissions_to_disk(updated)
+    return JSONResponse(content={"ok": True, "deleted": perm_id})
+
+
+@app.get("/api/permission-sets/actions")
+def get_available_actions(aws_service: str = ""):
+    actions = PERMISSION_ACTION_CATALOG.get(aws_service, DEFAULT_PERMISSION_ACTIONS)
+    return JSONResponse(content={"service": aws_service, "actions": actions})
+
+
+@app.get("/api/permission-sets/resource-arns")
+def get_resource_arn_templates():
+    templates = [
+        {"value": "*", "label": "All resources"},
+        {"value": "arn:aws:s3:::*", "label": "All S3 buckets"},
+        {"value": "arn:aws:s3:::my-bucket/*", "label": "Single S3 bucket"},
+        {"value": "arn:aws:ec2:*:*:instance/*", "label": "All EC2 instances"},
+        {"value": "arn:aws:ec2:*:*:vpc/*", "label": "All VPCs"},
+        {"value": "arn:aws:lambda:*:*:function:*", "label": "All Lambda functions"},
+        {"value": "arn:aws:iam::*:role/*", "label": "All IAM roles"},
+    ]
+    return JSONResponse(content={"templates": templates})
+
 @app.get("/logs")
 async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
     """Get recent backend logs (last 2000 stored in memory)"""
