@@ -144,15 +144,19 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: nothing to do (agents are initialized at module level)
+    # Run alembic migrations on startup
+    # logger.info("Running database migrations (alembic upgrade head)...")
+    # try:
+    #     from alembic.config import Config
+    #     from alembic import command
+    #     alembic_cfg = Config("alembic.ini")
+    #     # Prevent Alembic from configuring logging and wiping out our structlog/fastapi setup
+    #     alembic_cfg.attributes['configure_logger'] = False
+    #     command.upgrade(alembic_cfg, "head")
+    #     logger.info("Database migrations applied successfully.")
+    # except Exception as e:
+    #     logger.error(f"Failed to run database migrations: {e}")
     yield
-    # ── Graceful shutdown ──────────────────────────────────────────
-    logger.info("Shutting down Chandra backend...")
-    # 1. Stop accepting new background tasks
-    _thread_pool.shutdown(wait=True, cancel_futures=True)
-    # 2. Stop the background async event loop
-    _bg_loop.call_soon_threadsafe(_bg_loop.stop)
-    logger.info("Shutdown complete.")
 
 app = FastAPI(
     title="AWS Observability Agent API",
@@ -366,321 +370,6 @@ def put_custom_kras(payload: CustomKrasPayload):
     except Exception as exc:
         logger.exception("Failed to write customKras.json: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-
-        # ── AWS Tasks & Permissions (JSON-backed) ──────────────────────────────────────
-        AWS_TASKS_FILE = Path(__file__).parent / "aws_tasks.json"
-        AWS_PERMISSIONS_FILE = Path(__file__).parent / "aws_permissions.json"
-
-
-        def _read_json_file(filepath: Path, default: list | dict | None = None):
-            """Read a JSON file from disk. Returns `default` (empty list) if missing/invalid."""
-            try:
-                if not filepath.exists():
-                    return default if default is not None else []
-                with filepath.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return data if isinstance(data, (list, dict)) else (default if default is not None else [])
-            except Exception as exc:
-                logger.exception("Failed to read %s: %s", filepath.name, exc)
-                return default if default is not None else []
-
-
-@app.get("/awsTasks")
-def get_aws_tasks():
-    """Read all AWS tasks from aws_tasks.json."""
-    entries = _read_json_file(AWS_TASKS_FILE)
-    return JSONResponse(
-        status_code=200,
-        content={"status": "success", "count": len(entries) if isinstance(entries, list) else 0, "tasks": entries},
-    )
-
-
-@app.get("/awsPermissions")
-def get_aws_permissions():
-    """Read all AWS permissions from aws_permissions.json."""
-    entries = _read_json_file(AWS_PERMISSIONS_FILE)
-    return JSONResponse(
-        status_code=200,
-        content={"status": "success", "count": len(entries) if isinstance(entries, list) else 0, "permissions": entries},
-    )
-
-
-
-
-# ── AWS Tasks CRUD (direct JSON-backed) ──────────────────────────────────────
-AWS_TASKS_CRUD_FILE = Path(__file__).parent / "aws_tasks.json"
-_tasks_lock = threading.Lock()
-
-
-def _load_tasks_from_disk() -> list:
-    try:
-        if not AWS_TASKS_CRUD_FILE.exists():
-            return []
-        with AWS_TASKS_CRUD_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.exception("Failed to read aws_tasks.json: %s", exc)
-        return []
-
-
-def _save_tasks_to_disk(tasks: list) -> int:
-    with _tasks_lock:
-        try:
-            tmp = AWS_TASKS_CRUD_FILE.with_suffix(".tmp")
-            with tmp.open("w", encoding="utf-8") as f:
-                json.dump(tasks, f, indent=2, ensure_ascii=False)
-            tmp.replace(AWS_TASKS_CRUD_FILE)
-            return len(tasks)
-        except Exception as exc:
-            logger.exception("Failed to write aws_tasks.json: %s", exc)
-            return 0
-
-
-@app.get("/aws-tasks")
-def list_aws_tasks(search: str = "", resource_type: str = ""):
-    tasks = _load_tasks_from_disk()
-    if search:
-        search_lower = search.lower()
-        tasks = [t for t in tasks if search_lower in t.get("title", "").lower() or search_lower in t.get("description", "").lower()]
-    if resource_type:
-        tasks = [t for t in tasks if t.get("resource_type", "").lower() == resource_type.lower()]
-    return JSONResponse(content=tasks)
-
-
-@app.post("/aws-tasks")
-def create_aws_task(payload: dict):
-    tasks = _load_tasks_from_disk()
-    new_task = {
-        "id": str(uuid.uuid4()),
-        "title": payload.get("title", ""),
-        "description": payload.get("description", ""),
-        "resource_type": payload.get("resource_type", "S3"),
-        "operation": payload.get("operation", ""),
-        "resource_config": payload.get("resource_config", ""),
-        "created_by": payload.get("created_by", "system"),
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    tasks.append(new_task)
-    _save_tasks_to_disk(tasks)
-    return JSONResponse(status_code=201, content=new_task)
-
-
-@app.put("/aws-tasks/{task_id}")
-def update_aws_task(task_id: str, payload: dict):
-    tasks = _load_tasks_from_disk()
-    for t in tasks:
-        if t["id"] == task_id:
-            t["title"] = payload.get("title", t["title"])
-            t["description"] = payload.get("description", t["description"])
-            t["resource_type"] = payload.get("resource_type", t["resource_type"])
-            t["operation"] = payload.get("operation", t.get("operation", ""))
-            t["resource_config"] = payload.get("resource_config", t.get("resource_config", ""))
-            t["updated_at"] = datetime.now().isoformat()
-            _save_tasks_to_disk(tasks)
-            return JSONResponse(content=t)
-    return JSONResponse(status_code=404, content={"error": "Task not found"})
-
-
-@app.delete("/aws-tasks/{task_id}")
-def delete_aws_task(task_id: str):
-    tasks = _load_tasks_from_disk()
-    updated = [t for t in tasks if t["id"] != task_id]
-    if len(updated) == len(tasks):
-        return JSONResponse(status_code=404, content={"error": "Task not found"})
-    _save_tasks_to_disk(updated)
-    return JSONResponse(status_code=200, content={"ok": True, "deleted": task_id})
-
-
-# ── Permission Sets CRUD (direct JSON-backed) ────────────────────────────────
-PERMISSION_SETS_FILE = Path(__file__).parent / "aws_permissions.json"
-_perms_lock = threading.Lock()
-
-
-def _load_permissions_from_disk() -> list:
-    try:
-        if not PERMISSION_SETS_FILE.exists():
-            return []
-        with PERMISSION_SETS_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.exception("Failed to read aws_permissions.json: %s", exc)
-        return []
-
-
-def _save_permissions_to_disk(perms: list) -> int:
-    with _perms_lock:
-        try:
-            tmp = PERMISSION_SETS_FILE.with_suffix(".tmp")
-            with tmp.open("w", encoding="utf-8") as f:
-                json.dump(perms, f, indent=2, ensure_ascii=False)
-            tmp.replace(PERMISSION_SETS_FILE)
-            return len(perms)
-        except Exception as exc:
-            logger.exception("Failed to write aws_permissions.json: %s", exc)
-            return 0
-
-
-PERMISSION_ACTION_CATALOG = {
-    "S3": [
-        {"action": "s3:ListBucket", "description": "List objects in a bucket"},
-        {"action": "s3:GetObject", "description": "Read objects from S3"},
-        {"action": "s3:PutObject", "description": "Upload objects to S3"},
-        {"action": "s3:DeleteObject", "description": "Delete objects from S3"},
-        {"action": "s3:GetBucketPolicy", "description": "Read bucket policies"},
-        {"action": "s3:PutBucketPolicy", "description": "Modify bucket policies"},
-        {"action": "s3:CreateBucket", "description": "Create new S3 buckets"},
-        {"action": "s3:DeleteBucket", "description": "Delete S3 buckets"},
-    ],
-    "EC2": [
-        {"action": "ec2:DescribeInstances", "description": "List EC2 instances"},
-        {"action": "ec2:RunInstances", "description": "Launch EC2 instances"},
-        {"action": "ec2:StartInstances", "description": "Start EC2 instances"},
-        {"action": "ec2:StopInstances", "description": "Stop EC2 instances"},
-        {"action": "ec2:TerminateInstances", "description": "Terminate EC2 instances"},
-        {"action": "ec2:CreateSecurityGroup", "description": "Create security groups"},
-        {"action": "ec2:AuthorizeSecurityGroupIngress", "description": "Add ingress rules"},
-        {"action": "ec2:DescribeVolumes", "description": "List EBS volumes"},
-    ],
-    "VPC": [
-        {"action": "ec2:CreateVpc", "description": "Create VPCs"},
-        {"action": "ec2:CreateSubnet", "description": "Create subnets"},
-        {"action": "ec2:CreateRouteTable", "description": "Create route tables"},
-        {"action": "ec2:CreateInternetGateway", "description": "Create internet gateways"},
-        {"action": "ec2:DescribeVpcs", "description": "List VPCs"},
-        {"action": "ec2:DescribeSubnets", "description": "List subnets"},
-    ],
-    "Lambda": [
-        {"action": "lambda:CreateFunction", "description": "Create Lambda functions"},
-        {"action": "lambda:InvokeFunction", "description": "Invoke Lambda functions"},
-        {"action": "lambda:UpdateFunctionCode", "description": "Update function code"},
-        {"action": "lambda:DeleteFunction", "description": "Delete Lambda functions"},
-        {"action": "lambda:ListFunctions", "description": "List Lambda functions"},
-    ],
-    "IAM": [
-        {"action": "iam:CreateRole", "description": "Create IAM roles"},
-        {"action": "iam:AttachRolePolicy", "description": "Attach managed policies"},
-        {"action": "iam:PutRolePolicy", "description": "Create inline policies"},
-        {"action": "iam:GetRole", "description": "Read IAM roles"},
-        {"action": "iam:ListRoles", "description": "List all roles"},
-    ],
-    "CloudWatch": [
-        {"action": "cloudwatch:PutMetricData", "description": "Publish custom metrics"},
-        {"action": "cloudwatch:GetMetricData", "description": "Query metrics"},
-        {"action": "cloudwatch:DescribeAlarms", "description": "List alarms"},
-        {"action": "cloudwatch:PutMetricAlarm", "description": "Create alarms"},
-        {"action": "cloudwatch:ListDashboards", "description": "List dashboards"},
-    ],
-    "ALL": [
-        {"action": "s3:Get*", "description": "All S3 read operations"},
-        {"action": "s3:List*", "description": "All S3 list operations"},
-        {"action": "ec2:Describe*", "description": "All EC2 describe operations"},
-        {"action": "cloudwatch:Describe*", "description": "All CloudWatch read operations"},
-        {"action": "cloudwatch:Get*", "description": "All CloudWatch get operations"},
-        {"action": "iam:Get*", "description": "All IAM get operations"},
-        {"action": "iam:List*", "description": "All IAM list operations"},
-    ],
-}
-
-DEFAULT_PERMISSION_ACTIONS = [
-    {"action": "*", "description": "All actions for this service"},
-]
-
-
-@app.get("/api/permission-sets")
-def list_permission_sets(search: str = "", aws_service: str = ""):
-    perms = _load_permissions_from_disk()
-    if search:
-        search_lower = search.lower()
-        perms = [p for p in perms if search_lower in p.get("name", "").lower() or search_lower in p.get("description", "").lower()]
-    if aws_service:
-        perms = [p for p in perms if p.get("aws_service", "").lower() == aws_service.lower()]
-    return JSONResponse(content=perms)
-
-
-@app.get("/api/permission-sets/{perm_id}")
-def get_permission_set(perm_id: str):
-    perms = _load_permissions_from_disk()
-    for p in perms:
-        if p["id"] == perm_id:
-            return JSONResponse(content=p)
-    return JSONResponse(status_code=404, content={"error": "Permission set not found"})
-
-
-@app.post("/api/permission-sets")
-def create_permission_set(payload: dict):
-    perms = _load_permissions_from_disk()
-    new_perm = {
-        "id": str(uuid.uuid4()),
-        "name": payload.get("name", ""),
-        "description": payload.get("description", ""),
-        "aws_service": payload.get("aws_service", "S3"),
-        "actions": payload.get("actions", []),
-        "resource_arn": payload.get("resource_arn", "*"),
-        "created_by": payload.get("created_by", "system"),
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    perms.append(new_perm)
-    _save_permissions_to_disk(perms)
-    return JSONResponse(status_code=201, content=new_perm)
-
-
-@app.put("/api/permission-sets/{perm_id}")
-def update_permission_set(perm_id: str, payload: dict):
-    perms = _load_permissions_from_disk()
-    for p in perms:
-        if p["id"] == perm_id:
-            p["name"] = payload.get("name", p["name"])
-            p["description"] = payload.get("description", p["description"])
-            p["aws_service"] = payload.get("aws_service", p["aws_service"])
-            p["actions"] = payload.get("actions", p["actions"])
-            p["resource_arn"] = payload.get("resource_arn", p["resource_arn"])
-            p["updated_at"] = datetime.now().isoformat()
-            _save_permissions_to_disk(perms)
-            return JSONResponse(content=p)
-    return JSONResponse(status_code=404, content={"error": "Permission set not found"})
-
-
-@app.delete("/api/permission-sets/{perm_id}")
-def delete_permission_set(perm_id: str, user: str = ""):
-    perms = _load_permissions_from_disk()
-    target = None
-    for p in perms:
-        if p["id"] == perm_id:
-            target = p
-            break
-    if not target:
-        return JSONResponse(status_code=404, content={"error": "Permission set not found"})
-    admin_users = ["admin@chandra.io", "superadmin@chandra.io"]
-    if user and user != target.get("created_by", "") and user not in admin_users:
-        return JSONResponse(status_code=403, content={"error": "Not authorized to delete this permission set"})
-    updated = [p for p in perms if p["id"] != perm_id]
-    _save_permissions_to_disk(updated)
-    return JSONResponse(content={"ok": True, "deleted": perm_id})
-
-
-@app.get("/api/permission-sets/actions")
-def get_available_actions(aws_service: str = ""):
-    actions = PERMISSION_ACTION_CATALOG.get(aws_service, DEFAULT_PERMISSION_ACTIONS)
-    return JSONResponse(content={"service": aws_service, "actions": actions})
-
-
-@app.get("/api/permission-sets/resource-arns")
-def get_resource_arn_templates():
-    templates = [
-        {"value": "*", "label": "All resources"},
-        {"value": "arn:aws:s3:::*", "label": "All S3 buckets"},
-        {"value": "arn:aws:s3:::my-bucket/*", "label": "Single S3 bucket"},
-        {"value": "arn:aws:ec2:*:*:instance/*", "label": "All EC2 instances"},
-        {"value": "arn:aws:ec2:*:*:vpc/*", "label": "All VPCs"},
-        {"value": "arn:aws:lambda:*:*:function:*", "label": "All Lambda functions"},
-        {"value": "arn:aws:iam::*:role/*", "label": "All IAM roles"},
-    ]
-    return JSONResponse(content={"templates": templates})
 
 @app.get("/logs")
 async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
@@ -1022,7 +711,6 @@ class ActionInput(BaseModel):
     kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
     priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
     steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
-    kraData: Optional[Dict[str, Any]] = Field(default=None, description="User-defined KRA payload (resources, permissions, region, tags) — when present, bypasses MCP doc scraping and uses this compact payload instead")
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
@@ -2035,7 +1723,6 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "started_at": job.get("started_at"),
         "completed_at": job.get("completed_at"),
         "sandbox_path": job.get("sandbox_path") or (output.get("execution") or {}).get("sandbox_path"),
-        "kraCode": approval.get("kraCode") or request.get("kraCode") or job.get("kraCode"),
     }
     return summary
 
@@ -2187,31 +1874,22 @@ def update_digital_worker_settings(settings: DigitalWorkerSettings):
 
 
 @app.get("/requests")
-async def list_cloud_requests(
-    status: Optional[str] = Query(default=None),
-    kraCode: Optional[str] = Query(default=None, description="Filter by KRA code (e.g. KRA-01)")
-):
+async def list_cloud_requests(status: Optional[str] = Query(default=None)):
     """List Digital Worker requests for the Human Approval Center.
 
     Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
-    ``completed``, ``failed``). Optional ``?kraCode=`` filter (e.g. ``KRA-01``).
-    Results are newest-first. Discovery endpoint the approval center polls.
+    ``completed``, ``failed``). Results are newest-first. This is the
+    discovery endpoint the approval center polls — no job_id needed.
     """
     # Acquire the lock once for both the item list and the counts so the
     # HTTP thread holds it for the shortest possible time (single acquisition
     # instead of two, reducing contention with background worker threads).
     with _job_store_lock:
-        items = []
-        for job_id, job in _job_store.items():
-            if job.get("kind") != "digital_worker":
-                continue
-            if status is not None and job.get("status") != status:
-                continue
-            if kraCode is not None:
-                job_kra = job.get("kraCode") or ""
-                if isinstance(job_kra, str) and job_kra.upper() != kraCode.upper():
-                    continue
-            items.append(_dw_request_summary(job_id, job))
+        items = [
+            _dw_request_summary(job_id, job)
+            for job_id, job in _job_store.items()
+            if job.get("kind") == "digital_worker" and (status is None or job.get("status") == status)
+        ]
         counts: Dict[str, int] = {}
         for job in _job_store.values():
             if job.get("kind") == "digital_worker":
@@ -2247,512 +1925,145 @@ def get_cloud_request(job_id: str):
     })
 
 
+# =====================================================================
+# AWS Tasks and AWS Permissions Implementation
+# =====================================================================
+from pathlib import Path
+import threading
+import json
 
-# ═══════════════════════════════════════════════════════════════════
-# AWS Tasks CRUD — Reusable AWS task definitions
-# ═══════════════════════════════════════════════════════════════════
+AWS_TASKS_FILE = Path(__file__).parent / "aws_tasks.json"
+AWS_PERMISSIONS_FILE = Path(__file__).parent / "aws_permissions.json"
 
-AWS_TASKS_FILE = "aws_tasks.json"
+_aws_tasks_lock = threading.Lock()
+_aws_permissions_lock = threading.Lock()
 
-
-def _load_aws_tasks() -> list:
-    """Load AWS tasks from JSON file."""
+def _load_aws_tasks_from_disk() -> list:
     try:
-        if os.path.exists(AWS_TASKS_FILE):
-            with open(AWS_TASKS_FILE, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load AWS tasks: {e}")
-    return []
+        if not AWS_TASKS_FILE.exists():
+            return []
+        with AWS_TASKS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_tasks.json: %s", exc)
+        return []
 
+def _save_aws_tasks_to_disk(entries: list) -> int:
+    with _aws_tasks_lock:
+        tmp_path = AWS_TASKS_FILE.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+        import os
+        os.replace(tmp_path, AWS_TASKS_FILE)
+        return len(entries)
 
-def _save_aws_tasks(tasks: list) -> int:
-    """Save AWS tasks to JSON file."""
-    with open(AWS_TASKS_FILE, "w") as f:
-        json.dump(tasks, f, indent=2)
-    return len(tasks)
+def _load_aws_permissions_from_disk() -> list:
+    try:
+        if not AWS_PERMISSIONS_FILE.exists():
+            return []
+        with AWS_PERMISSIONS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_permissions.json: %s", exc)
+        return []
 
+def _save_aws_permissions_to_disk(entries: list) -> int:
+    with _aws_permissions_lock:
+        tmp_path = AWS_PERMISSIONS_FILE.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+        import os
+        os.replace(tmp_path, AWS_PERMISSIONS_FILE)
+        return len(entries)
 
-class AwsTaskInput(BaseModel):
-    title: str
-    description: str
-    resource_type: str
-    operation: str = ""
-    resource_config: str = ""
-    created_by: str = "nagendra"
+class AwsTasksPayload(BaseModel):
+    tasks: List[Dict[str, Any]] = Field(description="List of AWS Tasks to persist.")
 
-
-ADMIN_USERS = {"phani", "admin"}
-
-
-def _is_admin(username: str) -> bool:
-    return username.strip().lower() in ADMIN_USERS
-
-
-def _check_ownership(item: dict, username: str) -> bool:
-    """Check if user owns the item or is admin."""
-    return item.get("created_by", "") == username or _is_admin(username)
-
-
+@app.get("/api/aws-tasks")
 @app.get("/aws-tasks")
-def get_aws_tasks(search: str = Query(""), resource_type: str = Query("")):
-    """Get all AWS tasks."""
-    tasks = _load_aws_tasks()
-    if search:
-        search_lower = search.lower()
-        tasks = [t for t in tasks if search_lower in t["title"].lower() or search_lower in t["description"].lower()]
-    if resource_type:
-        tasks = [t for t in tasks if t["resource_type"] == resource_type]
-    tasks.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
-    return tasks
+def get_aws_tasks():
+    tasks = _load_aws_tasks_from_disk()
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(tasks), "tasks": tasks}
+    )
 
-
-@app.post("/aws-tasks")
-def create_aws_task(task: AwsTaskInput):
-    """Create a new AWS task with dedup check."""
-    from datetime import datetime
-    tasks = _load_aws_tasks()
-
-    # Dedup: same title by same user
-    for t in tasks:
-        if t["title"].lower() == task.title.lower() and t["created_by"] == task.created_by:
-            raise HTTPException(status_code=409, detail={
-                "error": "DUPLICATE_TASK",
-                "message": f"Task '{task.title}' already exists for user '{task.created_by}'",
-                "existing_task": t,
-                "options": ["view_existing", "edit_existing", "create_new_version", "cancel"]
-            })
-
-    new_task = {
-        "id": str(uuid.uuid4()),
-        "title": task.title,
-        "description": task.description,
-        "resource_type": task.resource_type,
-        "operation": task.operation,
-        "resource_config": task.resource_config,
-        "created_by": task.created_by,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    tasks.append(new_task)
-    _save_aws_tasks(tasks)
-    logger.info(f"Created AWS task: {new_task['id']} - {new_task['title']}")
-    return new_task
-
-
-@app.put("/aws-tasks/{task_id}")
-def update_aws_task(task_id: str, task: AwsTaskInput):
-    """Update an existing AWS task by ID. Owner or admin only."""
-    from datetime import datetime
-    tasks = _load_aws_tasks()
-    for t in tasks:
-        if t["id"] == task_id:
-            if not _check_ownership(t, task.created_by):
-                raise HTTPException(status_code=403, detail={
-                    "error": "FORBIDDEN",
-                    "message": f"Task created by '{t['created_by']}'. Only creator or admin can edit."
-                })
-            t["title"] = task.title
-            t["description"] = task.description
-            t["resource_type"] = task.resource_type
-            t["operation"] = task.operation
-            t["resource_config"] = task.resource_config
-            t["updated_at"] = datetime.now().isoformat()
-            _save_aws_tasks(tasks)
-            logger.info(f"Updated AWS task: {task_id}")
-            return t
-    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-
-@app.delete("/aws-tasks/{task_id}")
-def delete_aws_task(task_id: str, user: str = Query("")):
-    """Delete an AWS task by ID. Owner or admin only."""
-    tasks = _load_aws_tasks()
-    original_count = len(tasks)
-    for t in tasks:
-        if t["id"] == task_id and not _check_ownership(t, user):
-            raise HTTPException(status_code=403, detail={
-                "error": "FORBIDDEN",
-                "message": f"Task created by '{t['created_by']}'. Only creator or admin can delete."
-            })
-    tasks = [t for t in tasks if t["id"] != task_id]
-    if len(tasks) == original_count:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    _save_aws_tasks(tasks)
-    logger.info(f"Deleted AWS task: {task_id}")
-    return {"ok": True, "deleted": task_id}
-
-
-@app.get("/aws-tasks/resource-types")
-def get_aws_resource_types():
-    """Get list of available AWS resource types for the dropdown."""
-    return {
-        "types": [
-            {"value": "S3", "label": "S3 Bucket"},
-            {"value": "EC2", "label": "EC2 Instance"},
-            {"value": "VPC", "label": "VPC Network"},
-            {"value": "Lambda", "label": "Lambda Function"},
-            {"value": "CloudWatch", "label": "CloudWatch Alarm"},
-            {"value": "RDS", "label": "RDS Database"},
-            {"value": "IAM", "label": "IAM Role/Policy"},
-            {"value": "DynamoDB", "label": "DynamoDB Table"},
-            {"value": "SQS", "label": "SQS Queue"},
-            {"value": "SNS", "label": "SNS Topic"},
-            {"value": "ECS", "label": "ECS Service"},
-            {"value": "ELB", "label": "Load Balancer (ELB)"},
-            {"value": "CloudFront", "label": "CloudFront Distribution"},
-            {"value": "ElastiCache", "label": "ElastiCache Cluster"},
-            {"value": "APIGateway", "label": "API Gateway"},
-        ]
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════
-# AWS Permissions CRUD
-# ═══════════════════════════════════════════════════════════════════
-
-PERMISSIONS_FILE = "aws_permissions.json"
-
-ACTION_CATALOG = {
-    "S3": ["s3:*", "s3:CreateBucket", "s3:PutBucketEncryption", "s3:PutBucketPolicy",
-           "s3:GetBucketLocation", "s3:ListBucket", "s3:GetObject", "s3:PutObject",
-           "s3:DeleteBucket", "s3:DeleteObject"],
-    "EC2": ["ec2:*", "ec2:RunInstances", "ec2:StartInstances", "ec2:StopInstances",
-            "ec2:TerminateInstances", "ec2:DescribeInstances", "ec2:CreateSecurityGroup",
-            "ec2:AuthorizeSecurityGroupIngress", "ec2:CreateKeyPair", "ec2:DescribeImages"],
-    "VPC": ["ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateRouteTable",
-            "ec2:CreateInternetGateway", "ec2:AttachInternetGateway", "ec2:CreateNatGateway",
-            "ec2:CreateSecurityGroup", "ec2:DescribeVpcs", "ec2:DescribeSubnets"],
-    "CloudWatch": ["cloudwatch:*", "cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms",
-                   "cloudwatch:DescribeAlarms", "cloudwatch:PutMetricData",
-                   "cloudwatch:GetMetricData", "cloudwatch:ListMetrics"],
-    "IAM": ["iam:*", "iam:CreateRole", "iam:AttachRolePolicy", "iam:PutRolePolicy",
-            "iam:PassRole", "iam:GetRole", "iam:ListRoles", "iam:CreatePolicy", "iam:GetPolicy"],
-    "Lambda": ["lambda:*", "lambda:CreateFunction", "lambda:InvokeFunction",
-               "lambda:UpdateFunctionCode", "lambda:GetFunction", "lambda:ListFunctions"],
-    "RDS": ["rds:*", "rds:CreateDBInstance", "rds:DescribeDBInstances",
-            "rds:ModifyDBInstance", "rds:DeleteDBInstance"],
-    "DynamoDB": ["dynamodb:*", "dynamodb:CreateTable", "dynamodb:PutItem",
-                 "dynamodb:GetItem", "dynamodb:Query", "dynamodb:DescribeTable"],
-    "SQS": ["sqs:*", "sqs:CreateQueue", "sqs:SendMessage", "sqs:ReceiveMessage",
-            "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
-    "SNS": ["sns:*", "sns:CreateTopic", "sns:Publish", "sns:Subscribe", "sns:GetTopicAttributes"],
-}
-
-PREDEFINED_PERMISSION_SETS = [
-    {"name": "S3 Full Access", "description": "Full read/write access to S3",
-     "aws_service": "S3", "actions": ["s3:*"], "resource_arn": "arn:aws:s3:::*", "is_predefined": True},
-    {"name": "S3 Read Only", "description": "Read-only S3 access",
-     "aws_service": "S3", "actions": ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"],
-     "resource_arn": "arn:aws:s3:::*", "is_predefined": True},
-    {"name": "EC2 Operator", "description": "EC2 lifecycle management",
-     "aws_service": "EC2", "actions": ["ec2:RunInstances", "ec2:StartInstances", "ec2:StopInstances",
-                                       "ec2:TerminateInstances", "ec2:DescribeInstances"],
-     "resource_arn": "arn:aws:ec2:*:*:instance/*", "is_predefined": True},
-    {"name": "VPC Admin", "description": "VPC and subnet management",
-     "aws_service": "VPC", "actions": ["ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateRouteTable",
-                                       "ec2:CreateInternetGateway", "ec2:DescribeVpcs", "ec2:DescribeSubnets"],
-     "resource_arn": "arn:aws:ec2:*:*:vpc/*", "is_predefined": True},
-    {"name": "Read Only (All)", "description": "Read-only across all AWS services",
-     "aws_service": "ALL", "actions": ["s3:Get*", "s3:List*", "ec2:Describe*", "cloudwatch:Describe*",
-                                       "cloudwatch:Get*", "iam:Get*", "iam:List*"],
-     "resource_arn": "*", "is_predefined": True},
-]
-
-def _load_permissions() -> list:
+@app.put("/api/aws-tasks")
+@app.put("/aws-tasks")
+def put_aws_tasks(payload: AwsTasksPayload):
     try:
-        if os.path.exists(PERMISSIONS_FILE):
-            with open(PERMISSIONS_FILE, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load permissions: {e}")
-    return []
+        written = _save_aws_tasks_to_disk(payload.tasks)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "count": written, "message": f"Saved {written} AWS tasks"}
+        )
+    except Exception as exc:
+        logger.exception("Failed to write aws_tasks.json: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
-def _save_permissions(perms: list) -> int:
-    with open(PERMISSIONS_FILE, "w") as f:
-        json.dump(perms, f, indent=2)
-    return len(perms)
-
-def _seed_predefined_permissions():
-    perms = _load_permissions()
-    existing_names = {p["name"] for p in perms}
-    seeded = 0
-    for pred in PREDEFINED_PERMISSION_SETS:
-        if pred["name"] not in existing_names:
-            from datetime import datetime
-            entry = {"id": str(uuid.uuid4()), **pred,
-                     "created_by": "system",
-                     "created_at": datetime.now().isoformat(),
-                     "updated_at": datetime.now().isoformat()}
-            perms.append(entry)
-            seeded += 1
-    if seeded:
-        _save_permissions(perms)
-        logger.info(f"Seeded {seeded} predefined permission sets")
-
-_seed_predefined_permissions()
-
-
-class PermissionSetInput(BaseModel):
-    name: str
-    description: str = ""
-    aws_service: str = "S3"
-    actions: list = []
-    resource_arn: str = "*"
-    created_by: str = "nagendra"
-
+class PermissionSetsPayload(BaseModel):
+    permissions: List[Dict[str, Any]] = Field(description="List of permission sets to persist.")
 
 @app.get("/api/permission-sets")
-def get_permission_sets(search: str = Query(""), aws_service: str = Query("")):
-    perms = _load_permissions()
-    if search:
-        sl = search.lower()
-        perms = [p for p in perms if sl in p["name"].lower() or sl in p.get("description", "").lower()]
-    if aws_service:
-        perms = [p for p in perms if p.get("aws_service", "") == aws_service or p.get("aws_service", "") == "ALL"]
-    perms.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
-    return perms
+def get_permission_sets():
+    perms = _load_aws_permissions_from_disk()
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(perms), "permissions": perms}
+    )
 
+@app.put("/api/permission-sets")
+def put_permission_sets(payload: PermissionSetsPayload):
+    try:
+        written = _save_aws_permissions_to_disk(payload.permissions)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "count": written, "message": f"Saved {written} permission sets"}
+        )
+    except Exception as exc:
+        logger.exception("Failed to write aws_permissions.json: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
-@app.post("/api/permission-sets")
-def create_permission_set(perm: PermissionSetInput):
-    from datetime import datetime
-    perms = _load_permissions()
-    for p in perms:
-        if p["name"].lower() == perm.name.lower() and p["created_by"] == perm.created_by:
-            raise HTTPException(status_code=409, detail={
-                "error": "DUPLICATE_PERMISSION_SET",
-                "message": f"Permission set '{perm.name}' already exists for user '{perm.created_by}'",
-                "existing": p,
-                "options": ["view_existing", "edit_existing", "create_new_version", "cancel"]})
-    new_perm = {"id": str(uuid.uuid4()), "name": perm.name, "description": perm.description,
-                "aws_service": perm.aws_service, "actions": perm.actions,
-                "resource_arn": perm.resource_arn, "is_predefined": False,
-                "created_by": perm.created_by,
-                "created_at": datetime.now().isoformat(), "updated_at": datetime.now().isoformat()}
-    perms.append(new_perm)
-    _save_permissions(perms)
-    return new_perm
-
-
-@app.put("/api/permission-sets/{perm_id}")
-def update_permission_set(perm_id: str, perm: PermissionSetInput):
-    from datetime import datetime
-    perms = _load_permissions()
-    for p in perms:
-        if p["id"] == perm_id:
-            if p.get("is_predefined"):
-                raise HTTPException(status_code=403, detail="Cannot edit predefined sets. Clone instead.")
-            if not _check_ownership(p, perm.created_by):
-                raise HTTPException(status_code=403, detail={
-                    "error": "FORBIDDEN",
-                    "message": f"Permission set created by '{p['created_by']}'. Only creator or admin can edit."})
-            p.update(name=perm.name, description=perm.description, aws_service=perm.aws_service,
-                     actions=perm.actions, resource_arn=perm.resource_arn,
-                     updated_at=datetime.now().isoformat())
-            _save_permissions(perms)
-            return p
-    raise HTTPException(status_code=404, detail=f"Permission set {perm_id} not found")
-
-
-@app.delete("/api/permission-sets/{perm_id}")
-def delete_permission_set(perm_id: str, user: str = Query("")):
-    perms = _load_permissions()
-    original_count = len(perms)
-    for p in perms:
-        if p["id"] == perm_id:
-            if p.get("is_predefined"):
-                raise HTTPException(status_code=403, detail="Cannot delete predefined sets.")
-            if not _check_ownership(p, user):
-                raise HTTPException(status_code=403, detail={
-                    "error": "FORBIDDEN",
-                    "message": f"Permission set created by '{p['created_by']}'. Only creator or admin can delete."})
-    perms = [p for p in perms if p["id"] != perm_id]
-    if len(perms) == original_count:
-        raise HTTPException(status_code=404, detail=f"Permission set {perm_id} not found")
-    _save_permissions(perms)
-    return {"ok": True, "deleted": perm_id}
-
+AWS_ACTION_CATALOG = {
+    "ec2": [
+        "ec2:RunInstances", "ec2:StopInstances", "ec2:StartInstances", "ec2:TerminateInstances",
+        "ec2:DescribeInstances", "ec2:DescribeSecurityGroups", "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags", "ec2:CreateVolume", "ec2:AttachVolume"
+    ],
+    "s3": [
+        "s3:CreateBucket", "s3:DeleteBucket", "s3:PutObject", "s3:GetObject",
+        "s3:DeleteObject", "s3:ListBucket", "s3:PutBucketPolicy", "s3:PutEncryptionConfiguration"
+    ],
+    "iam": [
+        "iam:CreateUser", "iam:CreateRole", "iam:AttachUserPolicy", "iam:AttachRolePolicy",
+        "iam:PutUserPolicy", "iam:GetUser", "iam:ListAttachedUserPolicies"
+    ]
+}
 
 @app.get("/api/permission-sets/actions")
-def get_permission_actions(aws_service: str = Query("S3")):
-    return {"service": aws_service, "actions": ACTION_CATALOG.get(aws_service, ACTION_CATALOG.get("S3", []))}
+def get_permission_actions(aws_service: Optional[str] = Query(default=None)):
+    if aws_service:
+        service_key = aws_service.lower().strip()
+        actions = AWS_ACTION_CATALOG.get(service_key, [])
+        return JSONResponse(status_code=200, content={"service": service_key, "actions": actions})
+    all_actions = [act for service_actions in AWS_ACTION_CATALOG.values() for act in service_actions]
+    return JSONResponse(status_code=200, content={"actions": all_actions})
 
+COMMON_RESOURCE_ARNS = [
+    "arn:aws:s3:::*",
+    "arn:aws:ec2:*:*:instance/*",
+    "arn:aws:ec2:*:*:security-group/*",
+    "arn:aws:iam::*:user/*",
+    "arn:aws:iam::*:role/*"
+]
 
 @app.get("/api/permission-sets/resource-arns")
-def get_resource_arn_templates():
-    return {"templates": [
-        {"value": "*", "label": "All Resources (*)"},
-        {"value": "arn:aws:s3:::*", "label": "All S3 Buckets"},
-        {"value": "arn:aws:s3:::my-bucket-*", "label": "S3 Buckets with prefix"},
-        {"value": "arn:aws:ec2:*:*:instance/*", "label": "All EC2 Instances"},
-        {"value": "arn:aws:ec2:*:*:vpc/*", "label": "All VPCs"},
-        {"value": "arn:aws:ec2:*:*:security-group/*", "label": "All Security Groups"},
-        {"value": "arn:aws:cloudwatch:*:*:alarm:*", "label": "All CloudWatch Alarms"},
-    ]}
+def get_resource_arns():
+    return JSONResponse(status_code=200, content={"resource_arns": COMMON_RESOURCE_ARNS})
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Execution Engine — Deploy and track execution runs
-# ═══════════════════════════════════════════════════════════════════
-
-EXECUTIONS_FILE = "executions.json"
-
-def _load_executions() -> list:
-    try:
-        if os.path.exists(EXECUTIONS_FILE):
-            with open(EXECUTIONS_FILE, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load executions: {e}")
-    return []
-
-def _save_executions(execs: list) -> int:
-    with open(EXECUTIONS_FILE, "w") as f:
-        json.dump(execs, f, indent=2)
-    return len(execs)
-
-
-class SelectedTask(BaseModel):
-    id: str = ""
-    title: str = ""
-    resource_type: str = ""
-    description: str = ""
-
-class PermissionSetModel(BaseModel):
-    role: str = ""
-    permissions: list = []
-    agent_name: str = ""
-
-class ExecutionRequest(BaseModel):
-    task: SelectedTask | None = None
-    permissions: PermissionSetModel | None = None
-    kras: list = []
-    created_by: str = "nagendra"
-    dry_run: bool = False
-
-
-@app.post("/api/executions/validate")
-def validate_execution(req: ExecutionRequest):
-    errors = []
-    if not req.task or not req.task.title:
-        errors.append("No AWS task selected")
-    if not req.permissions or not req.permissions.role:
-        errors.append("No permission set selected")
-    
-    # Return structured validation format
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "summary": "Pre-flight checks passed." if len(errors) == 0 else "Validation failed.",
-        "checks": [
-            {"name": "Task Definition", "status": "passed" if req.task else "failed", "message": f"Task '{req.task.title if req.task else 'None'}' provided."},
-            {"name": "Permission Set", "status": "passed" if req.permissions else "failed", "message": f"Role '{req.permissions.role if req.permissions else 'None'}' provided."},
-            {"name": "Monitoring KRAs", "status": "passed" if req.kras else "warning", "message": f"{len(req.kras)} KRAs attached for evaluation."}
-        ]
-    }
-
-
-@app.post("/api/executions")
-def create_execution(req: ExecutionRequest):
-    from datetime import datetime
-    
-    # If dry_run, just return mock dry-run steps
-    if req.dry_run:
-        return {
-            "dry_run": True,
-            "summary": {"total": 3, "simulated": 3, "skipped": 0, "errors": 0},
-            "dry_run_steps": [
-                {"action": "sts:AssumeRole", "resource": f"arn:aws:iam::*:role/{req.permissions.role if req.permissions else 'Unknown'}", "effect": "ALLOW", "status": "simulated", "details": "IAM role assumption verified."},
-                {"action": "Execute Task", "resource": f"AWS Task: {req.task.title if req.task else 'Unknown'}", "effect": "ALLOW", "status": "simulated", "details": "Task evaluated against constraints."},
-                {"action": "Evaluate KRAs", "resource": f"KRAs: {', '.join(req.kras) if req.kras else 'None'}", "effect": "ALLOW", "status": "simulated", "details": "KRA constraints verified against task."}
-            ]
-        }
-
-    execs = _load_executions()
-    task_id = req.task.id if req.task else ""
-    task_title = req.task.title if req.task else ""
-    perm_role = req.permissions.role if req.permissions else ""
-    
-    execution = {"id": str(uuid.uuid4()), "task_id": task_id, "task_title": task_title,
-                 "permission_set_name": perm_role,
-                 "kras": req.kras, "created_by": req.created_by,
-                 "status": "pending", "progress": 0, "current_stage": "Initializing",
-                 "logs": [], "generated_code": None, "execution_plan": None,
-                 "created_at": datetime.now().isoformat(), "updated_at": datetime.now().isoformat(),
-                 "completed_at": None}
-    execs.append(execution)
-    _save_executions(execs)
-    return execution
-
-
-@app.get("/api/executions")
-def get_executions(status: str = Query(""), created_by: str = Query("")):
-    execs = _load_executions()
-    if status:
-        execs = [e for e in execs if e["status"] == status]
-    if created_by:
-        execs = [e for e in execs if e.get("created_by") == created_by]
-    execs.sort(key=lambda e: e.get("created_at", ""), reverse=True)
-    return execs
-
-
-@app.get("/api/executions/{exec_id}")
-def get_execution(exec_id: str):
-    execs = _load_executions()
-    for e in execs:
-        if e["id"] == exec_id:
-            return e
-    raise HTTPException(status_code=404, detail=f"Execution {exec_id} not found")
-
-
-@app.post("/api/executions/{exec_id}/approve")
-def approve_execution(exec_id: str):
-    from datetime import datetime
-    execs = _load_executions()
-    for e in execs:
-        if e["id"] == exec_id:
-            e["status"] = "running"
-            e["progress"] = 10
-            e["current_stage"] = "Deploying"
-            e["updated_at"] = datetime.now().isoformat()
-            _save_executions(execs)
-            return {"ok": True, "status": "running", "execution": e}
-    raise HTTPException(status_code=404, detail=f"Execution {exec_id} not found")
-
-
-@app.post("/api/executions/{exec_id}/reject")
-def reject_execution(exec_id: str):
-    from datetime import datetime
-    execs = _load_executions()
-    for e in execs:
-        if e["id"] == exec_id:
-            e["status"] = "rejected"
-            e["current_stage"] = "Rejected"
-            e["updated_at"] = datetime.now().isoformat()
-            _save_executions(execs)
-            return {"ok": True, "status": "rejected"}
-    raise HTTPException(status_code=404, detail=f"Execution {exec_id} not found")
-
-
-@app.post("/api/executions/{exec_id}/progress")
-def update_execution_progress(exec_id: str, status: str = Query(""),
-                               progress: int = Query(0), stage: str = Query("")):
-    from datetime import datetime
-    execs = _load_executions()
-    for e in execs:
-        if e["id"] == exec_id:
-            if status: e["status"] = status
-            if progress: e["progress"] = progress
-            if stage: e["current_stage"] = stage
-            e["updated_at"] = datetime.now().isoformat()
-            if status in ("completed", "failed"):
-                e["completed_at"] = datetime.now().isoformat()
-            _save_executions(execs)
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail=f"Execution {exec_id} not found")
 
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=6001)
