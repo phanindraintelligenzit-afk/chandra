@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, fetchAwsTasks, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import { HumanApprovalCenter } from "./HumanApprovalCenter";
 import {
@@ -2383,7 +2383,8 @@ export function ChandraExperience() {
     observations,
     costMetrics,
     setCostMetrics,
-    setObservations
+    setObservations,
+    selectedAwsTasks
   } = useOnboarding();
 
   // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
@@ -2473,73 +2474,55 @@ export function ChandraExperience() {
 
   const [predefinedApprovals, setPredefinedApprovals] = useState<ApprovalRow[]>([]);
 
+  // Automatically fetch selected AWS Tasks based on Onboarding selection
   useEffect(() => {
     let cancelled = false;
+    
+    // Fetch AWS Tasks instead of KRAs for Human Approval Center
+    if (!selectedAwsTasks || selectedAwsTasks.length === 0) return;
 
-    const KRA_MAP: Record<string, string> = {
-      "Cost Optimization": "cost",
-      "Security Hardening": "security",
-      "Compliance Enforcement": "compliance",
-      "Performance Tuning": "performance",
-      "Reliability Assurance": "reliability"
-    };
-
-    const backendKraCodeMap: Record<string, string> = {
-      "cost": "KRA-01",
-      "security": "KRA-02",
-      "compliance": "KRA-03",
-      "performance": "KRA-04",
-      "reliability": "KRA-05"
-    };
-
-    const backendKras = selectedKRAs
-      .map(kra => KRA_MAP[kra])
-      .filter(Boolean);
-
-    if (backendKras.length === 0) return;
-
-    fetchPredefinedKraIssues(backendKras)
-      .then(res => {
-        if (cancelled || !res) return;
-        const newApprovals: ApprovalRow[] = [];
+    fetchAwsTasks()
+      .then(tasks => {
+        if (cancelled || !tasks) return;
         
-        Object.values(res).flat().forEach((issue) => {
-          const kraCode = backendKraCodeMap[issue.kra] || "KRA-XX";
-          newApprovals.push({
-            id: `${issue.detector_id}-${Math.random().toString(36).substring(7)}`,
-            incident: issue.title,
-            severity: (issue.severity.toUpperCase() || "MEDIUM") as any,
+        // Filter by user selection
+        const myTasks = tasks.filter(t => selectedAwsTasks.includes(t.id));
+        
+        const newApprovals: ApprovalRow[] = myTasks.map(task => ({
+            id: task.id,
+            incident: task.name,
+            severity: "MEDIUM" as any,
             state: "Awaiting Review",
             reviewer: agentName || "Chandra",
             requested: new Date().toISOString(),
             decided: "",
-            note: issue.recommendation,
+            note: task.description,
             account: "Global",
             confidence: 90,
-            requestedBy: "Detector",
+            requestedBy: "User Onboarding",
             lockState: "LOCKED",
             emailStatus: "pending",
-            pendingReason: issue.recommendation,
-            kraCode: kraCode,
-            resourceId: issue.resource_arn || undefined,
-            detectorId: issue.detector_id,
-            region: issue.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
-            action: `remediate_${issue.detector_id}`,
-            category: issue.kra.toUpperCase(),
-            steps: issue.evidence
-              ? [JSON.stringify(issue.evidence, null, 2)]
-              : []
-          });
-        });
+            pendingReason: task.description,
+            kraCode: task.category || "TASK",
+            resourceId: undefined,
+            detectorId: task.id,
+            region: process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
+            action: task.name,
+            category: (task.category || "AWS TASK").toUpperCase(),
+            steps: []
+        }));
         
-        setPredefinedApprovals(newApprovals);
+        setPredefinedApprovals(prev => {
+          const prevMap = new Map(prev.map(a => [a.id, a]));
+          return newApprovals.map(a => prevMap.has(a.id) ? prevMap.get(a.id)! : a);
+        });
       })
       .catch(err => {
-        if (!cancelled) console.error("fetchPredefinedKraIssues failed:", err);
+        if (!cancelled) console.error("fetchAwsTasks failed:", err);
       });
 
     return () => { cancelled = true; };
-  }, [selectedKRAs, agentName]);
+  }, [selectedAwsTasks, agentName]);
 
   const [costDays, setCostDays] = useState(7);
   const isFirstCostFetchRef = useRef(true);
@@ -2903,8 +2886,8 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <HumanApprovalCenter 
-            kraCards={[...approvalsAsRow, ...predefinedApprovals]} 
-            kraActionNames={new Set([...approvalsAsRow, ...predefinedApprovals].map(r => r.incident.toLowerCase().trim()))}
+            kraCards={predefinedApprovals} 
+            kraActionNames={new Set(predefinedApprovals.map(r => r.incident.toLowerCase().trim()))}
             onAutoApproved={(action, approved) => {
               if (approved) {
                 // If it's a predefined approval, mark it as executing in the UI state
@@ -2935,6 +2918,7 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <WorkerActionExecutionCenter
+            awsPermissions={permissions}
             ref={workerRef}
             onPendingHitlChange={(pendingRequests) => {
               setPendingHitlRequests(pendingRequests);

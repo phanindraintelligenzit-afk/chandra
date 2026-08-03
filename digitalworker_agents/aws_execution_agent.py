@@ -447,6 +447,7 @@ class AgentState(TypedDict):
     reference_folder: str
     command_timeout: int
     max_iterations: int
+    aws_permissions: List[str]
     iteration: int
     records: List[Dict]
     feedback_summary: str
@@ -1501,6 +1502,36 @@ cautious regarding IAM and security: ALWAYS ask the user if target identities or
 
     def _check_permissions_node(self, state: AgentState) -> dict:
         check_cancelled()
+
+        aws_permissions_ids = state.get("aws_permissions", [])
+        if aws_permissions_ids:
+            self.logger.info("Enforcing user-selected AWS permissions boundaries...")
+            try:
+                import json
+                from pathlib import Path
+                # In fastapi context, the file is at the root
+                # Since we run in the same process, we can find it relative to current dir or src
+                aws_permissions_file = Path(__file__).parent.parent / "aws_permissions.json"
+                if not aws_permissions_file.exists():
+                    aws_permissions_file = Path("aws_permissions.json")
+                
+                if aws_permissions_file.exists():
+                    with aws_permissions_file.open("r", encoding="utf-8") as f:
+                        all_sets = json.load(f)
+                    
+                    allowed_actions = set()
+                    for pset in all_sets:
+                        if str(pset.get("id")) in aws_permissions_ids or pset.get("id") in aws_permissions_ids:
+                            for a in pset.get("actions", []):
+                                if isinstance(a, dict) and "action" in a:
+                                    allowed_actions.add(a["action"].lower())
+                    
+                    if allowed_actions:
+                        self.logger.info("User explicitly allowed %d actions. Skipping IAM crawling.", len(allowed_actions))
+                        # We inject these into the aws_context or permission_issues to guide the generator
+                        return {"permission_issues": [], "caller_arn": f"User-Bounded (Allowed: {', '.join(list(allowed_actions)[:5])}...)"}
+            except Exception as e:
+                self.logger.warning("Failed to enforce user-selected AWS permissions: %s", e)
 
         # ── Bypass: for user-defined KRA payloads, skip IAM policy crawling ──
         kra_data = state.get("kra_data")
@@ -2765,6 +2796,52 @@ Determine:
             self.logger.error("No execution plan / commands found — skipping execution")
             return {"execution_results": [], "success": False}
 
+        # Deterministic Permission Enforcement Block
+        aws_permissions_ids = state.get("aws_permissions", [])
+        if aws_permissions_ids:
+            self.logger.info("VALIDATING EXECUTION AGAINST USER-SELECTED PERMISSION SETS BEFORE RUNNING...")
+            import json
+            from pathlib import Path
+            aws_permissions_file = Path(__file__).parent.parent / "aws_permissions.json"
+            if not aws_permissions_file.exists():
+                aws_permissions_file = Path("aws_permissions.json")
+            
+            if aws_permissions_file.exists():
+                with aws_permissions_file.open("r", encoding="utf-8") as f:
+                    all_sets = json.load(f)
+                
+                allowed_actions = set()
+                for pset in all_sets:
+                    if str(pset.get("id")) in aws_permissions_ids or pset.get("id") in aws_permissions_ids:
+                        for a in pset.get("actions", []):
+                            if isinstance(a, dict) and "action" in a:
+                                allowed_actions.add(a["action"].lower())
+                
+                if allowed_actions:
+                    # We check if the planned commands / target action is covered.
+                    # Since the action has a name or service, we can do a naive check if the service matches the allowed action prefix.
+                    action = state.get("action", {})
+                    service = action.get("service", "").lower()
+                    
+                    if not service:
+                        # Extract service from the command if service is empty
+                        for cmd in plan.get("commands", []):
+                            c_str = cmd.get("command", "")
+                            if c_str.startswith("aws "):
+                                parts = c_str.split(" ")
+                                if len(parts) > 1:
+                                    service = parts[1].lower()
+                                    break
+                    
+                    # Very simple prefix matching to ensure we don't block valid things if it matches the prefix.
+                    # E.g. allowed: s3:createbucket, service is s3
+                    # We must check if any allowed action starts with the service prefix
+                    if service:
+                        is_allowed = any(a.startswith(f"{service}:") or a == f"{service}:*" for a in allowed_actions)
+                        if not is_allowed:
+                            self.logger.error("BLOCKED: Planned AWS action relies on %s, which is not granted by user-selected permissions.", service)
+                            return {"execution_results": [], "success": False, "status": "blocked"}
+
         base_path = Path(execute_folder).resolve()
         all_commands = sorted(plan["commands"], key=lambda c: c.get("order", 9999))
 
@@ -3461,6 +3538,7 @@ Rules:
         thread_id: Optional[str] = None,
         answers: Optional[List[str]] = None,
         command_timeout: int = DEFAULT_COMMAND_TIMEOUT,
+        aws_permissions: Optional[List[str]] = None,
     ) -> PipelineResponse:
         """
         Run the generate → execute → (retry on failure) loop until success or
@@ -3538,6 +3616,7 @@ Rules:
                         "reference_folder": reference_folder or "",
                         "command_timeout": command_timeout,
                         "max_iterations": self.max_iterations,
+                        "aws_permissions": aws_permissions or [],
                         "iteration": 1,
                         "records": [],
                         "feedback_summary": "",

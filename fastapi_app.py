@@ -845,6 +845,10 @@ class OrchestrateRequest(BaseModel):
         default=5,
         description="Maximum number of generate-execute iterations (default: 5).",
     )
+    aws_permissions: Optional[List[str]] = Field(
+        default=None,
+        description="List of AWS permissions selected during onboarding.",
+    )
 
 
 @app.get("/download_sandbox")
@@ -1339,6 +1343,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             thread_id=request.thread_id,
             answers=request.answers,
             command_timeout=request.command_timeout,
+            aws_permissions=request.aws_permissions,
         )
 
         # Update job with result — only if not already stopped
@@ -1377,6 +1382,28 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                 f"Completed successfully in {_job_store[job_id]['completed_at'] - start_time:.1f}s"
                 if is_success else response.summary or "Orchestration completed with errors"
             )
+
+            # Preserve execution artifact inside the sandbox so the /download_sandbox ZIP contains the final result
+            if _job_store[job_id].get("sandbox_path"):
+                import json
+                from pathlib import Path
+                sandbox_dir = Path(_job_store[job_id]["sandbox_path"])
+                if sandbox_dir.exists() and sandbox_dir.is_dir():
+                    artifact_path = sandbox_dir / "execution_result.json"
+                    try:
+                        with artifact_path.open("w", encoding="utf-8") as af:
+                            json.dump({
+                                "job_id": job_id,
+                                "status": "success" if is_success else "failed",
+                                "message": _job_store[job_id]["message"],
+                                "action": action_dict,
+                                "sandbox_path": str(sandbox_dir),
+                                "iterations_used": response.iterations_used,
+                                "summary": response.summary,
+                                "aws_permissions_used": request.aws_permissions,
+                            }, af, indent=2, ensure_ascii=False)
+                    except Exception as e:
+                        logger.warning("Could not write execution_result.json to sandbox: %s", e)
 
         logger.info(
             "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
