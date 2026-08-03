@@ -166,6 +166,7 @@ export default function OnboardingWizard() {
     selectedAwsTasks,
     selectedAwsPermissions,
     completeOnboarding,
+    openDashboard,
 
     setObservations,
     setCostMetrics
@@ -345,6 +346,7 @@ export default function OnboardingWizard() {
             setObservations(null, message);
           });
 
+        openDashboard();
         router.push("/dashboard");
       }
     } catch (error: unknown) {

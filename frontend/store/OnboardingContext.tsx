@@ -62,6 +62,8 @@ export type OnboardingState = {
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
   completeOnboarding: () => void;
+  dashboardOpened: boolean;
+  openDashboard: () => void;
   reset: () => void;
 };
 
@@ -107,6 +109,8 @@ const defaultState: OnboardingState = {
   setObservations: () => {},
   setCostMetrics: () => {},
   completeOnboarding: () => {},
+  dashboardOpened: false,
+  openDashboard: () => {},
   reset: () => {}
 };
 
@@ -161,6 +165,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [observationsError, setObservationsError] = useState<string | null>(null);
   const [costMetrics, setCostMetricsState] = useState<CostMetricsOutput | null>(null);
   const [costMetricsError, setCostMetricsError] = useState<string | null>(null);
+  const [dashboardOpened, setDashboardOpened] = useState<boolean>(false);
   const [hydrated, setHydrated] = useState(false);
   const selectedKRAs = useMemo(() => buildSelectedKras(predefinedKras, customKras), [predefinedKras, customKras]);
   const kraPayload = useMemo(() => buildKraAgentPayload(predefinedKras, customKras), [predefinedKras, customKras]);
@@ -218,6 +223,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       if (typeof parsed.observationsError === "string") setObservationsError(parsed.observationsError);
       if (parsed.costMetrics) setCostMetricsState(parsed.costMetrics as CostMetricsOutput);
       if (typeof parsed.costMetricsError === "string") setCostMetricsError(parsed.costMetricsError);
+      if (typeof parsed.dashboardOpened === "boolean") setDashboardOpened(parsed.dashboardOpened);
     }
     setHydrated(true);
   }, []);
@@ -299,6 +305,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         selectedAwsTasks,
         selectedAwsPermissions,
         onboardingCompleted,
+        dashboardOpened,
         observations,
         observationsError,
         costMetrics,
@@ -309,7 +316,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore storage errors
     }
-  }, [agentName, employeeId, gender, avatarId, role, maturity, permissions, predefinedKras, customKras, selectedKRAs, selectedAwsTasks, selectedAwsPermissions, onboardingCompleted, observations, observationsError, costMetrics, costMetricsError, hydrated]);
+  }, [agentName, employeeId, gender, avatarId, role, maturity, permissions, predefinedKras, customKras, selectedKRAs, selectedAwsTasks, selectedAwsPermissions, onboardingCompleted, dashboardOpened, observations, observationsError, costMetrics, costMetricsError, hydrated]);
 
   const toggleKRA = useCallback((kra: string) => {
     setPredefinedKras((current) => (current.includes(kra) ? current.filter((k) => k !== kra) : [...current, kra]));
@@ -371,6 +378,10 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setOnboardingCompleted(true);
   }, []);
 
+  const openDashboard = useCallback(() => {
+    setDashboardOpened(true);
+  }, []);
+
   const setObservations = useCallback((data: AgentObservation | null, error: string | null = null) => {
     if (typeof window !== "undefined") {
       console.log("📝 SET OBSERVATIONS CALLED - data:", data ? `health=${data.health}` : "null", "error:", error);
@@ -401,6 +412,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setObservationsError(null);
     setCostMetricsState(null);
     setCostMetricsError(null);
+    setDashboardOpened(false);
     try {
       window.localStorage.removeItem(STORAGE_KEY);
       window.sessionStorage.removeItem(STORAGE_KEY);
@@ -451,6 +463,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       setObservations,
       setCostMetrics,
       completeOnboarding,
+      openDashboard,
       reset
     }),
     [
@@ -468,6 +481,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
+      dashboardOpened,
       hydrated,
       observations,
       observationsError,
@@ -488,6 +502,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       setObservations,
       setCostMetrics,
       completeOnboarding,
+      openDashboard,
       reset
     ]
   );
