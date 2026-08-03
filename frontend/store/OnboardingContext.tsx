@@ -38,6 +38,8 @@ export type OnboardingState = {
   observationsError: string | null;
   costMetrics: CostMetricsOutput | null;
   costMetricsError: string | null;
+  selectedAwsTasks: string[];
+  selectedAwsPermissions: string[];
   setAgentName: (name: string) => void;
   setEmployeeId: (id: string) => void;
   setGender: (gender: AgentGender) => void;
@@ -50,6 +52,12 @@ export type OnboardingState = {
   removeCustomKRA: (name: string) => void;
   toggleCustomKRA: (name: string) => void;
   setAllCustomKRAsSelected: (selected: boolean) => void;
+  toggleAwsTask: (id: string) => void;
+  addAwsTask: (id: string) => void;
+  removeAwsTask: (id: string) => void;
+  toggleAwsPermission: (id: string) => void;
+  addAwsPermission: (id: string) => void;
+  removeAwsPermission: (id: string) => void;
 
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
@@ -75,6 +83,8 @@ const defaultState: OnboardingState = {
   observationsError: null,
   costMetrics: null,
   costMetricsError: null,
+  selectedAwsTasks: [],
+  selectedAwsPermissions: [],
   setAgentName: () => {},
   setEmployeeId: () => {},
   setGender: () => {},
@@ -87,6 +97,12 @@ const defaultState: OnboardingState = {
   removeCustomKRA: () => {},
   toggleCustomKRA: () => {},
   setAllCustomKRAsSelected: () => {},
+  toggleAwsTask: () => {},
+  addAwsTask: () => {},
+  removeAwsTask: () => {},
+  toggleAwsPermission: () => {},
+  addAwsPermission: () => {},
+  removeAwsPermission: () => {},
 
   setObservations: () => {},
   setCostMetrics: () => {},
@@ -138,6 +154,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [predefinedKras, setPredefinedKras] = useState<string[]>([]);
   const [customKras, setCustomKras] = useState<CustomKra[]>([]);
+  const [selectedAwsTasks, setSelectedAwsTasks] = useState<string[]>([]);
+  const [selectedAwsPermissions, setSelectedAwsPermissions] = useState<string[]>([]);
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(false);
   const [observations, setObservationsState] = useState<AgentObservation | null>(null);
   const [observationsError, setObservationsError] = useState<string | null>(null);
@@ -193,6 +211,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
           .filter((kra: CustomKra | null): kra is CustomKra => Boolean(kra));
         setCustomKras(legacyCustoms);
       }
+      if (Array.isArray(parsed.selectedAwsTasks)) setSelectedAwsTasks(parsed.selectedAwsTasks);
+      if (Array.isArray(parsed.selectedAwsPermissions)) setSelectedAwsPermissions(parsed.selectedAwsPermissions);
       if (typeof parsed.onboardingCompleted === "boolean") setOnboardingCompleted(parsed.onboardingCompleted);
       if (parsed.observations) setObservationsState(parsed.observations as AgentObservation);
       if (typeof parsed.observationsError === "string") setObservationsError(parsed.observationsError);
@@ -276,6 +296,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         predefinedKras,
         customKras,
         selectedKRAs,
+        selectedAwsTasks,
+        selectedAwsPermissions,
         onboardingCompleted,
         observations,
         observationsError,
@@ -287,7 +309,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore storage errors
     }
-  }, [agentName, employeeId, gender, avatarId, role, maturity, permissions, predefinedKras, customKras, selectedKRAs, onboardingCompleted, observations, observationsError, costMetrics, costMetricsError, hydrated]);
+  }, [agentName, employeeId, gender, avatarId, role, maturity, permissions, predefinedKras, customKras, selectedKRAs, selectedAwsTasks, selectedAwsPermissions, onboardingCompleted, observations, observationsError, costMetrics, costMetricsError, hydrated]);
 
   const toggleKRA = useCallback((kra: string) => {
     setPredefinedKras((current) => (current.includes(kra) ? current.filter((k) => k !== kra) : [...current, kra]));
@@ -325,6 +347,25 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setCustomKras((current) => current.map((item) => ({ ...item, selected })));
   }, []);
 
+  const toggleAwsTask = useCallback((id: string) => {
+    setSelectedAwsTasks((current) => (current.includes(id) ? current.filter((k) => k !== id) : [...current, id]));
+  }, []);
+  const addAwsTask = useCallback((id: string) => {
+    setSelectedAwsTasks((current) => (current.includes(id) ? current : [...current, id]));
+  }, []);
+  const removeAwsTask = useCallback((id: string) => {
+    setSelectedAwsTasks((current) => current.filter((k) => k !== id));
+  }, []);
+
+  const toggleAwsPermission = useCallback((id: string) => {
+    setSelectedAwsPermissions((current) => (current.includes(id) ? current.filter((k) => k !== id) : [...current, id]));
+  }, []);
+  const addAwsPermission = useCallback((id: string) => {
+    setSelectedAwsPermissions((current) => (current.includes(id) ? current : [...current, id]));
+  }, []);
+  const removeAwsPermission = useCallback((id: string) => {
+    setSelectedAwsPermissions((current) => current.filter((k) => k !== id));
+  }, []);
 
   const completeOnboarding = useCallback(() => {
     setOnboardingCompleted(true);
@@ -353,6 +394,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setPermissions([]);
     setPredefinedKras([]);
     setCustomKras([]);
+    setSelectedAwsTasks([]);
+    setSelectedAwsPermissions([]);
     setOnboardingCompleted(false);
     setObservationsState(null);
     setObservationsError(null);
@@ -378,6 +421,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       predefinedKras,
       customKras,
       selectedKRAs,
+      selectedAwsTasks,
+      selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
       hydrated,
@@ -397,6 +442,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       removeCustomKRA,
       toggleCustomKRA,
       setAllCustomKRAsSelected,
+      toggleAwsTask,
+      addAwsTask,
+      removeAwsTask,
+      toggleAwsPermission,
+      addAwsPermission,
+      removeAwsPermission,
       setObservations,
       setCostMetrics,
       completeOnboarding,
@@ -413,6 +464,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       predefinedKras,
       customKras,
       selectedKRAs,
+      selectedAwsTasks,
+      selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
       hydrated,
@@ -426,6 +479,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       removeCustomKRA,
       toggleCustomKRA,
       setAllCustomKRAsSelected,
+      toggleAwsTask,
+      addAwsTask,
+      removeAwsTask,
+      toggleAwsPermission,
+      addAwsPermission,
+      removeAwsPermission,
       setObservations,
       setCostMetrics,
       completeOnboarding,

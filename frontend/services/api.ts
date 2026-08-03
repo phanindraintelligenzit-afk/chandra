@@ -1092,3 +1092,147 @@ export async function saveCustomKras(
     signal: options.signal
   });
 }
+
+// ============================================================================
+// AWS Tasks & Permissions Data Models & API Services
+// ============================================================================
+
+export interface PermissionSet {
+  id: string;
+  name: string;
+  description: string;
+  actions: string[];
+  resource_arns: string[];
+  aws_service?: string;
+  resource_arn?: string;
+  is_predefined?: boolean;
+  is_preset?: boolean;
+  ownership?: string;
+  version?: number | string;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PermissionAction {
+  service: string;
+  action: string;
+  description?: string;
+}
+
+export interface ResourceArnSuggestion {
+  service: string;
+  arn_pattern: string;
+  description?: string;
+}
+
+export interface AwsTask {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  default_permissions?: string[];
+  parameters?: Record<string, any>;
+  required_kras?: string[];
+  is_preset?: boolean;
+  is_predefined?: boolean;
+  ownership?: string;
+  version?: number;
+  selected?: boolean;
+}
+
+export type FetchAwsTasksResponse = {
+  status: string;
+  count: number;
+  tasks: AwsTask[];
+};
+
+export async function fetchAwsTasks(
+  options: { signal?: AbortSignal } = {}
+): Promise<AwsTask[]> {
+  try {
+    const response = await request<FetchAwsTasksResponse>("/aws-tasks", {
+      method: "GET",
+      signal: options.signal
+    });
+    return Array.isArray(response?.tasks) ? response.tasks : [];
+  } catch (error) {
+    console.error("Failed to fetch AWS Tasks:", error);
+    return [];
+  }
+}
+
+export async function saveAwsTasks(
+  tasks: AwsTask[],
+  options: { signal?: AbortSignal } = {}
+): Promise<any> {
+  return request("/aws-tasks", {
+    method: "PUT",
+    body: JSON.stringify({ tasks }),
+    signal: options.signal
+  });
+}
+
+export type FetchPermissionSetsResponse = {
+  status: string;
+  count: number;
+  permissions: PermissionSet[];
+};
+
+export async function fetchPermissionSets(
+  options: { signal?: AbortSignal } = {}
+): Promise<PermissionSet[]> {
+  try {
+    const response = await request<FetchPermissionSetsResponse>("/api/permission-sets", {
+      method: "GET",
+      signal: options.signal
+    });
+    return Array.isArray(response?.permissions) ? response.permissions : [];
+  } catch (error) {
+    console.error("Failed to fetch Permission Sets:", error);
+    return [];
+  }
+}
+
+export async function savePermissionSets(
+  permissions: PermissionSet[],
+  options: { signal?: AbortSignal } = {}
+): Promise<any> {
+  return request("/api/permission-sets", {
+    method: "PUT",
+    body: JSON.stringify({ permissions }),
+    signal: options.signal
+  });
+}
+
+export async function fetchAwsActions(
+  service?: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<{ actions: string[]; service?: string }> {
+  try {
+    const query = service ? `?aws_service=${encodeURIComponent(service)}` : "";
+    const response = await request<{ actions: string[]; service?: string }>(`/api/permission-sets/actions${query}`, {
+      method: "GET",
+      signal: options.signal
+    });
+    return response;
+  } catch (error) {
+    console.error("Failed to fetch AWS Actions:", error);
+    return { actions: [] };
+  }
+}
+
+export async function fetchResourceArns(
+  options: { signal?: AbortSignal } = {}
+): Promise<{ resource_arns: string[] }> {
+  try {
+    const response = await request<{ resource_arns: string[] }>("/api/permission-sets/resource-arns", {
+      method: "GET",
+      signal: options.signal
+    });
+    return response;
+  } catch (error) {
+    console.error("Failed to fetch Resource ARNs:", error);
+    return { resource_arns: [] };
+  }
+}

@@ -8,6 +8,8 @@ import { KeyRound, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useOnboarding } from "@/store/OnboardingContext";
 import { fetchAgentObservations, fetchCostMetrics } from "@/services/api";
 import { buildKraPayload } from "@/services/mapping";
+import AwsTasksStep from "./AwsTasksStep";
+import AwsPermissionsStep from "./AwsPermissionsStep";
 import {
   agentAvatars,
   agentGenders,
@@ -161,6 +163,8 @@ export default function OnboardingWizard() {
     removeCustomKRA,
     toggleCustomKRA,
     setAllCustomKRAsSelected,
+    selectedAwsTasks,
+    selectedAwsPermissions,
     completeOnboarding,
 
     setObservations,
@@ -206,8 +210,10 @@ export default function OnboardingWizard() {
     if (step === 1) return role === "AWS Cloud Engineer";
     if (step === 2) return maturity === "L2";
     if (step === 3) return selectedKRAs.length > 0;
+    if (step === 4) return selectedAwsTasks.length > 0;
+    if (step === 5) return true; // permissions can proceed anytime
     return true;
-  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length]);
+  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length, selectedAwsTasks.length]);
 
   function next() {
     if (step === 0) {
@@ -218,14 +224,14 @@ export default function OnboardingWizard() {
       setAgentName(normalizedName);
       setEmployeeId(employeeIdPreview);
     }
-    if (step === 3) {
+    if (step === 5) {
       if (deploymentStartedRef.current) return;
       deploymentStartedRef.current = true;
-      setStep(4);
+      setStep(6);
       runDeploymentSequence();
       return;
     }
-    setStep((s) => Math.min(s + 1, 4));
+    setStep((s) => Math.min(s + 1, 6));
   }
 
   function prev() {
@@ -276,6 +282,8 @@ export default function OnboardingWizard() {
       deployment: {
         role,
         permissions,
+        aws_tasks: selectedAwsTasks,
+        aws_permissions: selectedAwsPermissions,
         agent_name: agentName || normalizedName,
         employee_id: employeeId || employeeIdPreview
       }
@@ -737,12 +745,16 @@ export default function OnboardingWizard() {
 
               <div className="mt-6 flex items-center gap-3">
                 <button onClick={prev} className="rounded-2xl border border-white/10 px-4 py-3 text-sm uppercase tracking-[0.14em] text-muted">BACK</button>
-                <button onClick={next} disabled={!canNext} className="ml-auto rounded-2xl bg-signal px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-black disabled:opacity-50">DEPLOY DIGITAL EMPLOYEE</button>
+                <button onClick={next} disabled={!canNext} className="ml-auto rounded-2xl bg-emerald-300/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50">CONTINUE TO AWS TASKS</button>
               </div>
             </motion.div>
           )}
 
-          {step === 4 && (
+          {step === 4 && <AwsTasksStep onNext={next} onPrev={prev} />}
+
+          {step === 5 && <AwsPermissionsStep onNext={next} onPrev={prev} />}
+
+          {step === 6 && (
             <motion.div key="deploy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="mx-auto max-w-xl text-center">
                 <div className="mx-auto flex h-52 w-52 items-center justify-center rounded-full border border-signal/30 bg-black/30 p-3 shadow-[0_0_60px_rgba(255,59,59,0.18)]">

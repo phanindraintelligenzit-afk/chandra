@@ -1925,5 +1925,145 @@ def get_cloud_request(job_id: str):
     })
 
 
+# =====================================================================
+# AWS Tasks and AWS Permissions Implementation
+# =====================================================================
+from pathlib import Path
+import threading
+import json
+
+AWS_TASKS_FILE = Path(__file__).parent / "aws_tasks.json"
+AWS_PERMISSIONS_FILE = Path(__file__).parent / "aws_permissions.json"
+
+_aws_tasks_lock = threading.Lock()
+_aws_permissions_lock = threading.Lock()
+
+def _load_aws_tasks_from_disk() -> list:
+    try:
+        if not AWS_TASKS_FILE.exists():
+            return []
+        with AWS_TASKS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_tasks.json: %s", exc)
+        return []
+
+def _save_aws_tasks_to_disk(entries: list) -> int:
+    with _aws_tasks_lock:
+        tmp_path = AWS_TASKS_FILE.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+        import os
+        os.replace(tmp_path, AWS_TASKS_FILE)
+        return len(entries)
+
+def _load_aws_permissions_from_disk() -> list:
+    try:
+        if not AWS_PERMISSIONS_FILE.exists():
+            return []
+        with AWS_PERMISSIONS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.exception("Failed to read aws_permissions.json: %s", exc)
+        return []
+
+def _save_aws_permissions_to_disk(entries: list) -> int:
+    with _aws_permissions_lock:
+        tmp_path = AWS_PERMISSIONS_FILE.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+        import os
+        os.replace(tmp_path, AWS_PERMISSIONS_FILE)
+        return len(entries)
+
+class AwsTasksPayload(BaseModel):
+    tasks: List[Dict[str, Any]] = Field(description="List of AWS Tasks to persist.")
+
+@app.get("/api/aws-tasks")
+@app.get("/aws-tasks")
+def get_aws_tasks():
+    tasks = _load_aws_tasks_from_disk()
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(tasks), "tasks": tasks}
+    )
+
+@app.put("/api/aws-tasks")
+@app.put("/aws-tasks")
+def put_aws_tasks(payload: AwsTasksPayload):
+    try:
+        written = _save_aws_tasks_to_disk(payload.tasks)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "count": written, "message": f"Saved {written} AWS tasks"}
+        )
+    except Exception as exc:
+        logger.exception("Failed to write aws_tasks.json: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+
+class PermissionSetsPayload(BaseModel):
+    permissions: List[Dict[str, Any]] = Field(description="List of permission sets to persist.")
+
+@app.get("/api/permission-sets")
+def get_permission_sets():
+    perms = _load_aws_permissions_from_disk()
+    return JSONResponse(
+        status_code=200,
+        content={"status": "success", "count": len(perms), "permissions": perms}
+    )
+
+@app.put("/api/permission-sets")
+def put_permission_sets(payload: PermissionSetsPayload):
+    try:
+        written = _save_aws_permissions_to_disk(payload.permissions)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "count": written, "message": f"Saved {written} permission sets"}
+        )
+    except Exception as exc:
+        logger.exception("Failed to write aws_permissions.json: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+
+AWS_ACTION_CATALOG = {
+    "ec2": [
+        "ec2:RunInstances", "ec2:StopInstances", "ec2:StartInstances", "ec2:TerminateInstances",
+        "ec2:DescribeInstances", "ec2:DescribeSecurityGroups", "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags", "ec2:CreateVolume", "ec2:AttachVolume"
+    ],
+    "s3": [
+        "s3:CreateBucket", "s3:DeleteBucket", "s3:PutObject", "s3:GetObject",
+        "s3:DeleteObject", "s3:ListBucket", "s3:PutBucketPolicy", "s3:PutEncryptionConfiguration"
+    ],
+    "iam": [
+        "iam:CreateUser", "iam:CreateRole", "iam:AttachUserPolicy", "iam:AttachRolePolicy",
+        "iam:PutUserPolicy", "iam:GetUser", "iam:ListAttachedUserPolicies"
+    ]
+}
+
+@app.get("/api/permission-sets/actions")
+def get_permission_actions(aws_service: Optional[str] = Query(default=None)):
+    if aws_service:
+        service_key = aws_service.lower().strip()
+        actions = AWS_ACTION_CATALOG.get(service_key, [])
+        return JSONResponse(status_code=200, content={"service": service_key, "actions": actions})
+    all_actions = [act for service_actions in AWS_ACTION_CATALOG.values() for act in service_actions]
+    return JSONResponse(status_code=200, content={"actions": all_actions})
+
+COMMON_RESOURCE_ARNS = [
+    "arn:aws:s3:::*",
+    "arn:aws:ec2:*:*:instance/*",
+    "arn:aws:ec2:*:*:security-group/*",
+    "arn:aws:iam::*:user/*",
+    "arn:aws:iam::*:role/*"
+]
+
+@app.get("/api/permission-sets/resource-arns")
+def get_resource_arns():
+    return JSONResponse(status_code=200, content={"resource_arns": COMMON_RESOURCE_ARNS})
+
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)

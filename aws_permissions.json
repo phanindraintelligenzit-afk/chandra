@@ -1,0 +1,89 @@
+[
+  {
+    "id": "eab39a74-a48a-4f19-9803-e71e37cc4d62",
+    "name": "S3 Full Access",
+    "description": "Full read/write access to S3",
+    "aws_service": "S3",
+    "actions": [
+      "s3:*"
+    ],
+    "resource_arn": "arn:aws:s3:::*",
+    "is_predefined": true,
+    "created_by": "system",
+    "created_at": "2026-07-30T13:25:27.549162",
+    "updated_at": "2026-07-30T13:25:27.549162"
+  },
+  {
+    "id": "a40594e8-b80c-4aa1-9891-c0d94baef99d",
+    "name": "S3 Read Only",
+    "description": "Read-only S3 access",
+    "aws_service": "S3",
+    "actions": [
+      "s3:GetObject",
+      "s3:ListBucket",
+      "s3:GetBucketLocation"
+    ],
+    "resource_arn": "arn:aws:s3:::*",
+    "is_predefined": true,
+    "created_by": "system",
+    "created_at": "2026-07-30T13:25:27.549162",
+    "updated_at": "2026-07-30T13:25:27.549162"
+  },
+  {
+    "id": "4bbb47a9-d7f7-4921-81e4-1f3d5f215579",
+    "name": "EC2 Operator",
+    "description": "EC2 lifecycle management",
+    "aws_service": "EC2",
+    "actions": [
+      "ec2:RunInstances",
+      "ec2:StartInstances",
+      "ec2:StopInstances",
+      "ec2:TerminateInstances",
+      "ec2:DescribeInstances"
+    ],
+    "resource_arn": "arn:aws:ec2:*:*:instance/*",
+    "is_predefined": true,
+    "created_by": "system",
+    "created_at": "2026-07-30T13:25:27.549162",
+    "updated_at": "2026-07-30T13:25:27.549162"
+  },
+  {
+    "id": "c1f7cdb2-0551-4cd7-be8c-4f508dc4e37f",
+    "name": "VPC Admin",
+    "description": "VPC and subnet management",
+    "aws_service": "VPC",
+    "actions": [
+      "ec2:CreateVpc",
+      "ec2:CreateSubnet",
+      "ec2:CreateRouteTable",
+      "ec2:CreateInternetGateway",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeSubnets"
+    ],
+    "resource_arn": "arn:aws:ec2:*:*:vpc/*",
+    "is_predefined": true,
+    "created_by": "system",
+    "created_at": "2026-07-30T13:25:27.549162",
+    "updated_at": "2026-07-30T13:25:27.549162"
+  },
+  {
+    "id": "01d13c50-540d-466e-997f-aa805e969970",
+    "name": "Read Only (All)",
+    "description": "Read-only across all AWS services",
+    "aws_service": "ALL",
+    "actions": [
+      "s3:Get*",
+      "s3:List*",
+      "ec2:Describe*",
+      "cloudwatch:Describe*",
+      "cloudwatch:Get*",
+      "iam:Get*",
+      "iam:List*"
+    ],
+    "resource_arn": "*",
+    "is_predefined": true,
+    "created_by": "system",
+    "created_at": "2026-07-30T13:25:27.549162",
+    "updated_at": "2026-07-30T13:25:27.549162"
+  }
+]
