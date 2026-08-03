@@ -437,6 +437,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
+      dashboardOpened,
       hydrated,
       observations,
       observationsError,
