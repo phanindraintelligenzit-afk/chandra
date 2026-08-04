@@ -1918,7 +1918,7 @@ RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE.
 RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
 RULE 9 — Do NOT use data sources for random_id or random_string. They are resources.
 RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
-RULE 11 — ALWAYS use proper HCL string interpolation format: "${random_id.name.hex}" instead of "string"[random_id.name.hex].
+RULE 11 — ALWAYS use proper HCL string interpolation format: "${{random_id.name.hex}}" instead of "string"[random_id.name.hex].
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
