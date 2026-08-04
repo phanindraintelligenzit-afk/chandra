@@ -1421,6 +1421,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                     "status": "needs_clarification",
                     "thread_id": exec_thread_id,
                     "questions": response.questions or ["Please provide the required input to proceed."],
+                    "hitl_payload": response.hitl_payload,
                     "summary": response.summary or "Agent needs clarification",
                 }
                 logger.info(
