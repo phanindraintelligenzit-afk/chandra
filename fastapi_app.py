@@ -51,7 +51,27 @@ _log_buffer: List[Dict[str, Any]] = []
 _max_logs = 2000
 
 # Job tracking for long-running orchestrations
-_job_store: Dict[str, Dict[str, Any]] = {}
+class JobStoreDict(dict):
+    def __init__(self, job_id, *args, **kwargs):
+        self.job_id = job_id
+        super().__init__(*args, **kwargs)
+        if "message" in self:
+            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {self['message']}")
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "message":
+            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {value}")
+        elif key == "status":
+            logger.info(f"Job {self.job_id} | Status changed to: {value}")
+
+class JobStoreManager(dict):
+    def __setitem__(self, key, value):
+        if isinstance(value, dict) and not isinstance(value, JobStoreDict):
+            value = JobStoreDict(key, value)
+        super().__setitem__(key, value)
+
+_job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
 # Use RLock (reentrant) so background worker threads that already hold the
 # lock can re-enter it without deadlocking the FastAPI HTTP threads that
 # serve GET /requests and GET /jobs/status while a job is running.
