@@ -714,6 +714,7 @@ class ActionInput(BaseModel):
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
     action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
+    permission_set_id: Optional[str] = Field(default=None, description="AWS permission set selected during onboarding")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1346,9 +1347,13 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             action_dict["jiraUrl"] = request.jiraUrl
 
         # Store action_dict and aws_permissions so the /resume endpoint can use it without needing a new request body
+        aws_perms = request.aws_permissions or []
+        if not aws_perms and request.action.permission_set_id:
+            aws_perms = [request.action.permission_set_id]
+
         with _job_store_lock:
             _job_store[job_id]["action_dict"] = action_dict
-            _job_store[job_id]["aws_permissions"] = request.aws_permissions
+            _job_store[job_id]["aws_permissions"] = aws_perms
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=request.sandbox_path,
@@ -1356,7 +1361,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             thread_id=request.thread_id,
             answers=request.answers,
             command_timeout=request.command_timeout,
-            aws_permissions=request.aws_permissions,
+            aws_permissions=aws_perms,
         )
 
         # Update job with result — only if not already stopped
@@ -1413,7 +1418,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                                 "sandbox_path": str(sandbox_dir),
                                 "iterations_used": response.iterations_used,
                                 "summary": response.summary,
-                                "aws_permissions_used": request.aws_permissions,
+                                "aws_permissions_used": aws_perms,
                             }, af, indent=2, ensure_ascii=False)
                     except Exception as e:
                         logger.warning("Could not write execution_result.json to sandbox: %s", e)

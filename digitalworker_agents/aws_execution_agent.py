@@ -698,6 +698,10 @@ class _PersistentMCPSession:
                 "terraform": {
                     "command": terraform_binary,
                     "args": ["stdio"],
+                    "env": {
+                        "PATH": os.environ.get("PATH", ""),
+                        "TF_CLI_CONFIG_FILE": "",
+                    },
                     "transport": "stdio",
                 },
             }
@@ -1846,12 +1850,12 @@ IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandat
 
         tf_docs_dict = state.get("terraform_docs_dict") or {}
 
+        all_generated_files = {}
+        all_exec_steps = []
+        summaries = []
+        
         for attempt in range(max_retries):
             try:
-                all_generated_files = {}
-                all_exec_steps = []
-                summaries = []
-                
                 # Split resources into chunks of batch_size
                 for i in range(0, len(resources), batch_size):
                     batch = resources[i:i+batch_size]
@@ -1899,7 +1903,7 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 ABSOLUTE RULES - violating any of these causes immediate failure
 =========================================================================
 
-RULE 0 \u2014 HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
+RULE 0 — HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
   Terraform/HCL does NOT support Python-style triple-quotes (' ' ' or \"\"\").
   For any multi-line string value (user_data, inline policy JSON, etc.) you MUST
   use HCL heredoc syntax.
@@ -1948,24 +1952,17 @@ Generate the complete set of files now."""
                     batch_size = max(1, batch_size // 2)
                     self.logger.info("Reducing batch size to %d and retrying...", batch_size)
                 elif attempt == max_retries - 1:
-                    raise  summaries.append(result.summary)
+                    raise
                 
                 timings = state.get("timings") or {}
                 timings["llm_generate"] = time.time() - start_t
                 
-                return {
-                    "generated_files": list(all_generated_files.values()),
-                    "executable_steps": all_exec_steps,
-                    "generator_summary": " ".join(summaries),
-                    "timings": timings,
-                }
-            except Exception as exc:
-                self.logger.warning("Generation failed on attempt %d: %s", attempt + 1, exc)
-                if batch_size > 1 and ("length" in str(exc).lower() or "context" in str(exc).lower() or "token" in str(exc).lower()):
-                    batch_size = max(1, batch_size // 2)
-                    self.logger.info("Reducing batch size to %d and retrying...", batch_size)
-                elif attempt == max_retries - 1:
-                    raise
+                # If we retry, we might want to clear them, but the user requested initializing outside try/retry so we keep them.
+                # Returning here would abort the retry loop. The previous code had a return inside except! That breaks retries.
+                # So we ONLY return if attempt == max_retries - 1, but we raise there. So we shouldn't return here.
+                # Actually, if we hit an exception and want to retry, we just continue.
+                continue
+
 
     def _write_files_node(self, state: AgentState) -> dict:
         input_path = state.get("input_sandbox_path") or ""
