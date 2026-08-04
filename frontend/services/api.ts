@@ -773,6 +773,8 @@ export type OrchestrateRequest = {
     detectorId?: string;
     resourceArn?: string;
     region?: string;
+    isAwsTask?: boolean;
+    action_type?: string;
   };
   sandbox_path?: string;
   reference_folder?: string;
@@ -781,6 +783,7 @@ export type OrchestrateRequest = {
   command_timeout?: number;
   jiraUrl?: string;
   max_iterations?: number;
+  aws_permissions?: string[];
 };
 
 export type OrchestratorResponse = {

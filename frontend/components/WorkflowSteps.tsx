@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import { useOnboarding } from "@/store/OnboardingContext";
 
 export function WorkflowNextStep({ stepKey, nextHref, label }: { stepKey: string; nextHref: string; label: string }) {
-  const { stepsCompleted, completeStep, dashboardOpened } = useOnboarding();
+  const { dashboardOpened } = useOnboarding();
   const router = useRouter();
-  if (dashboardOpened || stepsCompleted.includes(stepKey)) return null;
+  if (dashboardOpened) return null;
   return (
     <div className="mt-8 p-4 bg-gray-900 border border-emerald-800/40 rounded-xl">
       <div className="flex items-center justify-between">
@@ -16,7 +16,7 @@ export function WorkflowNextStep({ stepKey, nextHref, label }: { stepKey: string
           <p className="text-xs text-gray-500 mt-0.5">Mark this step as finished and proceed to the next one.</p>
         </div>
         <button
-          onClick={() => { completeStep(stepKey); router.push(nextHref); }}
+          onClick={() => { router.push(nextHref); }}
           className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-sm transition-all"
         >
           <Check className="w-4 h-4" />

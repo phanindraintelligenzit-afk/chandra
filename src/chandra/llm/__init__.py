@@ -49,9 +49,9 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     if provider in ("openai", "openai_compatible", "vllm"):
         from langchain_openai import ChatOpenAI
 
-        # Local providers should fail fast — use 10s timeout, no LangChain retries
-        kwargs.setdefault("timeout", 10)
-        kwargs.setdefault("max_retries", 0)
+        # Local providers might take longer for complex prompts — use 120s timeout
+        kwargs.setdefault("timeout", 120)
+        kwargs.setdefault("max_retries", 2)
         base_url = settings.vllm_api_base or settings.openai_api_base
         api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
         if not base_url:

@@ -80,7 +80,7 @@ export default function AwsPermissionsStep({ onNext, onPrev }: { onNext: () => v
     if (!service) return;
     setActionsLoading(true);
     const res = await fetchAwsActions(service);
-    setAvailableActions(res.actions.map(a => ({ action: a })));
+    setAvailableActions((res.actions || []).map(a => ({ action: a })));
     setActionsLoading(false);
   }, []);
 

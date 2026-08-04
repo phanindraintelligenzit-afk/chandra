@@ -144,19 +144,18 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Run alembic migrations on startup
-    # logger.info("Running database migrations (alembic upgrade head)...")
-    # try:
-    #     from alembic.config import Config
-    #     from alembic import command
-    #     alembic_cfg = Config("alembic.ini")
-    #     # Prevent Alembic from configuring logging and wiping out our structlog/fastapi setup
-    #     alembic_cfg.attributes['configure_logger'] = False
-    #     command.upgrade(alembic_cfg, "head")
-    #     logger.info("Database migrations applied successfully.")
-    # except Exception as e:
-    #     logger.error(f"Failed to run database migrations: {e}")
     yield
+    # Stop background tasks gracefully to prevent dangling threads during app teardown
+    # This prevents 'cannot schedule new futures' and 'I/O operation on closed file' in pytest
+    logger.info("Shutting down background thread pool...")
+    _thread_pool.shutdown(wait=True)
+    
+    logger.info("Shutting down background async loop...")
+    try:
+        _bg_loop.call_soon_threadsafe(_bg_loop.stop)
+        _bg_loop_thread.join(timeout=5.0)
+    except Exception as e:
+        logger.error(f"Error shutting down background loop: {e}")
 
 app = FastAPI(
     title="AWS Observability Agent API",
@@ -714,6 +713,7 @@ class ActionInput(BaseModel):
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
+    action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
 
 
 class AnalyzerRequest(BaseModel):
@@ -844,6 +844,10 @@ class OrchestrateRequest(BaseModel):
     max_iterations: int = Field(
         default=5,
         description="Maximum number of generate-execute iterations (default: 5).",
+    )
+    aws_permissions: Optional[List[str]] = Field(
+        default=None,
+        description="List of AWS permissions selected during onboarding.",
     )
 
 
@@ -1147,14 +1151,15 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         finally:
             _thread_local.job_id = None
 
-    def _run_kra_resume():
-        """Resume a direct Execution Agent (KRA) job."""
+    def _run_execution_resume():
+        """Resume a direct Execution Agent job (AWS Task or KRA)."""
         import time
         start_time = time.time()
         exec_thread_id = f"exec-{job_id}"
         try:
             with _job_store_lock:
                 _job_store[job_id]["thread_id"] = threading.get_ident()
+                aws_permissions = _job_store[job_id].get("aws_permissions", [])
 
             orchestrator = ExecutionAgents(max_iterations=5, job_id=job_id)
             response = orchestrator.RunPipeline(
@@ -1162,6 +1167,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                 sandbox_path=sandbox_path,
                 thread_id=exec_thread_id,
                 answers=answers,
+                aws_permissions=aws_permissions
             )
 
             with _job_store_lock:
@@ -1180,7 +1186,11 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                         "summary": response.summary or "",
                     }
                     return
-                _job_store[job_id]["status"] = "completed"
+                # Check status and set it gracefully, 500 = failed
+                if response.statusCode >= 400:
+                    _job_store[job_id]["status"] = "failed"
+                else:
+                    _job_store[job_id]["status"] = "completed"
                 _job_store[job_id]["progress"] = 100
                 _job_store[job_id]["result"] = response.model_dump()
                 _job_store[job_id]["completed_at"] = time.time()
@@ -1190,9 +1200,12 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     if response.statusCode == 200
                     else response.summary or "Completed with errors"
                 )
-            logger.info("KRA RESUME [%s] completed | statusCode=%d", job_id, response.statusCode)
+            
+            job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
+            logger.info("%s RESUME [%s] completed | statusCode=%d", job_label, job_id, response.statusCode)
         except Exception as exc:
-            logger.exception("KRA RESUME [%s] failed", job_id)
+            job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
+            logger.exception("%s RESUME [%s] failed", job_label, job_id)
             with _job_store_lock:
                 if _job_store[job_id].get("status") != "stopped":
                     _job_store[job_id]["status"] = "failed"
@@ -1202,7 +1215,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
     if job_type == "dw":
         _thread_pool.submit(_run_dw_resume)
     else:
-        _thread_pool.submit(_run_kra_resume)
+        _thread_pool.submit(_run_execution_resume)
 
     return OrchestrateJobResponse(
         job_id=job_id,
@@ -1262,7 +1275,9 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         logger.info("ORCHESTRATION TASK [%s] started", job_id)
 
         # Check if this is a predefined KRA remediation
-        if request.action.detectorId:
+        # GUARD: AWS Tasks must NEVER enter this branch. They must always reach
+        # the ExecutionAgents LangGraph pipeline below.
+        if request.action.detectorId and getattr(request.action, "action_type", None) != "AWS_TASK":
             from src.chandra.graphs.action_nodes.action_executor import action_executor_node
             from src.chandra.graphs.state import ChandraState
             from src.chandra.briefing.schemas import ProposedWrite
@@ -1298,13 +1313,14 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                         final_status = "completed"
                 else:
                     output_msg = "No action results returned."
-                    final_status = "completed"
+                    final_status = "failed"
 
                 # Update job with result
                 with _job_store_lock:
                     if _job_store[job_id].get("status") == "stopped":
                         return
-                    _job_store[job_id]["status"] = final_status if final_status in ["completed", "skipped", "failed", "running"] else "completed"
+                    # Status semantics: SKIPPED must never appear as COMPLETED
+                    _job_store[job_id]["status"] = final_status if final_status in ["completed", "skipped", "failed", "running", "blocked", "unverified"] else "failed"
                     _job_store[job_id]["progress"] = 100
                     _job_store[job_id]["message"] = output_msg
                     _job_store[job_id]["result"] = {"status": status_val, "output": res}
@@ -1329,9 +1345,10 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         if request.jiraUrl:
             action_dict["jiraUrl"] = request.jiraUrl
 
-        # Store action_dict so the /resume endpoint can use it without needing a new request body
+        # Store action_dict and aws_permissions so the /resume endpoint can use it without needing a new request body
         with _job_store_lock:
             _job_store[job_id]["action_dict"] = action_dict
+            _job_store[job_id]["aws_permissions"] = request.aws_permissions
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=request.sandbox_path,
@@ -1339,6 +1356,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             thread_id=request.thread_id,
             answers=request.answers,
             command_timeout=request.command_timeout,
+            aws_permissions=request.aws_permissions,
         )
 
         # Update job with result — only if not already stopped
@@ -1377,6 +1395,28 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                 f"Completed successfully in {_job_store[job_id]['completed_at'] - start_time:.1f}s"
                 if is_success else response.summary or "Orchestration completed with errors"
             )
+
+            # Preserve execution artifact inside the sandbox so the /download_sandbox ZIP contains the final result
+            if _job_store[job_id].get("sandbox_path"):
+                import json
+                from pathlib import Path
+                sandbox_dir = Path(_job_store[job_id]["sandbox_path"])
+                if sandbox_dir.exists() and sandbox_dir.is_dir():
+                    artifact_path = sandbox_dir / "execution_result.json"
+                    try:
+                        with artifact_path.open("w", encoding="utf-8") as af:
+                            json.dump({
+                                "job_id": job_id,
+                                "status": "success" if is_success else "failed",
+                                "message": _job_store[job_id]["message"],
+                                "action": action_dict,
+                                "sandbox_path": str(sandbox_dir),
+                                "iterations_used": response.iterations_used,
+                                "summary": response.summary,
+                                "aws_permissions_used": request.aws_permissions,
+                            }, af, indent=2, ensure_ascii=False)
+                    except Exception as e:
+                        logger.warning("Could not write execution_result.json to sandbox: %s", e)
 
         logger.info(
             "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
@@ -1610,6 +1650,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             # Worker Action Execution Center can distinguish it from the
             # initial "running" phase (before the approval gate is reached).
             _job_store[job_id]["approved_by_human"] = True
+            _job_store[job_id]["requires_approval"] = False
 
         final_state = _digital_worker.invoke(
             Command(resume=approval.model_dump()),
@@ -1716,7 +1757,7 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "risk_score": risk.get("score"),
         "decision_mode": approval.get("decision_mode") or out_decision.get("mode") or job.get("decision_mode"),
         "reason": approval.get("reason") or out_decision.get("reason"),
-        "requires_approval": job.get("status") == "awaiting_approval",
+        "requires_approval": job.get("requires_approval", job.get("status") == "awaiting_approval"),
         "approved_by_human": job.get("approved_by_human", False),
         "workflow_status": output.get("status"),
         "submitted_at": job.get("submitted_at"),

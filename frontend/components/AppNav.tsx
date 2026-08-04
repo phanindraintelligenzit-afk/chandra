@@ -31,14 +31,13 @@ const OPERATIONAL_NAV = [
 export default function AppNav() {
   const pathname = usePathname();
   const router = useRouter();
-  const { onboardingCompleted, stepsCompleted, dashboardOpened, openDashboard, completeStep, hydrated } = useOnboarding();
+  const { onboardingCompleted, dashboardOpened, openDashboard, hydrated } = useOnboarding();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // Hide nav on onboarding page when dashboard is not yet opened
   if (pathname.startsWith("/onboarding") && !dashboardOpened) return null;
 
   const isOnboarding = pathname.startsWith("/onboarding");
-  const allStepsDone = WORKFLOW_STEPS.every(s => s.key === "worker-details" || stepsCompleted.includes(s.key));
   const workerDetailsDone = onboardingCompleted;
 
   return (
@@ -67,16 +66,8 @@ export default function AppNav() {
               {WORKFLOW_STEPS.map((item) => {
                 const isActive = pathname === item.href;
                 const Icon = item.icon;
-                const isCompleted = item.key === "worker-details"
-                  ? onboardingCompleted
-                  : stepsCompleted.includes(item.key);
-                const isEnabled = item.key === "worker-details" || (
-                  item.key === "aws-tasks" ? onboardingCompleted :
-                  item.key === "aws-permissions" ? stepsCompleted.includes("aws-tasks") :
-                  item.key === "execution-review" ? stepsCompleted.includes("aws-permissions") :
-                  item.key === "deployment" ? stepsCompleted.includes("execution-review") :
-                  item.key === "execution-history" ? stepsCompleted.includes("deployment") : false
-                );
+                const isCompleted = false;
+                const isEnabled = false;
 
                 return (
                   <div key={item.href}>
@@ -103,45 +94,7 @@ export default function AppNav() {
                 );
               })}
 
-              {/* Mark current step complete — only on workflow pages */}
-              {!dashboardOpened && !isOnboarding && (
-                (() => {
-                  const currentStep = WORKFLOW_STEPS.find(s => pathname === s.href);
-                  if (!currentStep || currentStep.key === "worker-details") return null;
-                  const isDone = stepsCompleted.includes(currentStep.key);
-                  if (isDone) return null;
-                  const nextStep = WORKFLOW_STEPS[WORKFLOW_STEPS.indexOf(currentStep) + 1];
-                  return (
-                    <div className="pt-3 border-t border-gray-800 mt-3">
-                      <button
-                        onClick={() => {
-                          completeStep(currentStep.key);
-                          if (nextStep) router.push(nextStep.href);
-                        }}
-                        className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-all"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>Mark Complete &amp; Continue</span>
-                        <ArrowRight className="w-4 h-4 ml-auto" />
-                      </button>
-                    </div>
-                  );
-                })()
-              )}
-
-              {/* Open Dashboard button — only when all steps done */}
-              {allStepsDone && workerDetailsDone && !dashboardOpened && (
-                <div className="pt-3 border-t border-gray-800 mt-3">
-                  <button
-                    onClick={() => { openDashboard(); router.push("/dashboard"); }}
-                    className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-all"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    <span>Open Dashboard</span>
-                    <ArrowRight className="w-4 h-4 ml-auto" />
-                  </button>
-                </div>
-              )}
+              {/* (Old onboarding steps logic removed) */}
             </>
           ) : (
             /* ── Operational Dashboard nav ── */

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { KeyRound, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 
 import { useOnboarding } from "@/store/OnboardingContext";
@@ -62,6 +62,16 @@ const deploymentStages = [
 ];
 
 const deploymentTargets = [10, 24, 38, 55, 80, 92, 100];
+
+const STEP_PATHS = [
+  "/onboarding",
+  "/onboarding/role",
+  "/onboarding/maturity",
+  "/onboarding/monitoring",
+  "/onboarding/aws-tasks",
+  "/onboarding/aws-permissions",
+  "/onboarding/deploying"
+];
 
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -140,6 +150,7 @@ function TopRightProfile({
 
 export default function OnboardingWizard() {
   const router = useRouter();
+  const pathname = usePathname();
   const {
     agentName,
     employeeId,
@@ -166,11 +177,15 @@ export default function OnboardingWizard() {
     selectedAwsTasks,
     selectedAwsPermissions,
     completeOnboarding,
+    openDashboard,
 
     setObservations,
-    setCostMetrics
+    setCostMetrics,
+    hydrated
   } = useOnboarding();
-  const [step, setStep] = useState(0);
+  
+  const initialStepIndex = STEP_PATHS.indexOf(pathname);
+  const [step, setStep] = useState(initialStepIndex !== -1 ? initialStepIndex : 0);
   const [localName, setLocalName] = useState(agentName || "");
   const [deployStage, setDeployStage] = useState<number>(0);
   const [deployProgress, setDeployProgress] = useState<number>(0);
@@ -205,6 +220,41 @@ export default function OnboardingWizard() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!hydrated) return;
+
+    const idx = STEP_PATHS.indexOf(pathname);
+    if (idx === -1) {
+      router.replace(STEP_PATHS[0]);
+      return;
+    }
+
+    const nameToCheck = agentName || normalizedName;
+    if (idx > 0 && !(nameToCheck.length > 0 && hasSelectedAvatar)) {
+      if (pathname !== STEP_PATHS[0]) router.replace(STEP_PATHS[0]);
+    } else if (idx > 1 && role !== "AWS Cloud Engineer") {
+      if (pathname !== STEP_PATHS[1]) router.replace(STEP_PATHS[1]);
+    } else if (idx > 2 && maturity !== "L2") {
+      if (pathname !== STEP_PATHS[2]) router.replace(STEP_PATHS[2]);
+    } else if (idx > 3 && selectedKRAs.length === 0) {
+      if (pathname !== STEP_PATHS[3]) router.replace(STEP_PATHS[3]);
+    } else if (idx > 4 && selectedAwsTasks.length === 0) {
+      if (pathname !== STEP_PATHS[4]) router.replace(STEP_PATHS[4]);
+    } else {
+      if (idx !== step) {
+        setStep(idx);
+      }
+      if (idx === 6 && !deploymentStartedRef.current) {
+        deploymentStartedRef.current = true;
+        runDeploymentSequence();
+      } else if (idx !== 6) {
+        submissionRef.current?.abort();
+        deploymentStartedRef.current = false;
+      }
+    }
+  }, [pathname, hydrated, step, agentName, normalizedName, hasSelectedAvatar, role, maturity, selectedKRAs, selectedAwsTasks, router]);
+
   const canNext = useMemo(() => {
     if (step === 0) return normalizedName.length > 0 && !duplicateName && hasSelectedAvatar;
     if (step === 1) return role === "AWS Cloud Engineer";
@@ -226,16 +276,14 @@ export default function OnboardingWizard() {
     }
     if (step === 5) {
       if (deploymentStartedRef.current) return;
-      deploymentStartedRef.current = true;
-      setStep(6);
-      runDeploymentSequence();
+      router.push(STEP_PATHS[6]);
       return;
     }
-    setStep((s) => Math.min(s + 1, 6));
+    router.push(STEP_PATHS[Math.min(step + 1, 6)]);
   }
 
   function prev() {
-    setStep((s) => Math.max(s - 1, 0));
+    router.push(STEP_PATHS[Math.max(step - 1, 0)]);
   }
 
   function addCustomKraFromInput() {
@@ -328,6 +376,22 @@ export default function OnboardingWizard() {
             setCostMetrics(null, message);
           });
 
+        // Submit the user-selected AWS Tasks to the digital worker so they appear in the Human Approval Center
+        if (selectedAwsTasks && selectedAwsTasks.length > 0) {
+          selectedAwsTasks.forEach((taskTitle) => {
+            import('@/services/api').then(({ submitDigitalWorkerRequest }) => {
+              submitDigitalWorkerRequest({
+                source: "onboarding",
+                payload: {
+                  title: taskTitle,
+                  description: `User-selected AWS task from onboarding: ${taskTitle}`,
+                  priority: "High"
+                }
+              }).catch(err => console.error("Failed to submit AWS Task:", err));
+            });
+          });
+        }
+
         // Fire observations fetch in background (don't await) with longer timeout
         const obsController = new AbortController();
         const obsTimeout = setTimeout(() => obsController.abort(), 600_000); // 10 minute timeout
@@ -345,6 +409,7 @@ export default function OnboardingWizard() {
             setObservations(null, message);
           });
 
+        openDashboard();
         router.push("/dashboard");
       }
     } catch (error: unknown) {
@@ -360,6 +425,7 @@ export default function OnboardingWizard() {
   useEffect(() => {
     return () => {
       submissionRef.current?.abort();
+      deploymentStartedRef.current = false;
     };
   }, []);
 

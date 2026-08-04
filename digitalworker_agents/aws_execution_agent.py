@@ -206,7 +206,7 @@ class AgentMemory:
 
         lines = ["AGENT MEMORY — past pipeline runs (most recent last):"]
         for r in relevant:
-            status_icon = "✓" if r["final_status"] == "success" else "✗"
+            status_icon = "OK" if r["final_status"] == "success" else "X"
             lines.append(
                 f"  [{r['timestamp']}] {status_icon} {r['action_name']} "
                 f"({r['iterations_used']} iter, {r['final_status']})"
@@ -447,6 +447,7 @@ class AgentState(TypedDict):
     reference_folder: str
     command_timeout: int
     max_iterations: int
+    aws_permissions: List[str]
     iteration: int
     records: List[Dict]
     feedback_summary: str
@@ -481,12 +482,14 @@ class AgentState(TypedDict):
     execution_results: List[Dict]
     success: bool
     executor_summary: str
+    approval_rejected: bool
 
     pre_apply_results: List[Dict]
     plan_review: Optional[Dict]
     plan_review_iteration: int
     plan_review_precheck_failed: bool
     plan_review_skipped: bool
+    plan_review_issue: str
 
     final_status: str
     final_summary: str
@@ -554,6 +557,17 @@ def cleanup_thread_state():
 def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any]:
     """Execute a shell command in a specific directory with a timeout."""
     proc_env = os.environ.copy()
+    
+    # Resolve Terraform via explicit env var or fallback to shutil.which
+    tf_path = os.environ.get("TERRAFORM_BIN_DIR")
+    if not tf_path:
+        import shutil
+        tf_exe = shutil.which("terraform")
+        if tf_exe:
+            tf_path = os.path.dirname(tf_exe)
+    if tf_path:
+        proc_env["PATH"] = proc_env.get("PATH", "") + os.pathsep + tf_path
+        
     proc_env.setdefault("NO_COLOR", "1")
     proc_env.setdefault("TF_IN_AUTOMATION", "1")
     proc_env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -1499,151 +1513,28 @@ cautious regarding IAM and security: ALWAYS ask the user if target identities or
             self.logger.exception("Analysis failed: %s", exc)
             raise
 
+
     def _check_permissions_node(self, state: AgentState) -> dict:
         check_cancelled()
+        from src.chandra.execution.services import TaskAuthorizationService
 
-        # ── Bypass: for user-defined KRA payloads, skip IAM policy crawling ──
-        kra_data = state.get("kra_data")
-        if kra_data and isinstance(kra_data, dict):
-            self.logger.info(
-                "Custom KRA payload detected — skipping IAM permission check. "
-                "User specified permissions via UI."
-            )
-            return {"permission_issues": [], "caller_arn": ""}
-
-        self.logger.info("Dynamic Grounding: Checking required IAM permissions for expected resources...")
-        
-        analysis = state.get("analysis") or {}
-        resources = analysis.get("expected_resources") or []
         action = state.get("action", {})
         action_name = action.get("actionName", "")
-        action_desc = action.get("actionDescription", "")
-        action_steps = action.get("steps", [])
+        permission_sets = state.get("aws_permissions", [])
+        if not permission_sets:
+            self.logger.warning("No permission sets provided for task.")
+            return {"permission_issues": ["No permission sets selected."]}
+            
+        permission_set_id = permission_sets[0] if isinstance(permission_sets, list) else permission_sets
+        auth_service = TaskAuthorizationService()
         
-        if not resources:
-            return {"permission_issues": [], "caller_arn": ""}
-
-        try:
-            import json
-            identity = self._run_mcp_aws_command("aws sts get-caller-identity")
-            if not identity or not identity.get('Arn'):
-                self.logger.warning("Could not get caller identity for permission check — STS call failed. Blocking to be safe.")
-                return {"permission_issues": ["Could not verify caller identity via aws sts get-caller-identity. Please check your AWS credentials/network and try again."], "caller_arn": ""}
-            
-            arn = identity.get('Arn')
-            policies_json = []
-
-            if ":user/" in arn:
-                user_name = arn.split(":user/")[-1]
-                self.logger.info("Dynamic Grounding: Checking attached policies for user %s...", user_name)
-                attached = self._run_mcp_aws_command(f"aws iam list-attached-user-policies --user-name {user_name}")
-                if attached and attached.get("AttachedPolicies"):
-                    for pol in attached["AttachedPolicies"]:
-                        pol_arn = pol["PolicyArn"]
-                        pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
-                        if pol_info and pol_info.get("Policy"):
-                            v_id = pol_info["Policy"]["DefaultVersionId"]
-                            v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
-                            if v_info and v_info.get("PolicyVersion"):
-                                policies_json.append({"PolicyName": pol["PolicyName"], "Document": v_info["PolicyVersion"]["Document"]})
-                inline = self._run_mcp_aws_command(f"aws iam list-user-policies --user-name {user_name}")
-                if inline and inline.get("PolicyNames"):
-                    for p_name in inline["PolicyNames"]:
-                        p_info = self._run_mcp_aws_command(f"aws iam get-user-policy --user-name {user_name} --policy-name {p_name}")
-                        if p_info and p_info.get("PolicyDocument"):
-                            policies_json.append({"PolicyName": p_name, "Document": p_info["PolicyDocument"]})
-
-                self.logger.info("Dynamic Grounding: Checking groups for user %s...", user_name)
-                groups_info = self._run_mcp_aws_command(f"aws iam list-groups-for-user --user-name {user_name}")
-                if groups_info and groups_info.get("Groups"):
-                    for group in groups_info["Groups"]:
-                        g_name = group["GroupName"]
-                        
-                        self.logger.info("Dynamic Grounding: Checking attached policies for group %s...", g_name)
-                        g_attached = self._run_mcp_aws_command(f"aws iam list-attached-group-policies --group-name {g_name}")
-                        if g_attached and g_attached.get("AttachedPolicies"):
-                            for pol in g_attached["AttachedPolicies"]:
-                                pol_arn = pol["PolicyArn"]
-                                pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
-                                if pol_info and pol_info.get("Policy"):
-                                    v_id = pol_info["Policy"]["DefaultVersionId"]
-                                    v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
-                                    if v_info and v_info.get("PolicyVersion"):
-                                        policies_json.append({"PolicyName": f"Group-{g_name}-{pol['PolicyName']}", "Document": v_info["PolicyVersion"]["Document"]})
-                        
-                        self.logger.info("Dynamic Grounding: Checking inline policies for group %s...", g_name)
-                        g_inline = self._run_mcp_aws_command(f"aws iam list-group-policies --group-name {g_name}")
-                        if g_inline and g_inline.get("PolicyNames"):
-                            for p_name in g_inline["PolicyNames"]:
-                                p_info = self._run_mcp_aws_command(f"aws iam get-group-policy --group-name {g_name} --policy-name {p_name}")
-                                if p_info and p_info.get("PolicyDocument"):
-                                    policies_json.append({"PolicyName": f"Group-{g_name}-{p_name}", "Document": p_info["PolicyDocument"]})
-
-            elif ":assumed-role/" in arn:
-                assumed_role_part = arn.split(":assumed-role/")[-1]
-                role_name = "/".join(assumed_role_part.split("/")[:-1]) if "/" in assumed_role_part else assumed_role_part
-                self.logger.info("Dynamic Grounding: Checking attached policies for role %s...", role_name)
-                attached = self._run_mcp_aws_command(f"aws iam list-attached-role-policies --role-name {role_name}")
-                if attached and attached.get("AttachedPolicies"):
-                    for pol in attached["AttachedPolicies"]:
-                        pol_arn = pol["PolicyArn"]
-                        pol_info = self._run_mcp_aws_command(f"aws iam get-policy --policy-arn {pol_arn}")
-                        if pol_info and pol_info.get("Policy"):
-                            v_id = pol_info["Policy"]["DefaultVersionId"]
-                            v_info = self._run_mcp_aws_command(f"aws iam get-policy-version --policy-arn {pol_arn} --version-id {v_id}")
-                            if v_info and v_info.get("PolicyVersion"):
-                                policies_json.append({"PolicyName": pol["PolicyName"], "Document": v_info["PolicyVersion"]["Document"]})
-                
-                self.logger.info("Dynamic Grounding: Checking inline policies for role %s...", role_name)
-                inline = self._run_mcp_aws_command(f"aws iam list-role-policies --role-name {role_name}")
-                if inline and inline.get("PolicyNames"):
-                    for p_name in inline["PolicyNames"]:
-                        p_info = self._run_mcp_aws_command(f"aws iam get-role-policy --role-name {role_name} --policy-name {p_name}")
-                        if p_info and p_info.get("PolicyDocument"):
-                            policies_json.append({"PolicyName": p_name, "Document": p_info["PolicyDocument"]})
-
-            elif ":root" in arn:
-                self.logger.info("Caller is the AWS Root account. Root has full permissions.")
-                return {"permission_issues": [], "caller_arn": arn}
-
-            else:
-                self.logger.warning("Unknown ARN type for permission check: %s. Will attempt LLM check with empty policies.", arn)
-
-            if not policies_json:
-                self.logger.warning("No policies could be fetched for %s", arn)
-                return {"permission_issues": [f"Could not automatically determine permissions for {arn}. You may lack IAM read access. Please verify you have required access manually."], "caller_arn": arn}
-                
-            policy_names = [p["PolicyName"] for p in policies_json]
-            self.logger.info("Fetched %d IAM policies for permission check (Caller: %s): %s", len(policies_json), arn, ", ".join(policy_names))
-
-            prompt = f"""You are a strict AWS security auditor.
-Analyze the following attached IAM policies to determine if the caller has sufficient permissions to perform the requested action on the expected Terraform resources.
-Note that we only have the policy documents; resource boundaries or specific conditions may apply. If the policies show clear administrative access (e.g. AdministratorAccess) or clear comprehensive access to the involved services, return is_authorized=True. 
-
-Action Name: {action_name}
-Action Description: {action_desc}
-Action Steps: {json.dumps(action_steps, indent=2)}
-Expected Terraform Resources: {resources}
-
-Attached Policies:
-{json.dumps(policies_json, indent=2)}
-"""
-            structured_llm = self._structured_llm(PermissionCheck)
-            evaluation: PermissionCheck = structured_llm.invoke([HumanMessage(content=prompt)])
-            
-            self.logger.info("Permission Check Result: is_authorized=%s, missing=%s, reasoning=%s", evaluation.is_authorized, evaluation.missing_permissions, evaluation.reasoning)
-            
-            if not evaluation.is_authorized:
-                missing = evaluation.missing_permissions or ["(permissions not specified by evaluator)"]
-                self.logger.warning("Permission check failed: %s", missing)
-                return {"permission_issues": missing, "caller_arn": arn}
-
-            return {"permission_issues": [], "caller_arn": arn}
-
-        except Exception as exc:
-            self.logger.exception("Permission check encountered an unexpected error: %s", exc)
-            return {"permission_issues": [f"Permission check failed unexpectedly: {exc}. Please verify permissions manually before proceeding."], "caller_arn": ""}
-
+        is_authorized = auth_service.is_authorized(action_name, permission_set_id)
+        if not is_authorized:
+             self.logger.warning(f"Task {action_name} not authorized by {permission_set_id}")
+             return {"permission_issues": [f"Task {action_name} is not authorized by the selected permission set {permission_set_id}."]}
+        
+        self.logger.info(f"Gate 1: Task {action_name} authorized by {permission_set_id}")
+        return {"permission_issues": [], "caller_arn": "User-Bounded"}
     @staticmethod
     def _route_after_permissions(state: AgentState) -> str:
         issues = state.get("permission_issues") or []
@@ -1953,11 +1844,11 @@ IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandat
         batch_size = len(resources) if resources and resources != ["all"] else 1
         max_retries = 3
 
-        tf_docs_dict = state.get("terraform_docs_dict") or {{}}
+        tf_docs_dict = state.get("terraform_docs_dict") or {}
 
         for attempt in range(max_retries):
             try:
-                all_generated_files = {{}}
+                all_generated_files = {}
                 all_exec_steps = []
                 summaries = []
                 
@@ -2021,7 +1912,9 @@ RULE 5 — tfvars CONVENTION: Write terraform.tfvars.example.
 RULE 6 — LEARN FROM FEEDBACK: Do not repeat errors.
 RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE.
 RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
-
+RULE 9 — Do NOT use data sources for random_id or random_string. They are resources.
+RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
+RULE 11 — ALWAYS use proper HCL string interpolation format: "${random_id.name.hex}" instead of "string"[random_id.name.hex].
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
@@ -2076,10 +1969,15 @@ Generate the complete set of files now."""
 
     def _write_files_node(self, state: AgentState) -> dict:
         input_path = state.get("input_sandbox_path") or ""
-        if input_path:
-            sandbox_dir = str(Path(input_path).resolve())
+        
+        # Ensure we use terraform_runs/<worker_id>/<job_id>
+        worker_id = state.get("action", {}).get("workerId", "default_worker")
+        job_id = getattr(self, "job_id", None) or state.get("action", {}).get("jobId", secrets.token_hex(6))
+        
+        if input_path and worker_id in input_path and job_id in input_path:
+             sandbox_dir = str(Path(input_path).resolve())
         else:
-            sandbox_dir = str(Path(f"terraform_runs/run_{secrets.token_hex(6)}").resolve())
+             sandbox_dir = str(Path(f"terraform_runs/{worker_id}/{job_id}").resolve())
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
         self.logger.info("Using sandbox directory: %s", sandbox_dir)
@@ -2145,7 +2043,7 @@ Generate the complete set of files now."""
         if tf_files:
             try:
                 init_result = execute_shell_command(
-                    "terraform init -input=false", cwd=sandbox_dir, timeout=180
+                    "terraform init -upgrade -input=false", cwd=sandbox_dir, timeout=180
                 )
                 if init_result["return_code"] != 0:
                     errors.append(
@@ -2178,10 +2076,10 @@ Generate the complete set of files now."""
 
         passed = not errors
         if passed:
-            self.logger.info("[validate] ✓ static checks passed (attempt %d)", validate_iteration)
+            self.logger.info("[validate] check static checks passed (attempt %d)", validate_iteration)
         else:
             self.logger.warning(
-                "[validate] ✗ static checks failed (attempt %d/%d)",
+                "[validate] X static checks failed (attempt %d/%d)",
                 validate_iteration, VALIDATE_MAX_RETRIES,
             )
 
@@ -2260,7 +2158,7 @@ Generate the complete set of files now."""
 
         if state.get("executable_steps"):
             steps = state["executable_steps"]
-            self.logger.info("✓ Using %d executable steps from generator", len(steps))
+            self.logger.info("OK Using %d executable steps from generator", len(steps))
             self.logger.info("-" * 80)
             for idx, step in enumerate(steps, 1):
                 self.logger.info("   [%d] %s", idx, step.get("description", step.get("command", "")))
@@ -2352,7 +2250,7 @@ command string — never a placeholder, never "...", never a comment."""
         try:
             structured_llm = self._structured_llm(ExecutionPlan)
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
-            self.logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
+            self.logger.info("OK EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
             self.logger.info("  Reasoning: %s", plan.reasoning)
             commands = self._ensure_plan_out_flag([c.model_dump() for c in plan.commands])
             for cmd in commands:
@@ -2424,7 +2322,7 @@ command string — never a placeholder, never "...", never a comment."""
 
             is_valid, error_msg = self._validate_command(command, str(cwd))
             if not is_valid:
-                self.logger.warning("✗ VALIDATION FAILED: %s — %s", description or command, error_msg)
+                self.logger.warning("X VALIDATION FAILED: %s — %s", description or command, error_msg)
                 results.append({
                     "command": command,
                     "description": description,
@@ -2458,9 +2356,9 @@ command string — never a placeholder, never "...", never a comment."""
                     "timeout_seconds": timeout,
                 }
                 if success:
-                    self.logger.info("✓ SUCCESS: %s (rc=%d)", description or command, tool_output["return_code"])
+                    self.logger.info("OK SUCCESS: %s (rc=%d)", description or command, tool_output["return_code"])
                 else:
-                    self.logger.warning("✗ FAILED: %s (rc=%d)", description or command, tool_output["return_code"])
+                    self.logger.warning("X FAILED: %s (rc=%d)", description or command, tool_output["return_code"])
             except TimeoutError as exc:
                 timed_out = True
                 timeout_msg = (
@@ -2478,7 +2376,7 @@ command string — never a placeholder, never "...", never a comment."""
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
-                self.logger.error("✗ TIMEOUT: %s exceeded %ds", description or command, timeout)
+                self.logger.error("X TIMEOUT: %s exceeded %ds", description or command, timeout)
             except Exception as exc:
                 result = {
                     "command": command,
@@ -2491,7 +2389,7 @@ command string — never a placeholder, never "...", never a comment."""
                     "timed_out": False,
                     "timeout_seconds": timeout,
                 }
-                self.logger.exception("✗ EXCEPTION in '%s': %s", description or command, exc)
+                self.logger.exception("X EXCEPTION in '%s': %s", description or command, exc)
 
             results.append(result)
             if not result["success"]:
@@ -2501,12 +2399,6 @@ command string — never a placeholder, never "...", never a comment."""
         return results, halted
 
     def _plan_review_node(self, state: AgentState) -> dict:
-        """
-        Run only the pre-apply commands (init/validate/plan) for real, capture
-        the resulting plan, and have the LLM sanity-check it against the
-        requested action BEFORE any apply command runs. Catches "ran fine but
-        did the wrong thing" failures that a bare exit-code check would miss.
-        """
         check_cancelled()
         execute_folder = state["sandbox_path"]
         plan = state.get("execution_plan") or {}
@@ -2519,7 +2411,7 @@ command string — never a placeholder, never "...", never a comment."""
         ):
             return {"plan_review_skipped": True, "pre_apply_results": []}
 
-        pre_apply_cmds: List[Dict] = []
+        pre_apply_cmds = []
         for c in commands:
             cmd_lower = c.get("command", "").lower()
             if "apply" in cmd_lower or "terraform output" in cmd_lower:
@@ -2541,80 +2433,36 @@ command string — never a placeholder, never "...", never a comment."""
         if not tfplan_path.exists():
             self.logger.info("[plan_review] no tfplan file produced — skipping content review")
             return {"pre_apply_results": results, "plan_review_skipped": True}
-
+            
         try:
             show_result = execute_shell_command("terraform show -json tfplan", cwd=str(base_path), timeout=60)
-            plan_json_text = (show_result["stdout"] or "")[:12000]
+            plan_json_path = base_path / "tfplan.json"
+            with open(plan_json_path, "w", encoding="utf-8") as f:
+                f.write(show_result["stdout"] or "{}")
+                
+            from src.chandra.execution.services import TerraformPlanPolicyValidator
+            validator = TerraformPlanPolicyValidator()
+            
+            action_name = state.get("action", {}).get("actionName", "")
+            permission_sets = state.get("aws_permissions", [])
+            if permission_sets:
+                 perm_id = permission_sets[0] if isinstance(permission_sets, list) else permission_sets
+                 is_valid, reason = validator.validate_plan(str(plan_json_path), perm_id, action_name)
+                 if not is_valid:
+                      self.logger.error(f"Gate 2 Plan Validation Failed: {reason}")
+                      return {
+                          "pre_apply_results": results,
+                          "plan_review_precheck_failed": True,
+                          "plan_review_skipped": False,
+                          "plan_review_issue": reason
+                      }
+                 else:
+                      self.logger.info(f"Gate 2 Plan Validation Passed: {reason}")
         except Exception as exc:
-            self.logger.warning("[plan_review] terraform show failed: %s", exc)
+            self.logger.warning("[plan_review] plan validation failed: %s", exc)
             return {"pre_apply_results": results, "plan_review_skipped": True}
 
-        if not plan_json_text.strip():
-            return {"pre_apply_results": results, "plan_review_skipped": True}
-
-        action = state["action"]
-        review_prompt = f"""Review this Terraform plan against what was requested.
-
-Action Name: {action.get("actionName")}
-Action Description: {action.get("actionDescription")}
-
-Plan (terraform show -json, truncated):
-{plan_json_text}
-
-Determine:
-1. matches_intent — does the set of resource changes plausibly match the requested action?
-2. destroy_or_replace_detected — is there any destroy or replace action that looks unexpected
-   given the request (a fresh deploy should have no destroys; an update might have a few
-   deliberate replaces, but flag anything that looks like collateral damage)?
-3. concerns — short list of specific issues, if any (empty list if the plan looks correct).
-4. reasoning — one or two sentences."""
-
-        try:
-            structured_llm = self._structured_llm(PlanReview)
-            review: PlanReview = structured_llm.invoke([HumanMessage(content=review_prompt)])
-            review_dict = review.model_dump()
-            self.logger.info(
-                "[plan_review] matches_intent=%s destroy_or_replace=%s concerns=%s",
-                review.matches_intent, review.destroy_or_replace_detected, review.concerns,
-            )
-        except Exception as exc:
-            self.logger.warning("[plan_review] LLM review failed, proceeding without review: %s", exc)
-            return {"pre_apply_results": results, "plan_review_skipped": True}
-
-        flagged = (not review.matches_intent) or review.destroy_or_replace_detected
-        next_iteration = state.get("plan_review_iteration", 0) + (1 if flagged else 0)
-
-        timings = state.get("timings") or {}
-        timings["terraform_plan"] = time.time() - start_t
-
-        return {
-            "pre_apply_results": results,
-            "plan_review": review_dict,
-            "plan_review_iteration": next_iteration,
-            "plan_review_skipped": False,
-            "plan_review_precheck_failed": False,
-            "timings": timings,
-        }
-
-    @staticmethod
-    def _route_after_plan_review(state: AgentState) -> str:
-        if state.get("plan_review_precheck_failed"):
-            return "precheck_failed"
-        if state.get("plan_review_skipped"):
-            return "proceed"
-        review = state.get("plan_review") or {}
-        flagged = (not review.get("matches_intent", True)) or review.get("destroy_or_replace_detected", False)
-        if not flagged:
-            return "proceed"
-        if state.get("plan_review_iteration", 0) >= PLAN_REVIEW_MAX_RETRIES:
-            self_logger = logging.getLogger("ExecutionAgents")
-            self_logger.warning(
-                "[plan_review] exhausted %d review retries — failing the precheck "
-                "rather than proceeding with a dangerously flagged plan.",
-                PLAN_REVIEW_MAX_RETRIES,
-            )
-            return "precheck_failed"
-        return "retry_generate"
+        return {"pre_apply_results": results, "plan_review_skipped": False, "plan_review_issue": ""}
 
     def _human_approval_center_node(self, state: AgentState) -> dict:
         """
@@ -2650,13 +2498,20 @@ Determine:
             self.logger.warning("Failed to write approval state: %s", e)
             
         self.logger.warning("Execution paused for Human Approval Center. Job ID: %s", approval_payload["job_id"])
-        
         # Pause graph execution here
         from langgraph.types import interrupt
         approval_response = interrupt([approval_payload])
         
+        is_approved = True
+        if isinstance(approval_response, dict) and not approval_response.get("approved", True):
+            is_approved = False
+            
+        if not is_approved:
+            self.logger.warning("Human Approval Center: Job REJECTED. Halting execution.")
+            return {"approval_rejected": True, "success": False}
+        
         self.logger.info("Human Approval Center: Job APPROVED. Resuming execution directly to apply phase.")
-        return {}
+        return {"approval_rejected": False}
 
 
     def _plan_review_precheck_failed_node(self, state: AgentState) -> dict:
@@ -2664,6 +2519,13 @@ Determine:
         like a normal execution failure and let report/record_iteration handle it."""
         results = state.get("pre_apply_results") or []
         return {"execution_results": results, "success": False}
+
+    def _route_after_plan_review(self, state: AgentState) -> str:
+        if state.get("plan_review_precheck_failed"):
+            return "precheck_failed"
+        if state.get("plan_review_issue"):
+            return "retry_generate"
+        return "proceed"
 
     def _typed_execution_gate(self, state: AgentState) -> Optional[dict]:
         """Route execution through the validated ExecutionPlan pipeline.
@@ -2749,6 +2611,9 @@ Determine:
 
     def _execute_node(self, state: AgentState) -> dict:
         check_cancelled()
+        if state.get("approval_rejected"):
+            self.logger.warning("Job was rejected in Human Approval Center. Skipping execution.")
+            return {"success": False, "execution_results": []}
         typed = self._typed_execution_gate(state)
         if typed is not None:
             return typed
@@ -2764,6 +2629,52 @@ Determine:
         if not plan or not plan.get("commands"):
             self.logger.error("No execution plan / commands found — skipping execution")
             return {"execution_results": [], "success": False}
+
+        # Deterministic Permission Enforcement Block
+        aws_permissions_ids = state.get("aws_permissions", [])
+        if aws_permissions_ids:
+            self.logger.info("VALIDATING EXECUTION AGAINST USER-SELECTED PERMISSION SETS BEFORE RUNNING...")
+            import json
+            from pathlib import Path
+            aws_permissions_file = Path(__file__).parent.parent / "aws_permissions.json"
+            if not aws_permissions_file.exists():
+                aws_permissions_file = Path("aws_permissions.json")
+            
+            if aws_permissions_file.exists():
+                with aws_permissions_file.open("r", encoding="utf-8") as f:
+                    all_sets = json.load(f)
+                
+                allowed_actions = set()
+                for pset in all_sets:
+                    if str(pset.get("id")) in aws_permissions_ids or pset.get("id") in aws_permissions_ids:
+                        for a in pset.get("actions", []):
+                            if isinstance(a, dict) and "action" in a:
+                                allowed_actions.add(a["action"].lower())
+                
+                if allowed_actions:
+                    # We check if the planned commands / target action is covered.
+                    # Since the action has a name or service, we can do a naive check if the service matches the allowed action prefix.
+                    action = state.get("action", {})
+                    service = action.get("service", "").lower()
+                    
+                    if not service:
+                        # Extract service from the command if service is empty
+                        for cmd in plan.get("commands", []):
+                            c_str = cmd.get("command", "")
+                            if c_str.startswith("aws "):
+                                parts = c_str.split(" ")
+                                if len(parts) > 1:
+                                    service = parts[1].lower()
+                                    break
+                    
+                    # Very simple prefix matching to ensure we don't block valid things if it matches the prefix.
+                    # E.g. allowed: s3:createbucket, service is s3
+                    # We must check if any allowed action starts with the service prefix
+                    if service:
+                        is_allowed = any(a.startswith(f"{service}:") or a == f"{service}:*" for a in allowed_actions)
+                        if not is_allowed:
+                            self.logger.error("BLOCKED: Planned AWS action relies on %s, which is not granted by user-selected permissions.", service)
+                            return {"execution_results": [], "success": False, "status": "blocked"}
 
         base_path = Path(execute_folder).resolve()
         all_commands = sorted(plan["commands"], key=lambda c: c.get("order", 9999))
@@ -2790,20 +2701,43 @@ Determine:
 
         self.logger.info("=" * 80)
         if overall_success:
-            self.logger.info("✓ EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
+            self.logger.info("OK EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
         else:
             timed_out_count = sum(1 for r in results if r.get("timed_out"))
             if timed_out_count:
-                self.logger.warning("✗ EXECUTION: %d command(s) timed out", timed_out_count)
+                self.logger.warning("X EXECUTION: %d command(s) timed out", timed_out_count)
             else:
                 self.logger.warning(
-                    "✗ EXECUTION: %d/%d command(s) succeeded",
+                    "X EXECUTION: %d/%d command(s) succeeded",
                     sum(1 for r in results if r["success"]), len(results),
                 )
         self.logger.info("=" * 80)
 
         timings = state.get("timings") or {}
         timings["terraform_apply"] = time.time() - start_t
+
+        if overall_success:
+             try:
+                 from src.chandra.execution.services import AwsResourceVerifier
+                 verifier = AwsResourceVerifier()
+                 action_name = state.get("action", {}).get("actionName", "")
+                 
+                 # Get terraform output -json
+                 out_result = execute_shell_command("terraform output -json", cwd=str(base_path), timeout=60)
+                 if out_result["success"] and out_result["stdout"]:
+                      import json
+                      outputs = json.loads(out_result["stdout"])
+                      is_verified = verifier.verify_resource(action_name, outputs)
+                      if is_verified == "VERIFIED":
+                           self.logger.info("Post-Apply Verification Passed: Resource state confirmed via boto3.")
+                      elif is_verified == "UNVERIFIED":
+                           self.logger.warning("Post-Apply Verification Skipped: Resource type not supported for deterministic verification.")
+                           overall_success = False
+                      else:
+                           self.logger.error("Post-Apply Verification Failed: Resource state could not be confirmed via boto3.")
+                           overall_success = False
+             except Exception as exc:
+                 self.logger.warning("Post-Apply Verification encountered an error: %s", exc)
 
         return {"execution_results": results, "success": overall_success, "timings": timings}
 
@@ -2899,7 +2833,7 @@ Rules:
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
             summary = response.content
-            self.logger.info("✓ LLM summary generated:\n%s", summary)
+            self.logger.info("OK LLM summary generated:\n%s", summary)
         except Exception as exc:
             self.logger.warning("LLM summary failed, using fallback: %s", exc)
             timed_out_cmds = [r for r in results if r.get("timed_out")]
@@ -3000,7 +2934,7 @@ Rules:
         records.append(record.model_dump())
 
         if state.get("success"):
-            self._banner(f"✓ PIPELINE COMPLETED SUCCESSFULLY on iteration {iteration}", char="═")
+            self._banner(f"OK PIPELINE COMPLETED SUCCESSFULLY on iteration {iteration}", char="═")
             return {
                 "records": records,
                 "final_status": "success",
@@ -3066,7 +3000,7 @@ Rules:
         )
 
         if iteration >= max_iter:
-            self._banner(f"✗ PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
+            self._banner(f"X PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
             summary = (
                 f"Action '{state['action'].get('actionName')}' could not be completed after "
                 f"{iteration} iteration(s).\n\n"
@@ -3461,6 +3395,7 @@ Rules:
         thread_id: Optional[str] = None,
         answers: Optional[List[str]] = None,
         command_timeout: int = DEFAULT_COMMAND_TIMEOUT,
+        aws_permissions: Optional[List[str]] = None,
     ) -> PipelineResponse:
         """
         Run the generate → execute → (retry on failure) loop until success or
@@ -3538,6 +3473,7 @@ Rules:
                         "reference_folder": reference_folder or "",
                         "command_timeout": command_timeout,
                         "max_iterations": self.max_iterations,
+                        "aws_permissions": aws_permissions or [],
                         "iteration": 1,
                         "records": [],
                         "feedback_summary": "",
