@@ -509,6 +509,7 @@ class PipelineResponse(BaseModel):
     execution_results: Optional[List[ExecutionResult]] = None
     summary: Optional[str] = None
     questions: Optional[List[str]] = None
+    hitl_payload: Optional[Dict[str, Any]] = None
 
 _active_subprocesses = {}
 _cancelled_threads = set()
@@ -698,6 +699,10 @@ class _PersistentMCPSession:
                 "terraform": {
                     "command": terraform_binary,
                     "args": ["stdio"],
+                    "env": {
+                        "PATH": os.environ.get("PATH", ""),
+                        "TF_CLI_CONFIG_FILE": "",
+                    },
                     "transport": "stdio",
                 },
             }
@@ -1206,7 +1211,6 @@ class ExecutionAgents:
                 return default
 
         kwargs: dict[str, Any] = {
-            "model": os.getenv("MODEL_NAME"),
             "temperature": _env_float("CHANDRA_AGENT_TEMPERATURE", 0.0),
             "top_p": _env_float("CHANDRA_AGENT_TOP_P", 1.0),
         }
@@ -1433,8 +1437,8 @@ class ExecutionAgents:
         prompt = f"""You are an AWS automation engineer. Analyze this action request and identify \
 what must be resolved DYNAMICALLY at runtime (never hardcoded).
 
-Action Name: {action["actionName"]}
-Action Description: {action["actionDescription"]}
+Action Name: {action.get("actionName", action.get("action", ""))}
+Action Description: {action.get("actionDescription", "")}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}{ref_ctx}{existing_ctx}{feedback_ctx}{memory_section}{aws_section}
 
 This action may provision ANY AWS resource type (compute, storage, database, networking, IAM,
@@ -1846,12 +1850,13 @@ IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandat
 
         tf_docs_dict = state.get("terraform_docs_dict") or {}
 
+        all_generated_files = {}
+        all_exec_steps = []
+        summaries = []
+        
+        start_t = time.time()
         for attempt in range(max_retries):
             try:
-                all_generated_files = {}
-                all_exec_steps = []
-                summaries = []
-                
                 # Split resources into chunks of batch_size
                 for i in range(0, len(resources), batch_size):
                     batch = resources[i:i+batch_size]
@@ -1899,7 +1904,7 @@ Execution environment: {os_name}. {shell_note} {creds_note}
 ABSOLUTE RULES - violating any of these causes immediate failure
 =========================================================================
 
-RULE 0 \u2014 HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
+RULE 0 — HCL SYNTAX: HEREDOC FOR MULTI-LINE STRINGS:
   Terraform/HCL does NOT support Python-style triple-quotes (' ' ' or \"\"\").
   For any multi-line string value (user_data, inline policy JSON, etc.) you MUST
   use HCL heredoc syntax.
@@ -1914,7 +1919,7 @@ RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE.
 RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
 RULE 9 — Do NOT use data sources for random_id or random_string. They are resources.
 RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
-RULE 11 — ALWAYS use proper HCL string interpolation format: "${random_id.name.hex}" instead of "string"[random_id.name.hex].
+RULE 11 — ALWAYS use proper HCL string interpolation format: "${{random_id.name.hex}}" instead of "string"[random_id.name.hex].
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
@@ -1948,24 +1953,17 @@ Generate the complete set of files now."""
                     batch_size = max(1, batch_size // 2)
                     self.logger.info("Reducing batch size to %d and retrying...", batch_size)
                 elif attempt == max_retries - 1:
-                    raise  summaries.append(result.summary)
+                    raise
                 
                 timings = state.get("timings") or {}
                 timings["llm_generate"] = time.time() - start_t
                 
-                return {
-                    "generated_files": list(all_generated_files.values()),
-                    "executable_steps": all_exec_steps,
-                    "generator_summary": " ".join(summaries),
-                    "timings": timings,
-                }
-            except Exception as exc:
-                self.logger.warning("Generation failed on attempt %d: %s", attempt + 1, exc)
-                if batch_size > 1 and ("length" in str(exc).lower() or "context" in str(exc).lower() or "token" in str(exc).lower()):
-                    batch_size = max(1, batch_size // 2)
-                    self.logger.info("Reducing batch size to %d and retrying...", batch_size)
-                elif attempt == max_retries - 1:
-                    raise
+                # If we retry, we might want to clear them, but the user requested initializing outside try/retry so we keep them.
+                # Returning here would abort the retry loop. The previous code had a return inside except! That breaks retries.
+                # So we ONLY return if attempt == max_retries - 1, but we raise there. So we shouldn't return here.
+                # Actually, if we hit an exception and want to retry, we just continue.
+                continue
+
 
     def _write_files_node(self, state: AgentState) -> dict:
         input_path = state.get("input_sandbox_path") or ""
@@ -1981,6 +1979,14 @@ Generate the complete set of files now."""
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
         self.logger.info("Using sandbox directory: %s", sandbox_dir)
+        
+        # Cross-job idempotency: if using a new sandbox but inheriting from a previous run, copy its state and files.
+        if input_path and Path(input_path).exists() and Path(input_path).resolve() != Path(sandbox_dir).resolve():
+            import shutil
+            for src_file in Path(input_path).glob("*"):
+                if src_file.is_file():
+                    shutil.copy2(src_file, Path(sandbox_dir) / src_file.name)
+            self.logger.info("Copied previous sandbox state from: %s", input_path)
 
         CLEANABLE_EXTENSIONS = {".tf", ".py", ".sh", ".yaml", ".yml", ".json", ".md"}
         PRESERVE_NAMES = {
@@ -2216,8 +2222,8 @@ Generate the complete set of files now."""
 
         prompt = f"""You are an AWS automation engineer. Create an execution plan for the files in this folder.
 
-Action Name: {action["actionName"]}
-Action Description: {action["actionDescription"]}
+Action Name: {action.get("actionName", action.get("action", ""))}
+Action Description: {action.get("actionDescription", "")}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}
 
 Execution environment: {os_name}. {shell_note} {creds_note}
@@ -2500,7 +2506,13 @@ command string — never a placeholder, never "...", never a comment."""
         self.logger.warning("Execution paused for Human Approval Center. Job ID: %s", approval_payload["job_id"])
         # Pause graph execution here
         from langgraph.types import interrupt
-        approval_response = interrupt([approval_payload])
+        
+        auto_approve = os.environ.get("CHANDRA_AUTO_APPROVE") == "1"
+        if auto_approve:
+            self.logger.info("CHANDRA_AUTO_APPROVE is enabled. Skipping manual Terraform plan approval.")
+            approval_response = {"approved": True}
+        else:
+            approval_response = interrupt([approval_payload])
         
         is_approved = True
         if isinstance(approval_response, dict) and not approval_response.get("approved", True):
@@ -2690,6 +2702,7 @@ command string — never a placeholder, never "...", never a comment."""
         )
         self.logger.info("=" * 80)
 
+        start_t = time.time()
         new_results, _halted = self._run_commands(commands_to_run, base_path, timeout)
         results: List[Dict] = list(pre_apply_results) + new_results
 
@@ -2816,8 +2829,8 @@ command string — never a placeholder, never "...", never a comment."""
 
         prompt = f"""Summarize the execution of this AWS automation action in 2–4 sentences.
 
-Action: {action["actionName"]}
-Description: {action["actionDescription"]}
+Action: {action.get("actionName", action.get("action", ""))}
+Description: {action.get("actionDescription", "")}
 Overall Success: {success}
 Per-command timeout: {timeout}s
 
@@ -2840,14 +2853,14 @@ Rules:
             if timed_out_cmds:
                 names = ", ".join(f"'{r['command']}'" for r in timed_out_cmds)
                 summary = (
-                    f"Execution of '{action['actionName']}' failed: {names} timed out after "
+                    f"Execution of '{action.get('actionName', action.get('action', ''))}' failed: {names} timed out after "
                     f"{timeout}s. Check AWS credentials and network access, then retry."
                 )
             else:
                 succeeded = sum(1 for r in results if r["success"])
                 summary = (
                     f"Executed {succeeded}/{len(results)} command(s) for "
-                    f"'{action['actionName']}'. "
+                    f"'{action.get('actionName', action.get('action', ''))}'. "
                     + ("All steps completed successfully." if success else "Some commands failed — review stderr.")
                 )
 
@@ -3437,7 +3450,6 @@ Rules:
                     *(action.get("steps") or []),
                 )
             )
-            aws_ctx = ""
             aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
@@ -3526,7 +3538,26 @@ Rules:
             snapshot = ctx.run(self.Graph.get_state, config)
 
             if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
-                questions = snapshot.tasks[0].interrupts[0].value
+                interrupt_val = snapshot.tasks[0].interrupts[0].value
+                questions_out = []
+                hitl_payload = None
+                
+                # Handling list of dicts (e.g. from _execute_terraform_node)
+                if isinstance(interrupt_val, list) and len(interrupt_val) > 0:
+                    first_val = interrupt_val[0]
+                    if isinstance(first_val, dict):
+                        questions_out.append(str(first_val.get("message", "Awaiting approval")))
+                        hitl_payload = first_val
+                    else:
+                        questions_out = [str(q) for q in interrupt_val]
+                elif isinstance(interrupt_val, dict):
+                    questions_out.append(str(interrupt_val.get("message", "Awaiting input")))
+                    hitl_payload = interrupt_val
+                elif isinstance(interrupt_val, str):
+                    questions_out = [interrupt_val]
+                else:
+                    questions_out = [str(interrupt_val)]
+
                 is_mid_run = snapshot.values.get("consecutive_same_error", 0) >= STUCK_THRESHOLD
                 summary_msg = (
                     f"Agent is stuck and needs your input (thread_id={tid}). "
@@ -3544,7 +3575,8 @@ Rules:
                     iterations=[
                         IterationRecord(**r) for r in snapshot.values.get("records", [])
                     ],
-                    questions=questions,
+                    questions=questions_out,
+                    hitl_payload=hitl_payload,
                     summary=summary_msg,
                 )
 

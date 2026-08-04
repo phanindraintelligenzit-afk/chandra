@@ -2391,7 +2391,8 @@ export function ChandraExperience() {
     costMetrics,
     setCostMetrics,
     setObservations,
-    selectedAwsTasks
+    selectedAwsTasks,
+    selectedAwsPermissions
   } = useOnboarding();
 
   // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
@@ -2930,7 +2931,7 @@ export function ChandraExperience() {
       <section className="section-shell">
         <div className="section-inner">
           <WorkerActionExecutionCenter
-            awsPermissions={permissions}
+            awsPermissions={selectedAwsPermissions}
             ref={workerRef}
             onPendingHitlChange={(pendingRequests) => {
               setPendingHitlRequests(pendingRequests);

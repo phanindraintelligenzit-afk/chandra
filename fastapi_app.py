@@ -51,7 +51,27 @@ _log_buffer: List[Dict[str, Any]] = []
 _max_logs = 2000
 
 # Job tracking for long-running orchestrations
-_job_store: Dict[str, Dict[str, Any]] = {}
+class JobStoreDict(dict):
+    def __init__(self, job_id, *args, **kwargs):
+        self.job_id = job_id
+        super().__init__(*args, **kwargs)
+        if "message" in self:
+            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {self['message']}")
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "message":
+            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {value}")
+        elif key == "status":
+            logger.info(f"Job {self.job_id} | Status changed to: {value}")
+
+class JobStoreManager(dict):
+    def __setitem__(self, key, value):
+        if isinstance(value, dict) and not isinstance(value, JobStoreDict):
+            value = JobStoreDict(key, value)
+        super().__setitem__(key, value)
+
+_job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
 # Use RLock (reentrant) so background worker threads that already hold the
 # lock can re-enter it without deadlocking the FastAPI HTTP threads that
 # serve GET /requests and GET /jobs/status while a job is running.
@@ -144,7 +164,26 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from src.chandra.config import settings
+    provider = (settings.llm_provider or "bedrock").strip().lower()
+    
+    logger.info("=== STARTUP: LLM CONFIGURATION ===")
+    logger.info("LLM provider = %s", provider)
+    if provider == "bedrock":
+        logger.info("Model ID = %s", settings.bedrock_model_id)
+        logger.info("Region/endpoint = %s", settings.aws_default_region)
+    elif provider in ("openai", "openai_compatible", "vllm"):
+        model_id = settings.vllm_model or settings.openai_model_name
+        endpoint = settings.vllm_api_base or settings.openai_api_base
+        logger.info("Model ID = %s", model_id)
+        logger.info("Region/endpoint = %s", endpoint)
+    else:
+        logger.info("Model ID = %s", settings.ollama_model)
+        logger.info("Region/endpoint = %s", settings.ollama_host)
+    logger.info("==================================")
+    
     yield
+
     # Stop background tasks gracefully to prevent dangling threads during app teardown
     # This prevents 'cannot schedule new futures' and 'I/O operation on closed file' in pytest
     logger.info("Shutting down background thread pool...")
@@ -714,6 +753,7 @@ class ActionInput(BaseModel):
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
     action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
+    permission_set_id: Optional[str] = Field(default=None, description="AWS permission set selected during onboarding")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1346,9 +1386,13 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             action_dict["jiraUrl"] = request.jiraUrl
 
         # Store action_dict and aws_permissions so the /resume endpoint can use it without needing a new request body
+        aws_perms = request.aws_permissions or []
+        if not aws_perms and request.action.permission_set_id:
+            aws_perms = [request.action.permission_set_id]
+
         with _job_store_lock:
             _job_store[job_id]["action_dict"] = action_dict
-            _job_store[job_id]["aws_permissions"] = request.aws_permissions
+            _job_store[job_id]["aws_permissions"] = aws_perms
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=request.sandbox_path,
@@ -1356,7 +1400,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             thread_id=request.thread_id,
             answers=request.answers,
             command_timeout=request.command_timeout,
-            aws_permissions=request.aws_permissions,
+            aws_permissions=aws_perms,
         )
 
         # Update job with result — only if not already stopped
@@ -1413,7 +1457,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                                 "sandbox_path": str(sandbox_dir),
                                 "iterations_used": response.iterations_used,
                                 "summary": response.summary,
-                                "aws_permissions_used": request.aws_permissions,
+                                "aws_permissions_used": aws_perms,
                             }, af, indent=2, ensure_ascii=False)
                     except Exception as e:
                         logger.warning("Could not write execution_result.json to sandbox: %s", e)
