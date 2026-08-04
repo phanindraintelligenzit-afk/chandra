@@ -509,6 +509,7 @@ class PipelineResponse(BaseModel):
     execution_results: Optional[List[ExecutionResult]] = None
     summary: Optional[str] = None
     questions: Optional[List[str]] = None
+    hitl_payload: Optional[Dict[str, Any]] = None
 
 _active_subprocesses = {}
 _cancelled_threads = set()
@@ -1853,6 +1854,7 @@ IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandat
         all_exec_steps = []
         summaries = []
         
+        start_t = time.time()
         for attempt in range(max_retries):
             try:
                 # Split resources into chunks of batch_size
@@ -2496,7 +2498,13 @@ command string — never a placeholder, never "...", never a comment."""
         self.logger.warning("Execution paused for Human Approval Center. Job ID: %s", approval_payload["job_id"])
         # Pause graph execution here
         from langgraph.types import interrupt
-        approval_response = interrupt([approval_payload])
+        
+        auto_approve = os.environ.get("CHANDRA_AUTO_APPROVE") == "1"
+        if auto_approve:
+            self.logger.info("CHANDRA_AUTO_APPROVE is enabled. Skipping manual Terraform plan approval.")
+            approval_response = {"approved": True}
+        else:
+            approval_response = interrupt([approval_payload])
         
         is_approved = True
         if isinstance(approval_response, dict) and not approval_response.get("approved", True):
@@ -2686,6 +2694,7 @@ command string — never a placeholder, never "...", never a comment."""
         )
         self.logger.info("=" * 80)
 
+        start_t = time.time()
         new_results, _halted = self._run_commands(commands_to_run, base_path, timeout)
         results: List[Dict] = list(pre_apply_results) + new_results
 
@@ -3433,7 +3442,6 @@ Rules:
                     *(action.get("steps") or []),
                 )
             )
-            aws_ctx = ""
             aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
@@ -3522,7 +3530,26 @@ Rules:
             snapshot = ctx.run(self.Graph.get_state, config)
 
             if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
-                questions = snapshot.tasks[0].interrupts[0].value
+                interrupt_val = snapshot.tasks[0].interrupts[0].value
+                questions_out = []
+                hitl_payload = None
+                
+                # Handling list of dicts (e.g. from _execute_terraform_node)
+                if isinstance(interrupt_val, list) and len(interrupt_val) > 0:
+                    first_val = interrupt_val[0]
+                    if isinstance(first_val, dict):
+                        questions_out.append(str(first_val.get("message", "Awaiting approval")))
+                        hitl_payload = first_val
+                    else:
+                        questions_out = [str(q) for q in interrupt_val]
+                elif isinstance(interrupt_val, dict):
+                    questions_out.append(str(interrupt_val.get("message", "Awaiting input")))
+                    hitl_payload = interrupt_val
+                elif isinstance(interrupt_val, str):
+                    questions_out = [interrupt_val]
+                else:
+                    questions_out = [str(interrupt_val)]
+
                 is_mid_run = snapshot.values.get("consecutive_same_error", 0) >= STUCK_THRESHOLD
                 summary_msg = (
                     f"Agent is stuck and needs your input (thread_id={tid}). "
@@ -3540,7 +3567,8 @@ Rules:
                     iterations=[
                         IterationRecord(**r) for r in snapshot.values.get("records", [])
                     ],
-                    questions=questions,
+                    questions=questions_out,
+                    hitl_payload=hitl_payload,
                     summary=summary_msg,
                 )
 
