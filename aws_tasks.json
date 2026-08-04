@@ -8,5 +8,15 @@
     "version": 1,
     "is_preset": false,
     "is_predefined": false
+  },
+  {
+    "id": "task_1785832321060",
+    "name": "Need s3 permission",
+    "description": "Need s3 permission",
+    "category": "S3",
+    "ownership": "Nagendra",
+    "version": 2,
+    "is_preset": false,
+    "is_predefined": false
   }
 ]
