@@ -206,7 +206,7 @@ class AgentMemory:
 
         lines = ["AGENT MEMORY — past pipeline runs (most recent last):"]
         for r in relevant:
-            status_icon = "✓" if r["final_status"] == "success" else "✗"
+            status_icon = "OK" if r["final_status"] == "success" else "X"
             lines.append(
                 f"  [{r['timestamp']}] {status_icon} {r['action_name']} "
                 f"({r['iterations_used']} iter, {r['final_status']})"
@@ -557,6 +557,17 @@ def cleanup_thread_state():
 def execute_shell_command(command: str, cwd: str, timeout: int) -> Dict[str, Any]:
     """Execute a shell command in a specific directory with a timeout."""
     proc_env = os.environ.copy()
+    
+    # Resolve Terraform via explicit env var or fallback to shutil.which
+    tf_path = os.environ.get("TERRAFORM_BIN_DIR")
+    if not tf_path:
+        import shutil
+        tf_exe = shutil.which("terraform")
+        if tf_exe:
+            tf_path = os.path.dirname(tf_exe)
+    if tf_path:
+        proc_env["PATH"] = proc_env.get("PATH", "") + os.pathsep + tf_path
+        
     proc_env.setdefault("NO_COLOR", "1")
     proc_env.setdefault("TF_IN_AUTOMATION", "1")
     proc_env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -1833,11 +1844,11 @@ IMPORTANT: Evaluate your generated Terraform against these KRAs. If a KRA mandat
         batch_size = len(resources) if resources and resources != ["all"] else 1
         max_retries = 3
 
-        tf_docs_dict = state.get("terraform_docs_dict") or {{}}
+        tf_docs_dict = state.get("terraform_docs_dict") or {}
 
         for attempt in range(max_retries):
             try:
-                all_generated_files = {{}}
+                all_generated_files = {}
                 all_exec_steps = []
                 summaries = []
                 
@@ -1901,7 +1912,9 @@ RULE 5 — tfvars CONVENTION: Write terraform.tfvars.example.
 RULE 6 — LEARN FROM FEEDBACK: Do not repeat errors.
 RULE 7 — EXECUTABLE STEPS MUST BE COMPLETE.
 RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
-
+RULE 9 — Do NOT use data sources for random_id or random_string. They are resources.
+RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
+RULE 11 — ALWAYS use proper HCL string interpolation format: "${random_id.name.hex}" instead of "string"[random_id.name.hex].
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
@@ -2030,7 +2043,7 @@ Generate the complete set of files now."""
         if tf_files:
             try:
                 init_result = execute_shell_command(
-                    "terraform init -input=false", cwd=sandbox_dir, timeout=180
+                    "terraform init -upgrade -input=false", cwd=sandbox_dir, timeout=180
                 )
                 if init_result["return_code"] != 0:
                     errors.append(
@@ -2063,10 +2076,10 @@ Generate the complete set of files now."""
 
         passed = not errors
         if passed:
-            self.logger.info("[validate] ✓ static checks passed (attempt %d)", validate_iteration)
+            self.logger.info("[validate] check static checks passed (attempt %d)", validate_iteration)
         else:
             self.logger.warning(
-                "[validate] ✗ static checks failed (attempt %d/%d)",
+                "[validate] X static checks failed (attempt %d/%d)",
                 validate_iteration, VALIDATE_MAX_RETRIES,
             )
 
@@ -2145,7 +2158,7 @@ Generate the complete set of files now."""
 
         if state.get("executable_steps"):
             steps = state["executable_steps"]
-            self.logger.info("✓ Using %d executable steps from generator", len(steps))
+            self.logger.info("OK Using %d executable steps from generator", len(steps))
             self.logger.info("-" * 80)
             for idx, step in enumerate(steps, 1):
                 self.logger.info("   [%d] %s", idx, step.get("description", step.get("command", "")))
@@ -2237,7 +2250,7 @@ command string — never a placeholder, never "...", never a comment."""
         try:
             structured_llm = self._structured_llm(ExecutionPlan)
             plan: ExecutionPlan = structured_llm.invoke([HumanMessage(content=prompt)])
-            self.logger.info("✓ EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
+            self.logger.info("OK EXECUTION PLAN — type=%s  commands=%d", plan.execution_type, len(plan.commands))
             self.logger.info("  Reasoning: %s", plan.reasoning)
             commands = self._ensure_plan_out_flag([c.model_dump() for c in plan.commands])
             for cmd in commands:
@@ -2309,7 +2322,7 @@ command string — never a placeholder, never "...", never a comment."""
 
             is_valid, error_msg = self._validate_command(command, str(cwd))
             if not is_valid:
-                self.logger.warning("✗ VALIDATION FAILED: %s — %s", description or command, error_msg)
+                self.logger.warning("X VALIDATION FAILED: %s — %s", description or command, error_msg)
                 results.append({
                     "command": command,
                     "description": description,
@@ -2343,9 +2356,9 @@ command string — never a placeholder, never "...", never a comment."""
                     "timeout_seconds": timeout,
                 }
                 if success:
-                    self.logger.info("✓ SUCCESS: %s (rc=%d)", description or command, tool_output["return_code"])
+                    self.logger.info("OK SUCCESS: %s (rc=%d)", description or command, tool_output["return_code"])
                 else:
-                    self.logger.warning("✗ FAILED: %s (rc=%d)", description or command, tool_output["return_code"])
+                    self.logger.warning("X FAILED: %s (rc=%d)", description or command, tool_output["return_code"])
             except TimeoutError as exc:
                 timed_out = True
                 timeout_msg = (
@@ -2363,7 +2376,7 @@ command string — never a placeholder, never "...", never a comment."""
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
-                self.logger.error("✗ TIMEOUT: %s exceeded %ds", description or command, timeout)
+                self.logger.error("X TIMEOUT: %s exceeded %ds", description or command, timeout)
             except Exception as exc:
                 result = {
                     "command": command,
@@ -2376,7 +2389,7 @@ command string — never a placeholder, never "...", never a comment."""
                     "timed_out": False,
                     "timeout_seconds": timeout,
                 }
-                self.logger.exception("✗ EXCEPTION in '%s': %s", description or command, exc)
+                self.logger.exception("X EXCEPTION in '%s': %s", description or command, exc)
 
             results.append(result)
             if not result["success"]:
@@ -2688,14 +2701,14 @@ command string — never a placeholder, never "...", never a comment."""
 
         self.logger.info("=" * 80)
         if overall_success:
-            self.logger.info("✓ EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
+            self.logger.info("OK EXECUTION COMPLETED SUCCESSFULLY: All %d command(s) ran", len(results))
         else:
             timed_out_count = sum(1 for r in results if r.get("timed_out"))
             if timed_out_count:
-                self.logger.warning("✗ EXECUTION: %d command(s) timed out", timed_out_count)
+                self.logger.warning("X EXECUTION: %d command(s) timed out", timed_out_count)
             else:
                 self.logger.warning(
-                    "✗ EXECUTION: %d/%d command(s) succeeded",
+                    "X EXECUTION: %d/%d command(s) succeeded",
                     sum(1 for r in results if r["success"]), len(results),
                 )
         self.logger.info("=" * 80)
@@ -2820,7 +2833,7 @@ Rules:
         try:
             response = self.Llm.invoke([HumanMessage(content=prompt)])
             summary = response.content
-            self.logger.info("✓ LLM summary generated:\n%s", summary)
+            self.logger.info("OK LLM summary generated:\n%s", summary)
         except Exception as exc:
             self.logger.warning("LLM summary failed, using fallback: %s", exc)
             timed_out_cmds = [r for r in results if r.get("timed_out")]
@@ -2921,7 +2934,7 @@ Rules:
         records.append(record.model_dump())
 
         if state.get("success"):
-            self._banner(f"✓ PIPELINE COMPLETED SUCCESSFULLY on iteration {iteration}", char="═")
+            self._banner(f"OK PIPELINE COMPLETED SUCCESSFULLY on iteration {iteration}", char="═")
             return {
                 "records": records,
                 "final_status": "success",
@@ -2987,7 +3000,7 @@ Rules:
         )
 
         if iteration >= max_iter:
-            self._banner(f"✗ PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
+            self._banner(f"X PIPELINE EXHAUSTED {max_iter} ITERATIONS WITHOUT SUCCESS", char="═")
             summary = (
                 f"Action '{state['action'].get('actionName')}' could not be completed after "
                 f"{iteration} iteration(s).\n\n"
