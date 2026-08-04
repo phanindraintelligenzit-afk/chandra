@@ -1436,8 +1436,8 @@ class ExecutionAgents:
         prompt = f"""You are an AWS automation engineer. Analyze this action request and identify \
 what must be resolved DYNAMICALLY at runtime (never hardcoded).
 
-Action Name: {action["actionName"]}
-Action Description: {action["actionDescription"]}
+Action Name: {action.get("actionName", action.get("action", ""))}
+Action Description: {action.get("actionDescription", "")}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}{ref_ctx}{existing_ctx}{feedback_ctx}{memory_section}{aws_section}
 
 This action may provision ANY AWS resource type (compute, storage, database, networking, IAM,
@@ -2212,8 +2212,8 @@ Generate the complete set of files now."""
 
         prompt = f"""You are an AWS automation engineer. Create an execution plan for the files in this folder.
 
-Action Name: {action["actionName"]}
-Action Description: {action["actionDescription"]}
+Action Name: {action.get("actionName", action.get("action", ""))}
+Action Description: {action.get("actionDescription", "")}
 Steps: {json.dumps(action.get("steps") or [], indent=2)}
 
 Execution environment: {os_name}. {shell_note} {creds_note}
@@ -2812,8 +2812,8 @@ command string — never a placeholder, never "...", never a comment."""
 
         prompt = f"""Summarize the execution of this AWS automation action in 2–4 sentences.
 
-Action: {action["actionName"]}
-Description: {action["actionDescription"]}
+Action: {action.get("actionName", action.get("action", ""))}
+Description: {action.get("actionDescription", "")}
 Overall Success: {success}
 Per-command timeout: {timeout}s
 
@@ -2836,14 +2836,14 @@ Rules:
             if timed_out_cmds:
                 names = ", ".join(f"'{r['command']}'" for r in timed_out_cmds)
                 summary = (
-                    f"Execution of '{action['actionName']}' failed: {names} timed out after "
+                    f"Execution of '{action.get('actionName', action.get('action', ''))}' failed: {names} timed out after "
                     f"{timeout}s. Check AWS credentials and network access, then retry."
                 )
             else:
                 succeeded = sum(1 for r in results if r["success"])
                 summary = (
                     f"Executed {succeeded}/{len(results)} command(s) for "
-                    f"'{action['actionName']}'. "
+                    f"'{action.get('actionName', action.get('action', ''))}'. "
                     + ("All steps completed successfully." if success else "Some commands failed — review stderr.")
                 )
 
