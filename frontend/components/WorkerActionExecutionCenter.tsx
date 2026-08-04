@@ -96,8 +96,9 @@ export const WorkerActionExecutionCenter = forwardRef<
     onActionCompleted?: (kraCode: string | undefined, actionId: string, originalJobId?: string) => void;
     onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
     onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[]}[]) => void;
+    awsPermissions?: string[];
   }
->(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange }, ref) {
+>(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange, awsPermissions }, ref) {
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
@@ -623,13 +624,15 @@ export const WorkerActionExecutionCenter = forwardRef<
       jobMessage: "Submitting job...",
       resourceId: resourceId,
       originalJobId: action.id,
-      detectorId: action.detectorId,
-      region: action.region
+      detectorId: action.isAwsTask ? undefined : action.detectorId,
+      region: action.region,
+      isAwsTask: action.isAwsTask || false
     } as ExecutingAction;
 
     setExecutingActions((current) => [executing, ...current]);
 
     try {
+      const isAwsTask = (executing as any).isAwsTask || false;
       const jobResponse = await orchestrateAction({
         action: {
           actionName: executing.actionName,
@@ -638,13 +641,16 @@ export const WorkerActionExecutionCenter = forwardRef<
           service: executing.service || "AWS",
           kraCode: executing.kraCode,
           priorityLevel: executing.priorityLevel,
-          detectorId: executing.detectorId,
-          resourceArn: executing.region === (process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1") ? executing.resourceId : executing.resourceId, // dummy check to pass resourceId
-          region: executing.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1"
+          // AWS Tasks must NEVER send detectorId — it would route to action_executor_node
+          detectorId: isAwsTask ? undefined : executing.detectorId,
+          resourceArn: executing.resourceId,
+          region: executing.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
+          isAwsTask: isAwsTask
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: timeoutMins * 60,
-        max_iterations: maxIterations
+        max_iterations: maxIterations,
+        aws_permissions: awsPermissions || []
       });
 
       const jobId = jobResponse.job_id;

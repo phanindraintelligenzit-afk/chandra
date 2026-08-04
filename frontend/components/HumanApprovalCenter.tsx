@@ -50,6 +50,7 @@ const RISK_META: Record<string, string> = {
 
 export type UnifiedRequest = {
   isKra: boolean;
+  isAwsTask?: boolean;
   job_id: string;
   status: string;
   progress: number;
@@ -286,8 +287,8 @@ function RequestCard({
             <span className="border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-white">
               {STATUS_META[req.status]?.label ?? req.status}
             </span>
-            <span className={`border px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] ${req.isKra ? "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300" : "border-sky-400/30 bg-sky-400/10 text-sky-300"}`}>
-              {req.isKra ? "KRA" : (req.source ? req.source.toUpperCase() : "JIRA")}
+            <span className={`border px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] ${req.isAwsTask ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-300" : req.isKra ? "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300" : "border-sky-400/30 bg-sky-400/10 text-sky-300"}`}>
+              {req.isAwsTask ? "AWS TASK" : req.isKra ? "KRA" : (req.source ? req.source.toUpperCase() : "JIRA")}
             </span>
             {(req.kraData?.kraCode || req.external_id) && (
               <span className="border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-sky-300">
@@ -416,7 +417,7 @@ export function HumanApprovalCenter({
 
   const onDecision = useCallback(
     async (req: UnifiedRequest, approved: boolean) => {
-      if (req.isKra) {
+      if (req.isKra || req.isAwsTask) {
         const newState = approved ? "Approved" : "Rejected";
         localDecisions.current[req.job_id] = newState;
         
@@ -430,8 +431,10 @@ export function HumanApprovalCenter({
             severity: row.severity,
             kraCode: row.kraCode || "",
             steps: row.steps || [],
-            detectorId: row.detectorId,
+            // AWS Tasks must NEVER carry detectorId — that routes to the KRA remediation path
+            detectorId: row.isAwsTask ? undefined : row.detectorId,
             region: row.region,
+            isAwsTask: row.isAwsTask || false,
             note: `${row.note} Approved by supervisor.`
           }, true);
         }
@@ -445,12 +448,13 @@ export function HumanApprovalCenter({
 
   const unifiedRequests: UnifiedRequest[] = useMemo(() => {
     const kras: UnifiedRequest[] = kraApprovals.map(kra => ({
-      isKra: true,
+      isKra: !kra.isAwsTask,
+      isAwsTask: kra.isAwsTask || false,
       job_id: kra.id,
       status: kra.state === "Awaiting Review" ? "awaiting_approval" : kra.state === "Approved" ? "completed" : kra.state === "Rejected" ? "failed" : "stopped",
       progress: 0,
       message: "",
-      source: "KRA",
+      source: kra.isAwsTask ? "AWS_TASK" : "KRA",
       title: kra.incident,
       external_id: kra.kraCode,
       category: kra.category || "",

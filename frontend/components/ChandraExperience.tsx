@@ -135,6 +135,7 @@ type ApprovalRow = {
   region?: string;
   action?: string;
   category?: string;
+  isAwsTask?: boolean;
 };
 
 type KraReview = {
@@ -795,7 +796,8 @@ function KRAMetricsReview({
         <Reveal>
           <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
             <div className="space-y-3">
-              {derivedKRAs.map((kra) => (
+              {derivedKRAs.length > 0 ? (
+                derivedKRAs.map((kra) => (
                 <motion.div
                   key={kra.code}
                   layout
@@ -849,7 +851,12 @@ function KRAMetricsReview({
                     </div>
                   </TreeGroup>
                 </motion.div>
-              ))}
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-frost/75">
+                  No KRAs configured/selected.
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-black/20 p-4 min-h-[300px]">
@@ -2451,7 +2458,11 @@ export function ChandraExperience() {
     let cancelled = false;
     
     const fetchData = () => {
-      fetchDetectorIssues()
+      if (selectedKRAs.length === 0) {
+        if (!cancelled) setDetectorIssues({});
+        return;
+      }
+      fetchPredefinedKraIssues(selectedKRAs)
         .then(res => {
           if (!cancelled) setDetectorIssues(res ?? null);
         })
@@ -2505,10 +2516,11 @@ export function ChandraExperience() {
             pendingReason: task.description,
             kraCode: task.category || "TASK",
             resourceId: undefined,
-            detectorId: task.id,
+            detectorId: undefined,
             region: process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
             action: task.name,
             category: (task.category || "AWS TASK").toUpperCase(),
+            isAwsTask: true,
             steps: []
         }));
         

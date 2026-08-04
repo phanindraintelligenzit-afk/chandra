@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "name": "create s3 bucket",
+    "description": "creating a default s3 bucket in us-east1",
+    "selected": true
+  },
+  {
+    "name": "Deploy EC2 Instance with Terraform",
+    "description": "Deploy a simple t2.micro EC2 instance on AWS using Terraform",
+    "selected": true
+  }
+]

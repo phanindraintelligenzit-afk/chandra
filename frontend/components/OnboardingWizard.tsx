@@ -230,27 +230,27 @@ export default function OnboardingWizard() {
       return;
     }
 
-    if (idx !== step) {
-      const nameToCheck = agentName || normalizedName;
-      if (idx > 0 && !(nameToCheck.length > 0 && hasSelectedAvatar)) {
-        router.replace(STEP_PATHS[0]);
-      } else if (idx > 1 && role !== "AWS Cloud Engineer") {
-        router.replace(STEP_PATHS[1]);
-      } else if (idx > 2 && maturity !== "L2") {
-        router.replace(STEP_PATHS[2]);
-      } else if (idx > 3 && selectedKRAs.length === 0) {
-        router.replace(STEP_PATHS[3]);
-      } else if (idx > 4 && selectedAwsTasks.length === 0) {
-        router.replace(STEP_PATHS[4]);
-      } else {
+    const nameToCheck = agentName || normalizedName;
+    if (idx > 0 && !(nameToCheck.length > 0 && hasSelectedAvatar)) {
+      if (pathname !== STEP_PATHS[0]) router.replace(STEP_PATHS[0]);
+    } else if (idx > 1 && role !== "AWS Cloud Engineer") {
+      if (pathname !== STEP_PATHS[1]) router.replace(STEP_PATHS[1]);
+    } else if (idx > 2 && maturity !== "L2") {
+      if (pathname !== STEP_PATHS[2]) router.replace(STEP_PATHS[2]);
+    } else if (idx > 3 && selectedKRAs.length === 0) {
+      if (pathname !== STEP_PATHS[3]) router.replace(STEP_PATHS[3]);
+    } else if (idx > 4 && selectedAwsTasks.length === 0) {
+      if (pathname !== STEP_PATHS[4]) router.replace(STEP_PATHS[4]);
+    } else {
+      if (idx !== step) {
         setStep(idx);
-        if (idx === 6 && !deploymentStartedRef.current) {
-          deploymentStartedRef.current = true;
-          runDeploymentSequence();
-        } else if (idx !== 6) {
-          submissionRef.current?.abort();
-          deploymentStartedRef.current = false;
-        }
+      }
+      if (idx === 6 && !deploymentStartedRef.current) {
+        deploymentStartedRef.current = true;
+        runDeploymentSequence();
+      } else if (idx !== 6) {
+        submissionRef.current?.abort();
+        deploymentStartedRef.current = false;
       }
     }
   }, [pathname, hydrated, step, agentName, normalizedName, hasSelectedAvatar, role, maturity, selectedKRAs, selectedAwsTasks, router]);
@@ -376,6 +376,22 @@ export default function OnboardingWizard() {
             setCostMetrics(null, message);
           });
 
+        // Submit the user-selected AWS Tasks to the digital worker so they appear in the Human Approval Center
+        if (selectedAwsTasks && selectedAwsTasks.length > 0) {
+          selectedAwsTasks.forEach((taskTitle) => {
+            import('@/services/api').then(({ submitDigitalWorkerRequest }) => {
+              submitDigitalWorkerRequest({
+                source: "onboarding",
+                payload: {
+                  title: taskTitle,
+                  description: `User-selected AWS task from onboarding: ${taskTitle}`,
+                  priority: "High"
+                }
+              }).catch(err => console.error("Failed to submit AWS Task:", err));
+            });
+          });
+        }
+
         // Fire observations fetch in background (don't await) with longer timeout
         const obsController = new AbortController();
         const obsTimeout = setTimeout(() => obsController.abort(), 600_000); // 10 minute timeout
@@ -409,6 +425,7 @@ export default function OnboardingWizard() {
   useEffect(() => {
     return () => {
       submissionRef.current?.abort();
+      deploymentStartedRef.current = false;
     };
   }, []);
 
