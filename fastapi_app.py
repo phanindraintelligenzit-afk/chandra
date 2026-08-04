@@ -1151,14 +1151,15 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         finally:
             _thread_local.job_id = None
 
-    def _run_kra_resume():
-        """Resume a direct Execution Agent (KRA) job."""
+    def _run_execution_resume():
+        """Resume a direct Execution Agent job (AWS Task or KRA)."""
         import time
         start_time = time.time()
         exec_thread_id = f"exec-{job_id}"
         try:
             with _job_store_lock:
                 _job_store[job_id]["thread_id"] = threading.get_ident()
+                aws_permissions = _job_store[job_id].get("aws_permissions", [])
 
             orchestrator = ExecutionAgents(max_iterations=5, job_id=job_id)
             response = orchestrator.RunPipeline(
@@ -1166,6 +1167,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                 sandbox_path=sandbox_path,
                 thread_id=exec_thread_id,
                 answers=answers,
+                aws_permissions=aws_permissions
             )
 
             with _job_store_lock:
@@ -1184,7 +1186,11 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                         "summary": response.summary or "",
                     }
                     return
-                _job_store[job_id]["status"] = "completed"
+                # Check status and set it gracefully, 500 = failed
+                if response.statusCode >= 400:
+                    _job_store[job_id]["status"] = "failed"
+                else:
+                    _job_store[job_id]["status"] = "completed"
                 _job_store[job_id]["progress"] = 100
                 _job_store[job_id]["result"] = response.model_dump()
                 _job_store[job_id]["completed_at"] = time.time()
@@ -1194,9 +1200,12 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     if response.statusCode == 200
                     else response.summary or "Completed with errors"
                 )
-            logger.info("KRA RESUME [%s] completed | statusCode=%d", job_id, response.statusCode)
+            
+            job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
+            logger.info("%s RESUME [%s] completed | statusCode=%d", job_label, job_id, response.statusCode)
         except Exception as exc:
-            logger.exception("KRA RESUME [%s] failed", job_id)
+            job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
+            logger.exception("%s RESUME [%s] failed", job_label, job_id)
             with _job_store_lock:
                 if _job_store[job_id].get("status") != "stopped":
                     _job_store[job_id]["status"] = "failed"
@@ -1206,7 +1215,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
     if job_type == "dw":
         _thread_pool.submit(_run_dw_resume)
     else:
-        _thread_pool.submit(_run_kra_resume)
+        _thread_pool.submit(_run_execution_resume)
 
     return OrchestrateJobResponse(
         job_id=job_id,
@@ -1336,9 +1345,10 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         if request.jiraUrl:
             action_dict["jiraUrl"] = request.jiraUrl
 
-        # Store action_dict so the /resume endpoint can use it without needing a new request body
+        # Store action_dict and aws_permissions so the /resume endpoint can use it without needing a new request body
         with _job_store_lock:
             _job_store[job_id]["action_dict"] = action_dict
+            _job_store[job_id]["aws_permissions"] = request.aws_permissions
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=request.sandbox_path,

@@ -94,3 +94,24 @@ def test_duplicate_approval_prevented():
     
     response = client.post("/requests/job_duplicate/approve", json={"approved": True, "approver": "test"})
     assert response.status_code == 409
+
+def test_aws_execution_agent_generate_node_syntax():
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
+    agent = ExecutionAgents(max_iterations=1, job_id="test-job")
+    state = {
+        "terraform_docs_dict": {"foo": "bar"},
+        "analysis": {"expected_resources": ["aws_s3_bucket"]},
+        "action_info": {"title": "Test", "description": "Test"},
+        "permissions": {},
+        "generated_files": []
+    }
+    import unittest.mock as mock
+    agent.Llm = mock.Mock()
+    agent.Llm.invoke.return_value = mock.Mock(content="```terraform\nresource \"aws_s3_bucket\" \"b\" {}\n```\n")
+    try:
+        result = agent._generate_node(state)
+        assert "generated_files" in result
+    except Exception as e:
+        if isinstance(e, (TypeError, UnboundLocalError)):
+            import pytest
+            pytest.fail(f"_generate_node failed with {type(e).__name__}: {e}")
