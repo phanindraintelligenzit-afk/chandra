@@ -1210,7 +1210,6 @@ class ExecutionAgents:
                 return default
 
         kwargs: dict[str, Any] = {
-            "model": os.getenv("MODEL_NAME"),
             "temperature": _env_float("CHANDRA_AGENT_TEMPERATURE", 0.0),
             "top_p": _env_float("CHANDRA_AGENT_TOP_P", 1.0),
         }

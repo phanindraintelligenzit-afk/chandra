@@ -40,8 +40,12 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         from langchain_aws import ChatBedrockConverse
 
         kwargs.setdefault("timeout", 60)
+        resolved_model = model or settings.bedrock_model_id
+        if not resolved_model:
+            raise ValueError("LLM_PROVIDER=bedrock requires BEDROCK_MODEL_ID configuration")
+            
         return ChatBedrockConverse(
-            model_id=model or settings.bedrock_model_id,
+            model_id=resolved_model,
             region_name=settings.aws_default_region,
             **kwargs,
         )
@@ -56,9 +60,11 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
         if not base_url:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_API_BASE (or OPENAI_API_BASE)")
+            
         resolved = model or settings.vllm_model or settings.openai_model_name
         if not resolved:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_MODEL (or OPENAI_MODEL_NAME)")
+            
         return ChatOpenAI(base_url=base_url, api_key=api_key, model=resolved, **kwargs)
 
     if provider == "ollama":
@@ -97,59 +103,12 @@ def build_chat_model_with_fallback(
     provider: str | None = None,
     **kwargs: Any,
 ) -> tuple[Any, str]:
-    """Build a chat model with automatic fallback to Bedrock when local
-    LLM is unavailable.
-
-    Unlike ``build_chat_model`` (which returns a model object without
-    connecting), this function performs a lightweight connectivity probe
-    against the primary provider. If the probe fails, it falls back to
-    Bedrock.
-
+    """Build a chat model without silent fallback (removed per strict requirements).
+    
     Returns
     -------
     (model, provider_name)
-        The working chat model and the provider that ultimately succeeded.
     """
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
+    return (build_chat_model(model=model, provider=provider, **kwargs), provider)
 
-    # Bedrock is the ultimate fallback — no need to probe it.
-    if provider == "bedrock":
-        return (build_chat_model(model=model, provider=provider, **kwargs), provider)
-
-    # Probe the primary provider with a short timeout.
-    try:
-        from src.chandra.llm.providers import GenerationParams, get_provider
-
-        test_llm = get_provider(
-            provider,
-            model=model,
-            params=GenerationParams(max_tokens=4, timeout_s=5, max_retries=0),
-        )
-        if test_llm.health_check():
-            logger.info(
-                "LLM fallback: primary provider '%s' is healthy, using it.",
-                provider,
-            )
-            return (build_chat_model(model=model, provider=provider, **kwargs), provider)
-
-        logger.warning(
-            "LLM fallback: primary provider '%s' health check failed, falling back to Bedrock.",
-            provider,
-        )
-    except Exception as exc:
-        logger.warning(
-            "LLM fallback: primary provider '%s' probe failed (%s: %s). Falling back to Bedrock.",
-            provider,
-            type(exc).__name__,
-            exc,
-        )
-
-    # Fallback to Bedrock
-    try:
-        return (
-            build_chat_model(model=settings.bedrock_model_id, provider="bedrock", **kwargs),
-            "bedrock",
-        )
-    except Exception as fallback_exc:
-        logger.error("LLM fallback: Bedrock also failed: %s", fallback_exc)
-        raise

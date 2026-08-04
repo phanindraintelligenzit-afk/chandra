@@ -144,7 +144,26 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from src.chandra.config import settings
+    provider = (settings.llm_provider or "bedrock").strip().lower()
+    
+    logger.info("=== STARTUP: LLM CONFIGURATION ===")
+    logger.info("LLM provider = %s", provider)
+    if provider == "bedrock":
+        logger.info("Model ID = %s", settings.bedrock_model_id)
+        logger.info("Region/endpoint = %s", settings.aws_default_region)
+    elif provider in ("openai", "openai_compatible", "vllm"):
+        model_id = settings.vllm_model or settings.openai_model_name
+        endpoint = settings.vllm_api_base or settings.openai_api_base
+        logger.info("Model ID = %s", model_id)
+        logger.info("Region/endpoint = %s", endpoint)
+    else:
+        logger.info("Model ID = %s", settings.ollama_model)
+        logger.info("Region/endpoint = %s", settings.ollama_host)
+    logger.info("==================================")
+    
     yield
+
     # Stop background tasks gracefully to prevent dangling threads during app teardown
     # This prevents 'cannot schedule new futures' and 'I/O operation on closed file' in pytest
     logger.info("Shutting down background thread pool...")
