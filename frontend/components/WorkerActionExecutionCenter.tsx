@@ -645,7 +645,8 @@ export const WorkerActionExecutionCenter = forwardRef<
           detectorId: isAwsTask ? undefined : executing.detectorId,
           resourceArn: executing.resourceId,
           region: executing.region || process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
-          isAwsTask: isAwsTask
+          isAwsTask: isAwsTask,
+          action_type: isAwsTask ? "AWS_TASK" : "KRA_REMEDIATION"
         },
         jiraUrl: executing.jiraUrl,
         command_timeout: timeoutMins * 60,

@@ -17,11 +17,12 @@ def run_e2e_test():
             "actionDescription": "Test bucket creation",
             "service": "AWS",
             "isAwsTask": True,
+            "action_type": "AWS_TASK",
             "region": "us-east-1"
         },
         "command_timeout": 300,
         "max_iterations": 5,
-        "aws_permissions": ["AmazonS3FullAccess"]
+        "aws_permissions": ["eab39a74-a48a-4f19-9803-e71e37cc4d62"]
     }
     
     print(f"Triggering orchestration for job: {job_id}")

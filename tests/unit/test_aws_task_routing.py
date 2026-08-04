@@ -14,7 +14,8 @@ def test_aws_task_never_routes_to_detector_path(mock_action_executor, mock_execu
             actionName="Create S3 Bucket",
             actionDescription="Test",
             detectorId="task_123",
-            isAwsTask=True
+            isAwsTask=True,
+            action_type="AWS_TASK"
         )
     )
     
@@ -54,7 +55,8 @@ def test_aws_task_without_detector_id_routes_to_execution_agents(mock_action_exe
         action=ActionInput(
             actionName="Create EC2",
             actionDescription="Test",
-            isAwsTask=True
+            isAwsTask=True,
+            action_type="AWS_TASK"
         )
     )
     

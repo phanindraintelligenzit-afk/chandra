@@ -37,7 +37,13 @@ class TaskAuthorizationService:
         if not self.permissions:
             return False
             
-        permission_sets = self.permissions.get("permissionSets", [])
+        if isinstance(self.permissions, list):
+            permission_sets = self.permissions
+        elif isinstance(self.permissions, dict):
+            permission_sets = self.permissions.get("permissionSets", [])
+        else:
+            permission_sets = []
+            
         for pset in permission_sets:
             if pset.get("id") == permission_set_id:
                 # Basic validation: check if the permission set allows anything or matches requirements

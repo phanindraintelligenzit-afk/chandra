@@ -774,6 +774,7 @@ export type OrchestrateRequest = {
     resourceArn?: string;
     region?: string;
     isAwsTask?: boolean;
+    action_type?: string;
   };
   sandbox_path?: string;
   reference_folder?: string;

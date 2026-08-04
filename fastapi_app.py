@@ -713,7 +713,7 @@ class ActionInput(BaseModel):
     detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
     resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
-    isAwsTask: bool = Field(default=False, description="True when this is an AWS Task from the onboarding task list. AWS Tasks must NEVER route through action_executor_node.")
+    action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1268,7 +1268,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         # Check if this is a predefined KRA remediation
         # GUARD: AWS Tasks must NEVER enter this branch. They must always reach
         # the ExecutionAgents LangGraph pipeline below.
-        if request.action.detectorId and not request.action.isAwsTask:
+        if request.action.detectorId and getattr(request.action, "action_type", None) != "AWS_TASK":
             from src.chandra.graphs.action_nodes.action_executor import action_executor_node
             from src.chandra.graphs.state import ChandraState
             from src.chandra.briefing.schemas import ProposedWrite
