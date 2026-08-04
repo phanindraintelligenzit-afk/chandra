@@ -1979,6 +1979,14 @@ Generate the complete set of files now."""
 
         Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
         self.logger.info("Using sandbox directory: %s", sandbox_dir)
+        
+        # Cross-job idempotency: if using a new sandbox but inheriting from a previous run, copy its state and files.
+        if input_path and Path(input_path).exists() and Path(input_path).resolve() != Path(sandbox_dir).resolve():
+            import shutil
+            for src_file in Path(input_path).glob("*"):
+                if src_file.is_file():
+                    shutil.copy2(src_file, Path(sandbox_dir) / src_file.name)
+            self.logger.info("Copied previous sandbox state from: %s", input_path)
 
         CLEANABLE_EXTENSIONS = {".tf", ".py", ".sh", ".yaml", ".yml", ".json", ".md"}
         PRESERVE_NAMES = {
