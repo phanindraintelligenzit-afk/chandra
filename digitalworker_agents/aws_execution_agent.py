@@ -1920,6 +1920,7 @@ RULE 8 — SELF-VALIDATING TERRAFORM (use preconditions).
 RULE 9 — Do NOT use data sources for random_id or random_string. They are resources.
 RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
 RULE 11 — ALWAYS use proper HCL string interpolation format: "${{random_id.name.hex}}" instead of "string"[random_id.name.hex].
+RULE 12 — DO NOT CHANGE DIRECTORIES: Files are written to the current working directory. Run `terraform init` and `terraform plan` directly without using `mkdir` or `cd` into subdirectories.
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).
@@ -2298,6 +2299,52 @@ command string — never a placeholder, never "...", never a comment."""
             updated.append(new_cmd)
         return updated
 
+    def _normalize_terraform_command(self, command: str) -> Tuple[str, bool, str]:
+        """
+        Normalizes LLM-generated commands. Enforces Terraform execution bounds.
+        Returns (normalized_cmd, was_modified, reject_reason).
+        """
+        original = command.strip()
+        if not original:
+            return "", False, ""
+            
+        import re
+        parts = re.split(r'(&&|;)', original)
+        
+        normalized_parts = []
+        was_modified = False
+        
+        for part in parts:
+            if part.strip() in ('&&', ';'):
+                normalized_parts.append(part)
+                continue
+                
+            cmd_trim = part.strip()
+            if not cmd_trim:
+                continue
+                
+            cmd_lower = cmd_trim.lower()
+            
+            if ".." in cmd_trim or re.search(r'(?:^|\s)(?:/[a-zA-Z]|[a-zA-Z]:\\)', cmd_trim):
+                return "", True, f"Command contains forbidden directory traversal or absolute path: {cmd_trim}"
+                
+            if (cmd_lower.startswith("cd ") or cmd_lower == "cd" or
+                cmd_lower.startswith("pushd ") or cmd_lower == "pushd" or 
+                cmd_lower.startswith("popd ") or cmd_lower == "popd" or
+                cmd_lower.startswith("mkdir ") or cmd_lower.startswith("md ") or
+                (cmd_lower.startswith("if not exist ") and "mkdir " in cmd_lower)):
+                was_modified = True
+                continue 
+                
+            normalized_parts.append(part)
+            
+        res = "".join(normalized_parts).strip()
+        res = re.sub(r'^(&&|;)\s*', '', res)
+        res = re.sub(r'\s*(&&|;)$', '', res)
+        res = re.sub(r'(&&|;)\s*(&&|;)', r'\1', res).strip()
+        
+        return res, original != res, ""
+
     def _validate_command(self, command: str, execute_folder: str) -> Tuple[bool, str]:
         """Pre-execution validation. Returns (is_valid, error_message)."""
         base_path = Path(execute_folder).resolve()
@@ -2318,13 +2365,55 @@ command string — never a placeholder, never "...", never a comment."""
         results: List[Dict] = []
         halted = False
         for idx, cmd_info in enumerate(sorted(commands, key=lambda c: c.get("order", 9999)), 1):
-            command: str = cmd_info["command"]
+            original_command: str = cmd_info["command"]
             description: str = cmd_info.get("description", "")
-            relative_dir: str = cmd_info.get("working_dir", ".")
-
-            cwd = (base_path / relative_dir).resolve()
+            
+            # Authoritative cwd is ALWAYS the sandbox root
+            cwd = base_path.resolve()
             if not cwd.exists():
-                cwd = base_path
+                cwd.mkdir(parents=True, exist_ok=True)
+
+            normalized_cmd, was_modified, reject_reason = self._normalize_terraform_command(original_command)
+            
+            if reject_reason:
+                self.logger.warning("X COMMAND REJECTED: %s — %s", description or original_command, reject_reason)
+                results.append({
+                    "command": original_command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "",
+                    "stderr": f"Command rejected: {reject_reason}",
+                    "return_code": -1,
+                    "success": False,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                })
+                halted = True
+                break
+                
+            if not normalized_cmd and was_modified:
+                self.logger.info("NORMALIZATION: Skipped directory manipulation command: '%s'", original_command)
+                results.append({
+                    "command": original_command,
+                    "description": description,
+                    "working_dir": str(cwd),
+                    "stdout": "Command normalized to empty (skipped safe structural command).",
+                    "stderr": "",
+                    "return_code": 0,
+                    "success": True,
+                    "timed_out": False,
+                    "timeout_seconds": timeout,
+                })
+                continue
+            elif not normalized_cmd:
+                continue
+                
+            if was_modified:
+                self.logger.info("NORMALIZATION: Original command: '%s'", original_command)
+                self.logger.info("NORMALIZATION: Normalized command: '%s'", normalized_cmd)
+                self.logger.info("NORMALIZATION: Authoritative CWD: '%s'", str(cwd))
+
+            command = normalized_cmd
 
             is_valid, error_msg = self._validate_command(command, str(cwd))
             if not is_valid:
