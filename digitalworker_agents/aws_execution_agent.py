@@ -388,7 +388,7 @@ class ExecutableStep(BaseModel):
 class CodeGenerationResult(BaseModel):
     files: List[GeneratedFile]
     executableSteps: List[ExecutableStep]
-    summary: str
+    summary: Optional[str] = Field(default="")
 
 class ExecutionCommand(BaseModel):
     command: str = Field(description="Shell command to execute")
@@ -1921,6 +1921,8 @@ RULE 9 — Do NOT use data sources for random_id or random_string. They are reso
 RULE 10 — NEVER use a "backend" argument for random_id. It is not supported. Use only byte_length.
 RULE 11 — ALWAYS use proper HCL string interpolation format: "${{random_id.name.hex}}" instead of "string"[random_id.name.hex].
 RULE 12 — DO NOT CHANGE DIRECTORIES: Files are written to the current working directory. Run `terraform init` and `terraform plan` directly without using `mkdir` or `cd` into subdirectories.
+RULE 13 — PREVENT DUPLICATES. Do NOT declare the same resource (e.g., local_file.private_key) in multiple files.
+RULE 14 — DO NOT ESCAPE INTERPOLATION. Use "${{var}}" exactly. DO NOT output "\\${{var}}".
 --- BATCH INSTRUCTIONS ---
 This is a partial generation. Generate/Update the configuration ONLY for these resources: {batch}. 
 If files were generated in previous batches, output the FULL updated file content (do not output partial snippets).

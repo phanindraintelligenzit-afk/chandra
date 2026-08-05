@@ -59,6 +59,19 @@ class TerraformPlanPolicyValidator:
     Gate 2: Verifies the generated Terraform plan against the AWS permissions
     before apply. Parses `terraform show -json tfplan`.
     """
+    
+    ALLOWED_DEPENDENCIES = {
+        "EC2": {
+            "aws_instance", "aws_key_pair", "tls_private_key", "local_file", 
+            "aws_security_group", "aws_security_group_rule", "aws_eip", 
+            "aws_network_interface", "aws_volume_attachment", "aws_ebs_volume"
+        },
+        "S3": {
+            "aws_s3_bucket", "aws_s3_bucket_acl", "aws_s3_bucket_versioning", 
+            "aws_s3_bucket_public_access_block", "aws_s3_object", "aws_s3_bucket_policy"
+        }
+    }
+
     def __init__(self, permissions_path: str = "aws_permissions.json"):
         self.permissions_path = permissions_path
         self.auth_service = TaskAuthorizationService(permissions_path)
@@ -78,16 +91,25 @@ class TerraformPlanPolicyValidator:
                 resource_type = change.get("type")
                 actions = change.get("change", {}).get("actions", [])
                 
-                # Check if the resource type is allowed for the approved task.
-                # Example: "Create S3 Bucket" should only involve aws_s3_bucket* resources.
-                if "S3" in approved_task_name and not resource_type.startswith("aws_s3_bucket"):
-                    return False, f"Unrelated resource {resource_type} detected for S3 task."
-                
-                if "EC2" in approved_task_name and not resource_type.startswith("aws_instance"):
-                     return False, f"Unrelated resource {resource_type} detected for EC2 task."
-                     
+                # Determine task type
+                if "S3" in approved_task_name:
+                    task_type = "S3"
+                elif "EC2" in approved_task_name:
+                    task_type = "EC2"
+                else:
+                    task_type = None
+
+                if task_type and task_type in self.ALLOWED_DEPENDENCIES:
+                    allowed_res = self.ALLOWED_DEPENDENCIES[task_type]
+                    if resource_type not in allowed_res and not any(resource_type.startswith(ar) for ar in allowed_res):
+                        return False, f"Unrelated resource {resource_type} detected for {task_type} task."
+                elif task_type:
+                    # Fallback for unknown tasks
+                    if not resource_type.startswith(f"aws_{task_type.lower()}"):
+                         return False, f"Unrelated resource {resource_type} detected for {task_type} task."
+                         
                 # Deterministic block on destroy unless explicitly approved
-                if "delete" in actions and "Delete" not in approved_task_name and "Destroy" not in approved_task_name:
+                if "delete" in actions and "delete" not in approved_task_name.lower() and "destroy" not in approved_task_name.lower():
                     return False, f"Unauthorized delete action on {resource_type}."
 
             return True, "Plan is valid and authorized."
