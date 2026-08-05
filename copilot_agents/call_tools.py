@@ -272,3 +272,50 @@ def get_aws_cost_summary(days_lookback: int = 7) -> dict:
 
     except ClientError as e:
         return {"Error": f"AWS Cost Explorer query failed: {str(e)}"}
+
+# ── Tool 6: AWS Permission Sets ──────────────────────────────────────────────
+@tool
+def get_available_aws_permission_sets() -> dict:
+    """
+    Retrieves the available AWS permission sets from the authorization service.
+    This can be used to see existing permission sets that can be attached to jobs.
+    """
+    try:
+        import sys
+        import os
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from src.chandra.permissions.service import TaskAuthorizationService
+        service = TaskAuthorizationService()
+        return {"permission_sets": service._load_permission_sets()}
+    except Exception as e:
+        return {"Error": f"Failed to get permission sets: {str(e)}"}
+
+# ── Tool 7: Attach AWS Permission to Job ─────────────────────────────────────
+@tool
+def attach_aws_permission_to_job(job_id: str, permission_set_id: str) -> dict:
+    """
+    Attaches a selected permission set to a paused Digital Worker job (which is
+    waiting for permission attachment) and resumes it.
+
+    Args:
+        job_id: The ID of the Digital Worker job paused at Gate 1 (e.g. from the user context).
+        permission_set_id: The ID of the permission set to attach.
+    """
+    try:
+        import urllib.request
+        import json
+        req = urllib.request.Request(
+            f"http://127.0.0.1:6001/requests/{job_id}/approve",
+            data=json.dumps({
+                "approved": True,
+                "approver": "Copilot",
+                "comment": f"Copilot attached permission_set_id {permission_set_id}",
+                "permission_set_id": permission_set_id
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req) as response:
+            return {"Status": "Success", "Details": json.loads(response.read().decode())}
+    except Exception as e:
+        return {"Error": f"Failed to attach permission set: {str(e)}"}

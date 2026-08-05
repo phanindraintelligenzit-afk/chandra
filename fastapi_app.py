@@ -1518,6 +1518,8 @@ class ApprovalSubmission(BaseModel):
     approved: bool = Field(description="True to approve automated execution, False to reject.")
     approver: Optional[str] = Field(default=None, description="Who decided.")
     comment: str = Field(default="", description="Optional decision rationale.")
+    permission_set_id: Optional[str] = Field(default=None, description="Optional permission set ID attached by Copilot.")
+
 
 
 def _dw_thread_config(job_id: str) -> Dict[str, Any]:
@@ -1628,6 +1630,15 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 }
             logger.info("DIGITAL WORKER JOB [%s] awaiting approval", job_id)
             return
+            
+        # Handle permission selection pause
+        if snapshot.next and "permission_selection_pause" in snapshot.next:
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "awaiting_permission"
+                _job_store[job_id]["progress"] = 75
+                _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
+            logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
+            return
 
         # Handle Execution Agent HITL pause!
         if snapshot.next and "execute_automation" in snapshot.next:
@@ -1686,25 +1697,65 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
     try:
         if _digital_worker is None:
             raise RuntimeError("Digital Worker graph is not initialized")
+            
         with _job_store_lock:
+            # Check the current status before changing to running
+            current_status = _job_store[job_id].get("status")
             _job_store[job_id]["status"] = "running"
             _job_store[job_id]["progress"] = 80
             _job_store[job_id]["message"] = "Resuming after approval decision..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
-            # Flag that this job was explicitly approved by a human so the
-            # Worker Action Execution Center can distinguish it from the
-            # initial "running" phase (before the approval gate is reached).
+            # Flag that this job was explicitly approved by a human
             _job_store[job_id]["approved_by_human"] = True
             _job_store[job_id]["requires_approval"] = False
+            
+        # If the job was paused at the permission selection, pass the dict instead of ApprovalSubmission
+        if current_status == "awaiting_permission":
+            resume_payload = {"permission_set_id": approval.permission_set_id}
+        else:
+            resume_payload = approval.model_dump()
 
         final_state = _digital_worker.invoke(
-            Command(resume=approval.model_dump()),
+            Command(resume=resume_payload),
             config=_dw_thread_config(job_id),
         )
+
+        snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+
+        # Handle permission selection pause
+        if snapshot.next and "permission_selection_pause" in snapshot.next:
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "awaiting_permission"
+                _job_store[job_id]["progress"] = 75
+                _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
+            logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
+            return
+
+        # Handle Execution Agent HITL pause
+        if snapshot.next and "execute_automation" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
+            questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
+            summary = interrupt_val.get("summary", "Awaiting input")
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "completed"
+                _job_store[job_id]["progress"] = 100
+                _job_store[job_id]["message"] = "Awaiting user input"
+                _job_store[job_id]["job_type"] = "dw"
+                _job_store[job_id]["result"] = {
+                    "statusCode": 202,
+                    "status": "needs_clarification",
+                    "thread_id": job_id,
+                    "questions": questions,
+                    "summary": summary,
+                }
+            logger.info("DIGITAL WORKER JOB [%s] paused for HITL", job_id)
+            return
+
         _dw_finalize_job(job_id, final_state, start_time)
         logger.info(
             "DIGITAL WORKER JOB [%s] resumed (approved=%s) and completed",
-            job_id, approval.approved,
+            job_id, approval.approved if hasattr(approval, "approved") else True,
         )
     except Exception as exc:
         logger.exception("DIGITAL WORKER JOB [%s] resume failed", job_id)
@@ -1911,14 +1962,14 @@ def receive_webhook(
 
 @app.post("/requests/{job_id}/approve")
 def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
-    """Approve or reject a workflow paused at the human approval gate."""
+    """Approve or reject a workflow paused at the human approval gate (or attach permissions)."""
     with _job_store_lock:
         job = _job_store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"error": "Job not found"})
-        if job.get("status") != "awaiting_approval":
+        if job.get("status") not in ["awaiting_approval", "awaiting_permission"]:
             return JSONResponse(status_code=409, content={
-                "error": f"Job is '{job.get('status')}', not awaiting_approval",
+                "error": f"Job is '{job.get('status')}', not awaiting_approval or awaiting_permission",
             })
     _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
     return JSONResponse(status_code=202, content={

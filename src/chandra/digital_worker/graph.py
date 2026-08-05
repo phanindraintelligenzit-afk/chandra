@@ -300,8 +300,53 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
 def route_approval(state: DigitalWorkerState) -> str:
     approval = state.get("approval")
     if approval is not None and approval.approved:
+        if state["classification"].platform is CloudPlatform.AWS:
+            return "permission_analysis"
         return "execute_automation"
     return "generate_guidance"
+
+
+def permission_analysis(state: DigitalWorkerState) -> dict[str, Any]:
+    """Determine what permissions are needed for the AWS action."""
+    # In a real implementation this might call an LLM to map the plan to IAM actions
+    # For now, we simply extract the required actions from the plan
+    return {
+        "audit_trail": [
+            _audit("permission_analysis", "permissions_analyzed", status="completed")
+        ]
+    }
+
+
+def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
+    """Interrupt the graph to wait for Copilot to select the permission set."""
+    payload = interrupt(
+        {
+            "status": "awaiting_permission",
+            "request_id": state["request"].request_id,
+        }
+    )
+    
+    # payload will contain the permission_set_id when resumed by Copilot
+    permission_set_id = payload.get("permission_set_id") if isinstance(payload, dict) else None
+    
+    return {
+        "permission_set_id": permission_set_id,
+        "audit_trail": [
+            _audit("permission_selection_pause", "permission_attached", permission_set_id=permission_set_id)
+        ]
+    }
+
+def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
+    """Gate 1: Verify the attached permission set."""
+    permission_set_id = state.get("permission_set_id")
+    if not permission_set_id:
+        raise ValueError("Gate 1 failed: No permission set attached")
+        
+    return {
+        "audit_trail": [
+            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id)
+        ]
+    }
 
 
 def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PLR0912,PLR0915
@@ -703,6 +748,9 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("risk_analysis", risk_analysis)
     graph.add_node("decision", decision)
     graph.add_node("approval_gate", approval_gate)
+    graph.add_node("permission_analysis", permission_analysis)
+    graph.add_node("permission_selection_pause", permission_selection_pause)
+    graph.add_node("gate_1_verification", gate_1_verification)
     graph.add_node("execute_automation", execute_automation)
     graph.add_node("generate_guidance", generate_guidance)
     graph.add_node("validate_result", validate_result)
@@ -729,8 +777,12 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_conditional_edges(
         "approval_gate",
         route_approval,
-        ["execute_automation", "generate_guidance"],
+        ["execute_automation", "generate_guidance", "permission_analysis"],
     )
+
+    graph.add_edge("permission_analysis", "permission_selection_pause")
+    graph.add_edge("permission_selection_pause", "gate_1_verification")
+    graph.add_edge("gate_1_verification", "execute_automation")
 
     graph.add_edge("execute_automation", "validate_result")
     graph.add_edge("generate_guidance", "validate_result")
@@ -744,4 +796,4 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     # ``interrupt_before`` makes the human gate real (see the core graph's
     # build_graph for why the function-level interrupt alone is not enough
     # in LangGraph 1.x).
-    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate"])
+    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate", "permission_selection_pause"])

@@ -58,3 +58,4 @@ class DigitalWorkerState(TypedDict, total=False):
 
     status: str
     result: dict[str, Any]
+    permission_set_id: str

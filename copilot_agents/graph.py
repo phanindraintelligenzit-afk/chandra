@@ -20,6 +20,8 @@ from copilot_agents.call_tools import (
     get_cpu_metrics,
     get_recent_resource_changes,
     get_xray_traces,
+    get_available_aws_permission_sets,
+    attach_aws_permission_to_job,
 )
 
 # ── Register all tools ────────────────────────────────────────────────────────
@@ -29,6 +31,8 @@ tools = [
     get_recent_resource_changes,
     get_cloudtrail_api_logs,
     get_aws_cost_summary,
+    get_available_aws_permission_sets,
+    attach_aws_permission_to_job,
 ]
 tools_by_name = {t.name: t for t in tools}
 
@@ -104,10 +108,11 @@ class AgentState(TypedDict):
 # if MODEL_NAME is missing or Bedrock credentials are invalid.
 
 SYSTEM_PROMPT = (
-    "You are a cloud watcher agent that monitors AWS cloud infrastructure. "
-    "You have access to tools for CPU metrics, X-Ray traces, resource change "
-    "history, CloudTrail audit logs, and cost summaries. Use them as needed to "
-    "answer the user's question thoroughly. Just give very short summary one line."
+    "You are a cloud watcher agent that monitors AWS cloud infrastructure and manages "
+    "permissions for autonomous jobs. You have access to tools for CPU metrics, X-Ray traces, "
+    "resource change history, CloudTrail audit logs, and cost summaries, as well as tools to "
+    "list AWS permission sets and attach them to a paused digital worker job. "
+    "Use them as needed to answer the user's question thoroughly. Just give very short summary one line."
 )
 
 
