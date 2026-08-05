@@ -3060,6 +3060,10 @@ Rules:
                 current_error_class = self._extract_error_class(r.get("stderr", ""))
                 break
 
+        if not current_error_class and state.get("plan_review_precheck_failed"):
+            current_error_class = "Gate2PlanValidationFailed"
+            raw_error = f"Gate 2 Plan Validation Failed: {state.get('plan_review_issue', 'Unknown policy violation')}"
+
         prior_error_class = state.get("last_error_class") or ""
         consecutive = state.get("consecutive_same_error", 0)
 

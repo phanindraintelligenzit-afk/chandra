@@ -62,16 +62,18 @@ class TerraformPlanPolicyValidator:
     
     ALLOWED_DEPENDENCIES = {
         "EC2": {
-            "aws_instance", "aws_key_pair", "tls_private_key", "local_file", 
+            "aws_instance", "aws_key_pair",
             "aws_security_group", "aws_security_group_rule", "aws_eip", 
-            "aws_network_interface", "aws_volume_attachment", "aws_ebs_volume",
-            "random_id", "random_string"
+            "aws_network_interface", "aws_volume_attachment", "aws_ebs_volume"
         },
         "S3": {
             "aws_s3_bucket", "aws_s3_bucket_acl", "aws_s3_bucket_versioning", 
-            "aws_s3_bucket_public_access_block", "aws_s3_object", "aws_s3_bucket_policy",
-            "random_id", "random_string"
+            "aws_s3_bucket_public_access_block", "aws_s3_object", "aws_s3_bucket_policy"
         }
+    }
+
+    HELPER_RESOURCES = {
+        "random_id", "random_string", "tls_private_key", "local_file", "local_sensitive_file"
     }
 
     def __init__(self, permissions_path: str = "aws_permissions.json"):
@@ -103,11 +105,22 @@ class TerraformPlanPolicyValidator:
 
                 if task_type and task_type in self.ALLOWED_DEPENDENCIES:
                     allowed_res = self.ALLOWED_DEPENDENCIES[task_type]
-                    if resource_type not in allowed_res and not any(resource_type.startswith(ar) for ar in allowed_res):
+                    if resource_type in self.HELPER_RESOURCES:
+                        # Helper resource logic
+                        after_props = change.get("change", {}).get("after", {}) or {}
+                        # Validate that helper resources do not write files outside the sandbox
+                        for key, val in after_props.items():
+                            if isinstance(val, str) and key in ("filename", "content_base64"):
+                                if "filename" in key:
+                                    if ".." in val or val.startswith("/") or val.startswith("\\") or ":" in val:
+                                        return False, f"Unauthorized helper path in {resource_type}: {val}"
+                    elif resource_type not in allowed_res and not any(resource_type.startswith(ar) for ar in allowed_res):
                         return False, f"Unrelated resource {resource_type} detected for {task_type} task."
                 elif task_type:
                     # Fallback for unknown tasks
-                    if not resource_type.startswith(f"aws_{task_type.lower()}"):
+                    if resource_type in self.HELPER_RESOURCES:
+                        pass # Valid helper
+                    elif not resource_type.startswith(f"aws_{task_type.lower()}"):
                          return False, f"Unrelated resource {resource_type} detected for {task_type} task."
                          
                 # Deterministic block on destroy unless explicitly approved
