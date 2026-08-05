@@ -64,11 +64,13 @@ class TerraformPlanPolicyValidator:
         "EC2": {
             "aws_instance", "aws_key_pair", "tls_private_key", "local_file", 
             "aws_security_group", "aws_security_group_rule", "aws_eip", 
-            "aws_network_interface", "aws_volume_attachment", "aws_ebs_volume"
+            "aws_network_interface", "aws_volume_attachment", "aws_ebs_volume",
+            "random_id", "random_string"
         },
         "S3": {
             "aws_s3_bucket", "aws_s3_bucket_acl", "aws_s3_bucket_versioning", 
-            "aws_s3_bucket_public_access_block", "aws_s3_object", "aws_s3_bucket_policy"
+            "aws_s3_bucket_public_access_block", "aws_s3_object", "aws_s3_bucket_policy",
+            "random_id", "random_string"
         }
     }
 

@@ -34,7 +34,8 @@ def test_ec2_with_legitimate_dependencies(validator):
         "aws_key_pair", 
         "tls_private_key", 
         "local_file", 
-        "aws_security_group"
+        "aws_security_group",
+        "random_id"
     ])
     try:
         is_valid, reason = validator.validate_plan(plan_path, "EC2_OPERATOR", "CREATE EC2 INSTANCE")
