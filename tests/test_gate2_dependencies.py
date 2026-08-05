@@ -124,8 +124,8 @@ def test_helper_absolute_path_fails(validator):
     finally:
         os.remove(plan_path)
 
-def test_destructive_plan_blocked(validator):
-    # destructive AWS plan remains BLOCKED according to existing policy
+def test_pure_delete_plan_blocked(validator):
+    # pure destructive AWS plan remains BLOCKED for a CREATE task
     plan_path = write_plan(["aws_instance"], actions=["delete"])
     try:
         is_valid, reason = validator.validate_plan(plan_path, "EC2_OPERATOR", "CREATE EC2 INSTANCE")
@@ -134,7 +134,20 @@ def test_destructive_plan_blocked(validator):
     finally:
         os.remove(plan_path)
 
-def test_destructive_plan_allowed_if_task_is_delete(validator):
+def test_replacement_plan_allowed(validator):
+    # a replacement (create + delete) is allowed for a CREATE/UPDATE task
+    plan_path1 = write_plan(["aws_instance"], actions=["create", "delete"])
+    plan_path2 = write_plan(["aws_instance"], actions=["delete", "create"])
+    try:
+        is_valid1, _ = validator.validate_plan(plan_path1, "EC2_OPERATOR", "CREATE EC2 INSTANCE")
+        is_valid2, _ = validator.validate_plan(plan_path2, "EC2_OPERATOR", "CREATE EC2 INSTANCE")
+        assert is_valid1 is True
+        assert is_valid2 is True
+    finally:
+        os.remove(plan_path1)
+        os.remove(plan_path2)
+
+def test_pure_delete_plan_allowed_if_task_is_delete(validator):
     plan_path = write_plan(["aws_instance"], actions=["delete"])
     try:
         is_valid, reason = validator.validate_plan(plan_path, "EC2_OPERATOR", "DELETE EC2 INSTANCE")

@@ -123,8 +123,9 @@ class TerraformPlanPolicyValidator:
                     elif not resource_type.startswith(f"aws_{task_type.lower()}"):
                          return False, f"Unrelated resource {resource_type} detected for {task_type} task."
                          
-                # Deterministic block on destroy unless explicitly approved
-                if "delete" in actions and "delete" not in approved_task_name.lower() and "destroy" not in approved_task_name.lower():
+                # Deterministic block on pure destroy unless explicitly approved
+                is_pure_delete = len(actions) == 1 and actions[0] == "delete"
+                if is_pure_delete and "delete" not in approved_task_name.lower() and "destroy" not in approved_task_name.lower():
                     return False, f"Unauthorized delete action on {resource_type}."
 
             return True, "Plan is valid and authorized."
