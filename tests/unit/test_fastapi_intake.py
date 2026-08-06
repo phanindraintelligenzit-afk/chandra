@@ -222,13 +222,22 @@ class TestApprovalCenterDiscovery:
         # It should now pause at awaiting_permission
         _poll_request(client, job_id, {"awaiting_permission"})
         
-        # Now attach permission set to resume to completion
+        # Now attach permission set — should proceed through Gate 1 and pause at Gate 2
         attach = client.post(
             f"/requests/{job_id}/approve",
             json={"approved": True, "approver": "Copilot", "permission_set_id": "eab39a74-a48a-4f19-9803-e71e37cc4d62"},
         )
         assert attach.status_code == 202
-        
+
+        _poll_request(client, job_id, {"awaiting_gate2"})
+
+        # Approve Gate 2 to resume to completion
+        gate2 = client.post(
+            f"/requests/{job_id}/approve",
+            json={"approved": True, "approver": "pvr", "comment": "execute"},
+        )
+        assert gate2.status_code == 202
+
         body = _poll_request(client, job_id, {"completed", "dry_run"})
         assert body["request"]["workflow_status"] in ("completed", "completed_with_issues")
 

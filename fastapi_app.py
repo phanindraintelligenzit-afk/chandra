@@ -1655,6 +1655,25 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
+        # Handle Gate 2 execution review pause (governed Jira path)
+        if snapshot.next and "gate_2_review" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "awaiting_gate2"
+                _job_store[job_id]["progress"] = 85
+                _job_store[job_id]["message"] = "Awaiting Gate 2 human execution review"
+                _job_store[job_id]["job_type"] = "dw"
+                _job_store[job_id]["result"] = {
+                    "statusCode": 202,
+                    "status": "awaiting_gate2_review",
+                    "type": "gate2_execution_review",
+                    "thread_id": job_id,
+                    "review": interrupt_val.get("review", {}),
+                }
+            logger.info("DIGITAL WORKER JOB [%s] awaiting Gate 2 execution review", job_id)
+            return
+
         # Handle Execution Agent HITL pause!
         if snapshot.next and "execute_automation" in snapshot.next:
             interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
@@ -1662,7 +1681,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
             summary = interrupt_val.get("summary", "Awaiting input")
             interrupt_type = interrupt_val.get("type", "clarification")
-            
+
             with _job_store_lock:
                 if interrupt_type == "gate2_approval":
                     _job_store[job_id]["status"] = "awaiting_gate2"
@@ -1670,14 +1689,12 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                     _job_store[job_id]["status"] = "completed"
                 _job_store[job_id]["progress"] = 100
                 _job_store[job_id]["message"] = "Awaiting user input"
-                # Store job_type='dw' so resume endpoint resumes the DW graph,
-                # not the Execution Agent directly.
                 _job_store[job_id]["job_type"] = "dw"
                 _job_store[job_id]["result"] = {
                     "statusCode": 202,
                     "status": "needs_clarification",
                     "type": interrupt_type,
-                    "thread_id": job_id,  # DW graph thread_id = job_id
+                    "thread_id": job_id,
                     "questions": questions,
                     "summary": summary,
                 }
@@ -1730,9 +1747,15 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["approved_by_human"] = True
             _job_store[job_id]["requires_approval"] = False
             
-        # If the job was paused at the permission selection, pass the dict instead of ApprovalSubmission
+        # Route resume payload based on which gate we're at
         if current_status == "awaiting_permission":
             resume_payload = {"permission_set_id": approval.permission_set_id}
+        elif current_status == "awaiting_gate2":
+            resume_payload = {
+                "approved": approval.approved,
+                "approver": approval.approver or "operator",
+                "comment": approval.comment or "",
+            }
         else:
             resume_payload = approval.model_dump()
 
@@ -1755,6 +1778,25 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
+        # Handle Gate 2 execution review pause (governed Jira path)
+        if snapshot.next and "gate_2_review" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
+            with _job_store_lock:
+                _job_store[job_id]["status"] = "awaiting_gate2"
+                _job_store[job_id]["progress"] = 85
+                _job_store[job_id]["message"] = "Awaiting Gate 2 human execution review"
+                _job_store[job_id]["job_type"] = "dw"
+                _job_store[job_id]["result"] = {
+                    "statusCode": 202,
+                    "status": "awaiting_gate2_review",
+                    "type": "gate2_execution_review",
+                    "thread_id": job_id,
+                    "review": interrupt_val.get("review", {}),
+                }
+            logger.info("DIGITAL WORKER JOB [%s] awaiting Gate 2 execution review", job_id)
+            return
+
         # Handle Execution Agent HITL pause
         if snapshot.next and "execute_automation" in snapshot.next:
             interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
@@ -1762,7 +1804,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
             summary = interrupt_val.get("summary", "Awaiting input")
             interrupt_type = interrupt_val.get("type", "clarification")
-            
+
             with _job_store_lock:
                 if interrupt_type == "gate2_approval":
                     _job_store[job_id]["status"] = "awaiting_gate2"
@@ -2019,9 +2061,9 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
         job = _job_store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"error": "Job not found"})
-        if job.get("status") not in ["awaiting_approval", "awaiting_permission"]:
+        if job.get("status") not in ["awaiting_approval", "awaiting_permission", "awaiting_gate2"]:
             return JSONResponse(status_code=409, content={
-                "error": f"Job is '{job.get('status')}', not awaiting_approval or awaiting_permission",
+                "error": f"Job is '{job.get('status')}', not awaiting_approval/awaiting_permission/awaiting_gate2",
             })
     _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
     return JSONResponse(status_code=202, content={
