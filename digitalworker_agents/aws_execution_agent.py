@@ -263,7 +263,7 @@ def _build_checkpointer() -> Any:
                 conn_string = conn_string.replace("postgresql+psycopg://", "postgresql://", 1)
             with psycopg.connect(conn_string, autocommit=True) as conn:
                 PostgresSaver(conn).setup()
-            pool = ConnectionPool(conn_string, max_size=10)
+            pool = ConnectionPool(conn_string, max_size=10, open=True)
             atexit.register(pool.close)
             checkpointer = PostgresSaver(pool)
             logger.info("checkpointer.postgres_setup_success")

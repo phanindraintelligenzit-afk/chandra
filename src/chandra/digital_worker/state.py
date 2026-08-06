@@ -14,6 +14,7 @@ from src.chandra.digital_worker.schemas import (
     ExecutionOutcome,
     NotificationResult,
     RequestClassification,
+    RequiredPermission,
     ResolutionPlan,
     RiskAssessment,
     RootCause,
@@ -58,4 +59,7 @@ class DigitalWorkerState(TypedDict, total=False):
 
     status: str
     result: dict[str, Any]
+    required_permissions: list[RequiredPermission]
     permission_set_id: str
+    gate_1_passed: bool
+    gate_1_result: dict[str, Any]

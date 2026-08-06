@@ -57,7 +57,7 @@ def _build_checkpointer() -> Any:
             with psycopg.connect(conn_string, autocommit=True) as conn:
                 PostgresSaver(conn).setup()
                 
-            pool = ConnectionPool(conn_string, max_size=10)
+            pool = ConnectionPool(conn_string, max_size=10, open=True)
             checkpointer = PostgresSaver(pool)
             logger.info("checkpointer.postgres_setup_success")
             return checkpointer

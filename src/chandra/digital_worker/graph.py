@@ -235,6 +235,7 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
         classification=state["classification"],
         plan=state["plan"],
         risk=state["risk"],
+        source=state.get("source", ""),
     )
 
     logger.info(
@@ -253,9 +254,9 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
 
 def route_decision(state: DigitalWorkerState) -> str:
     mode = state["decision"].mode
-    if mode is DecisionMode.AUTO_EXECUTE:
+    if mode == DecisionMode.AUTO_EXECUTE:
         return "execute_automation"
-    if mode is DecisionMode.AWAIT_APPROVAL:
+    if mode == DecisionMode.AWAIT_APPROVAL:
         return "approval_gate"
     return "generate_guidance"
 
@@ -283,6 +284,7 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
         approved=record.approved,
         approver=record.approver,
     )
+    logger.info(f"TRANSITION: {'HUMAN_APPROVED' if record.approved else 'HUMAN_REJECTED'}")
     return {
         "approval": record,
         "audit_trail": [
@@ -300,7 +302,14 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
 def route_approval(state: DigitalWorkerState) -> str:
     approval = state.get("approval")
     if approval is not None and approval.approved:
-        if state["classification"].platform is CloudPlatform.AWS:
+        classification = state.get("classification")
+        platform = None
+        if isinstance(classification, dict):
+            platform = classification.get("platform")
+        elif classification is not None:
+            platform = getattr(classification, "platform", None)
+            
+        if platform == CloudPlatform.AWS or platform == "aws":
             return "permission_analysis"
         return "execute_automation"
     return "generate_guidance"
@@ -308,26 +317,41 @@ def route_approval(state: DigitalWorkerState) -> str:
 
 def permission_analysis(state: DigitalWorkerState) -> dict[str, Any]:
     """Determine what permissions are needed for the AWS action."""
-    # In a real implementation this might call an LLM to map the plan to IAM actions
-    # For now, we simply extract the required actions from the plan
+    from src.chandra.briefing.composer import analyze_required_permissions
+    from src.chandra.digital_worker.schemas import RequiredPermission
+
+    logger.info("TRANSITION: PERMISSION_ANALYSIS")
+    request_dict = state["request"].model_dump(mode="json", exclude={"raw_payload"})
+    plan_dict = state["plan"].model_dump(mode="json")
+    
+    raw_perms = analyze_required_permissions(request_dict, plan_dict)
+    permissions = [RequiredPermission(**p) for p in raw_perms]
+    
     return {
+        "required_permissions": permissions,
         "audit_trail": [
-            _audit("permission_analysis", "permissions_analyzed", status="completed")
+            _audit("permission_analysis", "permissions_analyzed", status="completed", count=len(permissions))
         ]
     }
 
 
 def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
     """Interrupt the graph to wait for Copilot to select the permission set."""
+    logger.info("TRANSITION: AWAITING_PERMISSION_SET")
+    
+    required_perms = [p.model_dump(mode="json") for p in state.get("required_permissions", [])]
+    
     payload = interrupt(
         {
-            "status": "awaiting_permission",
+            "action_required": "awaiting_permission_set",
             "request_id": state["request"].request_id,
+            "required_permissions": required_perms,
         }
     )
     
     # payload will contain the permission_set_id when resumed by Copilot
     permission_set_id = payload.get("permission_set_id") if isinstance(payload, dict) else None
+    logger.info("TRANSITION: PERMISSION_SELECTED")
     
     return {
         "permission_set_id": permission_set_id,
@@ -338,15 +362,50 @@ def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
 
 def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
     """Gate 1: Verify the attached permission set."""
+    from src.chandra.execution.services import TaskAuthorizationService
+    
     permission_set_id = state.get("permission_set_id")
     if not permission_set_id:
-        raise ValueError("Gate 1 failed: No permission set attached")
+        logger.info("TRANSITION: GATE_1_DENIED")
+        return {
+            "gate_1_passed": False,
+            "gate_1_result": {"pass": False, "missing_actions": [], "reason": "No permission set attached"},
+            "audit_trail": [
+                _audit("gate_1_verification", "gate_1_denied", reason="No permission set attached")
+            ]
+        }
         
+    auth_svc = TaskAuthorizationService()
+    task_name = state["request"].title
+    required_actions = [p.action for p in state.get("required_permissions", [])]
+    
+    # auth_svc.is_authorized now returns a dict
+    auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
+    
+    if not auth_result.get("pass", False):
+        logger.info("TRANSITION: GATE_1_DENIED")
+        return {
+            "gate_1_passed": False,
+            "gate_1_result": auth_result,
+            "audit_trail": [
+                _audit("gate_1_verification", "gate_1_denied", reason="Authorization denied by TaskAuthorizationService", details=auth_result)
+            ]
+        }
+
+    logger.info("TRANSITION: GATE_1_PASS")
     return {
+        "gate_1_passed": True,
+        "gate_1_result": auth_result,
         "audit_trail": [
-            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id)
+            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id, details=auth_result)
         ]
     }
+
+def route_gate1(state: DigitalWorkerState) -> str:
+    logger.info("ROUTING GATE 1: %s", state.get("gate_1_passed"))
+    if state.get("gate_1_passed"):
+        return END  # Safe resumable STOP before Phase 3C execution
+    return "permission_selection_pause"
 
 
 def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PLR0912,PLR0915
@@ -435,6 +494,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
                         fastapi_app._job_store[dw_job_id]["decision_mode"] = "auto_execute"
 
         # Run it synchronously
+        logger.info("TRANSITION: EXECUTION_STARTED")
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=None,
@@ -444,10 +504,17 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         )
 
         if response.statusCode == 202:
+            is_gate2 = any("terraform" in str(q).lower() or "approval" in str(q).lower() 
+                           for q in (response.questions or []))
+            interrupt_type = "gate2_approval" if is_gate2 else "clarification"
+            
+            if is_gate2:
+                logger.info("TRANSITION: AWAITING_GATE_2")
+
             # Propagate pause to Digital Worker graph
             user_answers = interrupt(
                 {
-                    "type": "clarification",
+                    "type": interrupt_type,
                     "questions": response.questions,
                     "summary": response.summary,
                 }
@@ -526,11 +593,12 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
         state["context"],
     )
     approval = state.get("approval")
-    detail = (
-        "automation rejected by approver; engineer guidance produced"
-        if approval is not None and not approval.approved
-        else "engineer guidance produced"
-    )
+    
+    if approval is not None and not approval.approved:
+        detail = f"Request REJECTED by {approval.approver}. Reason: {approval.comment}"
+    else:
+        detail = "engineer guidance produced"
+        
     return {
         "guidance_md": guidance,
         "execution": ExecutionOutcome(status="skipped", dry_run=True, detail=detail),
@@ -564,12 +632,17 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
             ],
         )
     else:
+        logger.info("TRANSITION: AWS_VERIFICATION")
         validation = verify_execution(
             request=state["request"],
             classification=state["classification"],
             plan=state["plan"],
             execution=execution,
         )
+        if validation.passed:
+            logger.info("TRANSITION: VERIFIED")
+        else:
+            logger.info("TRANSITION: VERIFICATION_FAILED")
 
     return {
         "validation": validation,
@@ -588,7 +661,13 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
     execution = state["execution"]
     validation = state["validation"]
     resolved = execution.status == "executed" and validation.passed
-    if state.get("guidance_md"):
+    
+    approval = state.get("approval")
+    is_rejected = approval is not None and not approval.approved
+
+    if is_rejected:
+        comment = f"Chandra Digital Worker outcome: REJECTED\n\n{execution.detail}"
+    elif state.get("guidance_md"):
         comment = (
             "Chandra Digital Worker analyzed this request and produced engineer "
             f"guidance (decision: {state['decision'].reason}).\n\n{state['guidance_md'][:6000]}"
@@ -673,6 +752,7 @@ def audit(state: DigitalWorkerState) -> dict[str, Any]:
         guidance_md=state.get("guidance_md", ""),
         audit_trail=state.get("audit_trail", []),
         status="completed" if state["validation"].passed else "completed_with_issues",
+        required_permissions=state.get("required_permissions", []),
     )
     return {
         "result": result.model_dump(mode="json"),
@@ -782,7 +862,15 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
 
     graph.add_edge("permission_analysis", "permission_selection_pause")
     graph.add_edge("permission_selection_pause", "gate_1_verification")
-    graph.add_edge("gate_1_verification", "execute_automation")
+    
+    graph.add_conditional_edges(
+        "gate_1_verification",
+        route_gate1,
+        {
+            END: END,
+            "permission_selection_pause": "permission_selection_pause"
+        },
+    )
 
     graph.add_edge("execute_automation", "validate_result")
     graph.add_edge("generate_guidance", "validate_result")
@@ -796,4 +884,4 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     # ``interrupt_before`` makes the human gate real (see the core graph's
     # build_graph for why the function-level interrupt alone is not enough
     # in LangGraph 1.x).
-    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate", "permission_selection_pause"])
+    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate"])

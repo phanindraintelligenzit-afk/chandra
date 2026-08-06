@@ -24,6 +24,14 @@ def _new_id() -> str:
     return str(uuid4())
 
 
+class RequiredPermission(BaseModel):
+    """Least-privilege permission required for the operation."""
+    action: str = Field(description="The IAM action, e.g., s3:PutObject")
+    resource: str = Field(default="*", description="The target resource ARN, if known")
+    reason: str = Field(description="Why this permission is needed")
+
+
+
 class RequestSource(StrEnum):
     """Where a request entered the system."""
 
@@ -262,3 +270,4 @@ class WorkflowResult(BaseModel):
     guidance_md: str = ""
     audit_trail: list[AuditEvent] = Field(default_factory=list)
     status: str = "completed"
+    required_permissions: list[RequiredPermission] = Field(default_factory=list)

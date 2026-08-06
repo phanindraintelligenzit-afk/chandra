@@ -299,6 +299,40 @@ def compose_request_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def analyze_required_permissions(request: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Determine least-privilege IAM permissions required to execute the plan."""
+    try:
+        from src.chandra.llm import get_llm
+        llm = get_llm()
+        prompt = (
+            "You are an AWS Security Expert. Analyze the following request and execution plan.\n"
+            "Identify the absolute minimum IAM permissions required to successfully execute the plan.\n"
+            "Return a JSON object with a single 'permissions' key containing a list of objects.\n"
+            "Each object must have:\n"
+            "- 'action': The exact IAM action (e.g., 's3:PutObject')\n"
+            "- 'resource': The target resource ARN if known, else '*'\n"
+            "- 'reason': A short explanation of why it is needed\n\n"
+            "Do NOT include any markdown formatting, backticks, or explanation outside the JSON."
+        )
+        cb = UsageCapture()
+        response = llm.invoke(
+            [
+                ("system", prompt),
+                ("user", json.dumps({"request": request, "plan": plan}, default=str)),
+            ],
+            config={"callbacks": [cb]},
+        )
+        text = response.content if isinstance(response.content, str) else str(response.content)
+        import json_repair
+        parsed = json_repair.loads(text)
+        if isinstance(parsed, dict) and "permissions" in parsed:
+            return parsed["permissions"]
+        return []
+    except Exception as exc:
+        logger.warning("llm.permission_analysis_failed", error=str(exc))
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Markdown / JSON render
 # ---------------------------------------------------------------------------

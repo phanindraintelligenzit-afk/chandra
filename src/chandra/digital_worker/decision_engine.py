@@ -51,9 +51,18 @@ def evaluate_decision(
     classification: RequestClassification,
     plan: ResolutionPlan,
     risk: RiskAssessment,
+    *,
+    source: str = "",
 ) -> ExecutionDecision:
     """Dynamically decide execution mode.
     (LLM policy engine bypassed; ambiguity is handled via HITL in the execution agent)"""
+    # Rule: ALL Jira-sourced requests must go through Human Approval
+    if source == "jira":
+        return ExecutionDecision(
+            mode=DecisionMode.AWAIT_APPROVAL,
+            reason="Policy: Jira-originated tasks always require human approval.",
+        )
+
     # Fallback to deterministic gate if automation is completely absent
     if not plan.automation_available:
         return ExecutionDecision(

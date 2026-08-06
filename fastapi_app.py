@@ -442,7 +442,7 @@ class PredefinedKraRequest(BaseModel):
 def get_predefined_kra_issues(request: PredefinedKraRequest):
     """Submit detector scan as an async job for selected KRAs."""
     job_id = str(uuid.uuid4())
-    logger.info("POST /getPredefinedKraIssues → async job_id=%s, kras=%s", job_id, request.selected_kras)
+    logger.info("POST /getPredefinedKraIssues -> async job_id=%s, kras=%s", job_id, request.selected_kras)
     with _job_store_lock:
         _job_store[job_id] = {
             "status": "pending", "progress": 0,
@@ -1097,7 +1097,8 @@ def orchestrate_action(request: OrchestrateRequest):
     )
 
 class ResumeRequest(BaseModel):
-    answers: List[str] = Field(description="User's answers to the HITL questions")
+    answers: List[str] = Field(default_factory=list, description="User's answers to the HITL questions")
+    permission_set_id: Optional[str] = Field(default=None, description="Optional permission set ID for approval")
 
 
 @app.post("/orchestrate/{job_id}/resume", response_model=OrchestrateJobResponse)
@@ -1113,10 +1114,16 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
         job = dict(_job_store[job_id])  # snapshot inside lock
         result = job.get("result") or {}
-        if result.get("status") != "needs_clarification":
+        
+        is_paused = (
+            result.get("status") == "needs_clarification" or
+            result.get("action_required") == "awaiting_permission_set"
+        )
+        
+        if not is_paused:
             raise HTTPException(
                 status_code=400,
-                detail=f"Job {job_id} is not paused for HITL (current status={result.get('status')})"
+                detail=f"Job {job_id} is not paused for HITL (current state={result})"
             )
         # Reset to running — same job_id, no new entry
         _job_store[job_id]["status"] = "running"
@@ -1147,10 +1154,15 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
             if _digital_worker is None:
                 raise RuntimeError("Digital Worker graph is not initialized")
 
-            # Resume the DW graph with the user's answers as the interrupt value
+            # Resume the DW graph with the user's answers or permission_set_id as the interrupt value
             from langgraph.types import Command as LGCommand
+            
+            resume_payload: Any = answers
+            if request.permission_set_id:
+                resume_payload = {"permission_set_id": request.permission_set_id}
+                
             final_state = _digital_worker.invoke(
-                LGCommand(resume=answers),
+                LGCommand(resume=resume_payload),
                 config=_dw_thread_config(job_id),
             )
 
@@ -1633,10 +1645,13 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             
         # Handle permission selection pause
         if snapshot.next and "permission_selection_pause" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
             with _job_store_lock:
                 _job_store[job_id]["status"] = "awaiting_permission"
                 _job_store[job_id]["progress"] = 75
                 _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
+                _job_store[job_id]["result"] = interrupt_val
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
@@ -1646,8 +1661,13 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             interrupt_val = interrupts[0].value if interrupts else {}
             questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
             summary = interrupt_val.get("summary", "Awaiting input")
+            interrupt_type = interrupt_val.get("type", "clarification")
+            
             with _job_store_lock:
-                _job_store[job_id]["status"] = "completed"
+                if interrupt_type == "gate2_approval":
+                    _job_store[job_id]["status"] = "awaiting_gate2"
+                else:
+                    _job_store[job_id]["status"] = "completed"
                 _job_store[job_id]["progress"] = 100
                 _job_store[job_id]["message"] = "Awaiting user input"
                 # Store job_type='dw' so resume endpoint resumes the DW graph,
@@ -1656,11 +1676,12 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["result"] = {
                     "statusCode": 202,
                     "status": "needs_clarification",
+                    "type": interrupt_type,
                     "thread_id": job_id,  # DW graph thread_id = job_id
                     "questions": questions,
                     "summary": summary,
                 }
-            logger.info("DIGITAL WORKER JOB [%s] paused for HITL", job_id)
+            logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
         _dw_finalize_job(job_id, final_state, start_time)
@@ -1724,10 +1745,13 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
 
         # Handle permission selection pause
         if snapshot.next and "permission_selection_pause" in snapshot.next:
+            interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+            interrupt_val = interrupts[0].value if interrupts else {}
             with _job_store_lock:
                 _job_store[job_id]["status"] = "awaiting_permission"
                 _job_store[job_id]["progress"] = 75
                 _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
+                _job_store[job_id]["result"] = interrupt_val
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
@@ -1737,19 +1761,25 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             interrupt_val = interrupts[0].value if interrupts else {}
             questions = interrupt_val.get("questions", ["Please provide the required input to proceed."])
             summary = interrupt_val.get("summary", "Awaiting input")
+            interrupt_type = interrupt_val.get("type", "clarification")
+            
             with _job_store_lock:
-                _job_store[job_id]["status"] = "completed"
+                if interrupt_type == "gate2_approval":
+                    _job_store[job_id]["status"] = "awaiting_gate2"
+                else:
+                    _job_store[job_id]["status"] = "completed"
                 _job_store[job_id]["progress"] = 100
                 _job_store[job_id]["message"] = "Awaiting user input"
                 _job_store[job_id]["job_type"] = "dw"
                 _job_store[job_id]["result"] = {
                     "statusCode": 202,
                     "status": "needs_clarification",
+                    "type": interrupt_type,
                     "thread_id": job_id,
                     "questions": questions,
                     "summary": summary,
                 }
-            logger.info("DIGITAL WORKER JOB [%s] paused for HITL", job_id)
+            logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
         _dw_finalize_job(job_id, final_state, start_time)
@@ -1928,11 +1958,32 @@ def submit_cloud_request(submission: CloudRequestSubmission):
     return _submit_digital_worker_job(submission)
 
 
+@app.post("/webhooks/{source}/{path_token}")
+def receive_webhook_with_path(
+    source: str,
+    path_token: str,
+    payload: Dict[str, Any],
+    x_chandra_webhook_token: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+):
+    return _process_webhook(source, payload, path_token, x_chandra_webhook_token, token)
+
 @app.post("/webhooks/{source}")
 def receive_webhook(
     source: str,
     payload: Dict[str, Any],
     x_chandra_webhook_token: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+):
+    return _process_webhook(source, payload, None, x_chandra_webhook_token, token)
+
+
+def _process_webhook(
+    source: str,
+    payload: Dict[str, Any],
+    path_token: Optional[str] = None,
+    x_chandra_webhook_token: Optional[str] = None,
+    token: Optional[str] = None,
 ):
     import json
     logger.info(f"Received webhook from {source} with payload: {json.dumps(payload)}")
@@ -1949,7 +2000,8 @@ def receive_webhook(
     if source == "slack" and payload.get("type") == "url_verification":
         return JSONResponse(status_code=200, content={"challenge": payload.get("challenge")})
 
-    if expected_token and x_chandra_webhook_token != expected_token:
+    provided_token = x_chandra_webhook_token or token or path_token
+    if expected_token and provided_token != expected_token:
         logger.warning("Webhook rejected: bad or missing X-Chandra-Webhook-Token (source=%s)", source)
         return JSONResponse(status_code=401, content={
             "status": "error", "message": "invalid or missing X-Chandra-Webhook-Token",
@@ -2142,6 +2194,43 @@ def put_aws_tasks(payload: AwsTasksPayload):
 
 class PermissionSetsPayload(BaseModel):
     permissions: List[Dict[str, Any]] = Field(description="List of permission sets to persist.")
+
+class RecommendPermissionSetsPayload(BaseModel):
+    required_permissions: List[Dict[str, Any]]
+
+@app.post("/api/permission-sets/recommend")
+def recommend_permission_sets(payload: RecommendPermissionSetsPayload):
+    try:
+        from src.chandra.llm import get_llm
+        import json
+        import json_repair
+        
+        perms = _load_aws_permissions_from_disk()
+        llm = get_llm()
+        
+        prompt = (
+            "You are an AWS IAM expert. Given a list of required permissions and a list of existing permission sets, "
+            "recommend the BEST existing permission set that covers all required permissions using wildcard matching. "
+            "If no existing permission set is adequate, suggest creating a new one. "
+            "Return a JSON object with: "
+            "1. 'recommendation_type': 'existing' or 'new' "
+            "2. 'permission_set_id': The ID of the existing set if 'existing', else null "
+            "3. 'reason': Why this set is recommended, or why a new one is needed "
+            "4. 'suggested_new_set': If 'new', provide a suggested name and actions array."
+        )
+        response = llm.invoke([
+            ("system", prompt),
+            ("user", json.dumps({"required_permissions": payload.required_permissions, "existing_sets": perms}))
+        ])
+        
+        text = response.content if isinstance(response.content, str) else str(response.content)
+        parsed = json_repair.loads(text)
+        
+        return JSONResponse(status_code=200, content={"status": "success", "recommendation": parsed})
+    except Exception as exc:
+        logger.exception("Failed to recommend permission sets: %s", exc)
+        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
+
 
 @app.get("/api/permission-sets")
 def get_permission_sets():

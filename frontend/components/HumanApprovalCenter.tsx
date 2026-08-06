@@ -525,7 +525,7 @@ export function HumanApprovalCenter({
 
     if (sourceFilter !== "all") {
       matched = matched.filter(r => {
-        const src = r.isKra ? "kra" : (r.source ? r.source.toLowerCase() : "jira");
+        const src = r.source ? r.source.toLowerCase() : "unknown";
         return src === sourceFilter;
       });
     }
@@ -541,12 +541,10 @@ export function HumanApprovalCenter({
   }, [kraApprovals, requests]);
 
   const availableSources = useMemo(() => {
-    const set = new Set<string>([
-      "kra", "jira", "slack", "teams", "email"
-    ]);
-    requests.forEach(r => { if (r.source) set.add(r.source.toLowerCase()); });
+    const set = new Set<string>();
+    unifiedRequests.forEach(r => { if (r.source) set.add(r.source.toLowerCase()); });
     return Array.from(set).sort();
-  }, [requests]);
+  }, [unifiedRequests]);
 
   const awaitingCount = unifiedRequests.filter(r => r.status === "awaiting_approval").length;
   const runningCount = unifiedRequests.filter(r => r.status === "running" || r.status === "pending").length;

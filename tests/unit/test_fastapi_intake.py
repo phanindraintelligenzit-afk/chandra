@@ -225,7 +225,7 @@ class TestApprovalCenterDiscovery:
         # Now attach permission set to resume to completion
         attach = client.post(
             f"/requests/{job_id}/approve",
-            json={"approved": True, "approver": "Copilot", "permission_set_id": "ps-12345"},
+            json={"approved": True, "approver": "Copilot", "permission_set_id": "eab39a74-a48a-4f19-9803-e71e37cc4d62"},
         )
         assert attach.status_code == 202
         

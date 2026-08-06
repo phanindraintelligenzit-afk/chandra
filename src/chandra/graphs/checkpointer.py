@@ -65,7 +65,7 @@ def build_checkpointer() -> Any:
 
         # kwargs row_factory yields dict rows at runtime; ConnectionPool's
         # type parameter cannot express that, hence the cast.
-        pool = ConnectionPool(conn_string, max_size=10, kwargs={"row_factory": dict_row})
+        pool = ConnectionPool(conn_string, max_size=10, open=True, kwargs={"row_factory": dict_row})
         checkpointer = PostgresSaver(cast(Any, pool), serde=serde)
         return checkpointer
     except Exception as exc:

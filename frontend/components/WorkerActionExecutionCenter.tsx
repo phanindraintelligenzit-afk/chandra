@@ -16,7 +16,7 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   jiraUrl?: string;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped" | "skipped";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "awaiting_gate2" | "awaiting_permission" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped" | "skipped";
   jobId: string;
   threadId: string;
   startedAt: number;
@@ -28,6 +28,7 @@ type ExecutingAction = {
   originalJobId?: string;
   summary?: string;
   questions?: string[];
+  requiredPermissions?: any[];
   sandboxPath?: string;
   detectorId?: string;
   region?: string;
@@ -45,6 +46,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     completed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     failed: "border-signal/45 bg-signal/15 text-signal",
     awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
+    awaiting_gate2: "border-purple-400/40 bg-purple-400/12 text-purple-300",
+    awaiting_permission: "border-cyan-400/40 bg-cyan-400/12 text-cyan-300",
     exhausted: "border-orange-400/40 bg-orange-400/12 text-orange-300",
     destroying: "border-red-500/40 bg-red-500/12 text-red-400",
     destroyed: "border-gray-500/40 bg-gray-500/12 text-gray-400",
@@ -58,6 +61,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     completed: <CheckCircle2 size={12} />,
     failed: <AlertTriangle size={12} />,
     awaiting_input: <Clock size={12} />,
+    awaiting_gate2: <Clock size={12} />,
+    awaiting_permission: <Clock size={12} />,
     exhausted: <AlertTriangle size={12} />,
     destroying: <Loader2 size={12} className="animate-spin" />,
     destroyed: <Trash2 size={12} />,
@@ -69,6 +74,10 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
   const displayLabel =
     status === "awaiting_input"
       ? "AWAITING INPUT"
+      : status === "awaiting_gate2"
+      ? "GATE 2 APPROVAL"
+      : status === "awaiting_permission"
+      ? "AWAITING PERMISSION"
       : status === "destroying"
       ? "DESTROYING..."
       : status === "stopping"
@@ -95,7 +104,7 @@ export const WorkerActionExecutionCenter = forwardRef<
     onActionApproved?: (action: any) => void;
     onActionCompleted?: (kraCode: string | undefined, actionId: string, originalJobId?: string) => void;
     onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
-    onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[]}[]) => void;
+    onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[], status?: string, requiredPermissions?: any[]}[]) => void;
     awsPermissions?: string[];
   }
 >(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange, awsPermissions }, ref) {
@@ -147,12 +156,14 @@ export const WorkerActionExecutionCenter = forwardRef<
 
   useEffect(() => {
     if (onPendingHitlChangeRef.current) {
-      const hitlActions = executingActions.filter(a => a.status === "awaiting_input" && a.questions && a.questions.length > 0);
+      const hitlActions = executingActions.filter(a => (a.status === "awaiting_input" || a.status === "awaiting_gate2" || a.status === "awaiting_permission"));
       onPendingHitlChangeRef.current(hitlActions.map(a => ({
         actionId: a.id,
         actionName: a.actionName || "UNKNOWN ACTION",
         kraCode: a.kraCode || "KRA-XX",
-        questions: a.questions!
+        questions: a.questions || [],
+        status: a.status,
+        requiredPermissions: a.requiredPermissions
       })));
     }
   }, [executingActions]);
@@ -386,6 +397,7 @@ export const WorkerActionExecutionCenter = forwardRef<
           jobStatus.status === "failed" ||
           jobStatus.status === "stopped" ||
           jobStatus.status === "skipped" ||
+          jobStatus.status === "awaiting_permission" ||
           jobStatus.status === "not_found";
 
         if (jobDone) {
@@ -411,6 +423,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           let finalStatus: ExecutingAction["status"] = "failed";
           if (jobStatus.status === "stopped") {
             finalStatus = "stopped";
+          } else if (jobStatus.status === "awaiting_gate2") {
+            finalStatus = "awaiting_gate2";
+          } else if (jobStatus.status === "awaiting_permission") {
+            finalStatus = "awaiting_permission";
           } else if (jobStatus.status === "completed") {
             if (statusCode === 200 || statusCode === 0) finalStatus = "completed";
             else if (statusCode === 202) finalStatus = "awaiting_input";
@@ -437,8 +453,9 @@ export const WorkerActionExecutionCenter = forwardRef<
             current.map((a) => {
               if (a.id === actionId) {
                   // Fallback for poorly formed backend responses that return 202 but forget the questions array
-                  const fallbackQuestions = finalStatus === "awaiting_input" ? ["Please provide the required input to proceed."] : [];
+                  const fallbackQuestions = (finalStatus === "awaiting_input" || finalStatus === "awaiting_gate2" || finalStatus === "awaiting_permission") ? ["Please provide the required input to proceed."] : [];
                   const extractedQuestions = (result?.questions && result.questions.length > 0) ? result.questions : fallbackQuestions;
+                  const requiredPermissions = result?.required_permissions || currentAction?.requiredPermissions || [];
 
                   // Pull LLM summary from all possible result shapes:
                   // • result.summary                    → PipelineResponse / KRA orchestrate path
@@ -514,10 +531,10 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
 
-  const submitAnswers = async (actionId: string, providedAnswers?: string[]) => {
+  const submitAnswers = async (actionId: string, providedAnswers?: string[], permissionSetId?: string) => {
     // Reading from ref ensures programmatic calls use latest state
     const action = executingActionsRef.current.find((a) => a.id === actionId);
-    if (!action || !action.questions || action.status !== "awaiting_input") return;
+    if (!action || !action.questions || (action.status !== "awaiting_input" && action.status !== "awaiting_gate2" && action.status !== "awaiting_permission")) return;
 
     // Collect answers from DOM if not provided programmatically
     const answers: string[] = providedAnswers || [];
@@ -549,10 +566,13 @@ export const WorkerActionExecutionCenter = forwardRef<
     try {
       // Call the dedicated resume endpoint — reuses the SAME job_id
       // No new job_id created, no frontend tracking complexity
+      const payload: any = { answers };
+      if (permissionSetId) payload.permission_set_id = permissionSetId;
+      
       const resumeResp = await fetch(getApiUrl(`/orchestrate/${action.jobId}/resume`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers }),
+        body: JSON.stringify(payload),
       });
 
       if (!resumeResp.ok) {
@@ -722,7 +742,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   };
 
   const executedCount = executingActions.filter(a => a.status === "completed").length;
-  const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input" || a.status === "stopping").length;
+  const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input" || a.status === "awaiting_gate2" || a.status === "awaiting_permission" || a.status === "stopping").length;
   const failedCount = executingActions.filter(a => a.status === "failed" || a.status === "exhausted").length;
 
   const donutData = [
@@ -1129,7 +1149,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         </div>
                       )}
 
-                      {action.status === "awaiting_input" && action.questions && action.questions.length > 0 && (
+                      {(action.status === "awaiting_input" || action.status === "awaiting_gate2" || action.status === "awaiting_permission") && action.questions && action.questions.length > 0 && (
                         <div className="mb-3 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3">
                           <div className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-300 mb-2 font-semibold">AGENT NEEDS INPUT</div>
                           <div className="space-y-3">

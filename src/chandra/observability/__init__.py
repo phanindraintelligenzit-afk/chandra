@@ -187,6 +187,9 @@ def _emit_metric(
                 ],
             )
         except Exception as exc:
-            logger.warning(f"metric.emit.failed: {metric_name} {exc}")
+            if "InvalidClientTokenId" in str(exc):
+                logger.debug(f"metric.emit.failed (auth): {metric_name} {exc}")
+            else:
+                logger.warning(f"metric.emit.failed: {metric_name} {exc}")
 
     threading.Thread(target=_put, daemon=True).start()
