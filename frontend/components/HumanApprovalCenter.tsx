@@ -36,6 +36,14 @@ const STATUS_META: Record<string, { label: string; className: string }> = {
     label: "Awaiting Approval",
     className: "text-amber-300 border-amber-400/40 bg-amber-400/10"
   },
+  awaiting_permission: {
+    label: "Awaiting Permission Set",
+    className: "text-violet-300 border-violet-400/40 bg-violet-400/10"
+  },
+  awaiting_gate2: {
+    label: "Awaiting Gate 2 Review",
+    className: "text-orange-300 border-orange-400/40 bg-orange-400/10"
+  },
   completed: { label: "Completed", className: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10" },
   failed: { label: "Failed", className: "text-rose-300 border-rose-400/30 bg-rose-400/10" },
   stopped: { label: "Stopped", className: "text-frost/60 border-white/10 bg-black/20" }
