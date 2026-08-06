@@ -330,7 +330,64 @@ def analyze_required_permissions(request: dict[str, Any], plan: dict[str, Any]) 
         return []
     except Exception as exc:
         logger.warning("llm.permission_analysis_failed", error=str(exc))
-        return []
+        return _deterministic_permissions(request, plan)
+
+
+def _deterministic_permissions(request: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Infer required IAM permissions from request/plan when LLM is unavailable."""
+    title = (request.get("title") or "").lower()
+    desc = (request.get("description") or "").lower()
+    steps = plan.get("steps", [])
+    step_text = " ".join(
+        (s.get("action", "") + " " + s.get("detail", "")) if isinstance(s, dict) else str(s)
+        for s in steps
+    ).lower()
+    combined = f"{title} {desc} {step_text}"
+
+    perms: list[dict[str, Any]] = []
+
+    if "s3" in combined or "bucket" in combined:
+        perms.extend([
+            {"action": "s3:CreateBucket", "resource": "*", "reason": "Create S3 bucket"},
+            {"action": "s3:PutBucketVersioning", "resource": "*", "reason": "Configure versioning"},
+            {"action": "s3:PutBucketPolicy", "resource": "*", "reason": "Set bucket policy"},
+            {"action": "s3:GetBucketLocation", "resource": "*", "reason": "Verify bucket"},
+            {"action": "s3:ListBucket", "resource": "*", "reason": "List bucket contents"},
+        ])
+    if "ec2" in combined or "instance" in combined:
+        perms.extend([
+            {"action": "ec2:RunInstances", "resource": "*", "reason": "Launch EC2 instance"},
+            {"action": "ec2:DescribeInstances", "resource": "*", "reason": "Verify instance state"},
+        ])
+    if "iam" in combined or "role" in combined or "policy" in combined:
+        perms.extend([
+            {"action": "iam:CreateRole", "resource": "*", "reason": "Create IAM role"},
+            {"action": "iam:AttachRolePolicy", "resource": "*", "reason": "Attach policy"},
+        ])
+    if "lambda" in combined or "function" in combined:
+        perms.extend([
+            {"action": "lambda:CreateFunction", "resource": "*", "reason": "Create Lambda function"},
+        ])
+    if "dynamodb" in combined or "table" in combined:
+        perms.extend([
+            {"action": "dynamodb:CreateTable", "resource": "*", "reason": "Create DynamoDB table"},
+        ])
+    if "rds" in combined or "database" in combined:
+        perms.extend([
+            {"action": "rds:CreateDBInstance", "resource": "*", "reason": "Create RDS instance"},
+        ])
+    if "delete" in combined or "remove" in combined or "terminate" in combined:
+        if "s3" in combined:
+            perms.append({"action": "s3:DeleteBucket", "resource": "*", "reason": "Delete S3 bucket"})
+        if "ec2" in combined:
+            perms.append({"action": "ec2:TerminateInstances", "resource": "*", "reason": "Terminate instance"})
+    if "public" in combined and "block" in combined and "s3" in combined:
+        perms.append({"action": "s3:PutBucketPublicAccessBlock", "resource": "*", "reason": "Block public access"})
+
+    if not perms:
+        perms.append({"action": "sts:GetCallerIdentity", "resource": "*", "reason": "Verify AWS identity"})
+
+    return perms
 
 
 # ---------------------------------------------------------------------------

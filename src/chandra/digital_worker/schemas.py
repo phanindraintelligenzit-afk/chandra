@@ -254,6 +254,56 @@ class AuditEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerraformPlanEvidence(BaseModel):
+    """Structured evidence from Terraform validate + plan."""
+    validation_passed: bool = False
+    plan_passed: bool = False
+    resources_to_add: int = 0
+    resources_to_change: int = 0
+    resources_to_destroy: int = 0
+    hcl_snippet: str = ""
+    plan_output: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class Gate2ReviewPayload(BaseModel):
+    """Structured payload presented to the human reviewer at Gate 2."""
+    jira_issue_key: str | None = None
+    original_request: str = ""
+    planned_operation: str = ""
+    required_permissions: list[dict[str, Any]] = Field(default_factory=list)
+    permission_set_id: str | None = None
+    permission_set_version: str | None = None
+    gate_1_result: dict[str, Any] = Field(default_factory=dict)
+    terraform_validation: dict[str, Any] = Field(default_factory=dict)
+    terraform_plan: dict[str, Any] = Field(default_factory=dict)
+    add_count: int = 0
+    change_count: int = 0
+    destroy_count: int = 0
+    risk_level: str = ""
+    job_id: str | None = None
+
+
+class Gate2Decision(BaseModel):
+    """Human decision at Gate 2."""
+    approved: bool
+    approver: str | None = None
+    comment: str = ""
+    decided_at: datetime = Field(default_factory=_utcnow)
+
+
+class VerificationEvidence(BaseModel):
+    """Post-apply verification evidence."""
+    terraform_apply_success: bool = False
+    boto3_verification_status: str = Field(
+        default="pending",
+        description="VERIFIED | FAILED | INDETERMINATE | pending",
+    )
+    verified_resources: list[dict[str, Any]] = Field(default_factory=list)
+    detail: str = ""
+
+
 class WorkflowResult(BaseModel):
     """Terminal summary returned to callers (FastAPI job result)."""
 
