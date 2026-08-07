@@ -25,15 +25,15 @@ services:
     build:
       context: .
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http:54.160.31.20:3000/api/backend}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
     image: chandra-app
     command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001", "--workers", "4"]
     ports:
       - "6001:6001"
     env_file: .env
     environment:
-      - FRONTEND_URL=${FRONTEND_URL:-http:54.160.31.20:3000}
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http:54.160.31.20:3000/api/backend}
+      - FRONTEND_URL=${FRONTEND_URL:-http://54.160.31.20:3000}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
       # Inside the compose network the database host is the service name.
       - POSTGRES_URL=postgresql+psycopg://chandra:chandra@postgres:5432/chandra
     depends_on:
@@ -56,7 +56,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http:54.160.31.20:3000/api/backend}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
     depends_on:
       - backend
     restart: unless-stopped
