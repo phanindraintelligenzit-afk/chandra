@@ -417,21 +417,50 @@ def route_gate1(state: DigitalWorkerState) -> str:
 def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
     """Generate Terraform HCL from the approved request and resolution plan.
 
-    Uses the LLM (via composer) to produce HCL that implements the plan.
-    Falls back to a deterministic template when LLM is unavailable.
+    Uses the ExecutionAgents adapter to produce HCL that implements the plan
+    and falls back to deterministic template if it fails.
     """
     from src.chandra.digital_worker.schemas import TerraformPlanEvidence
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
+    import os
+    import tempfile
 
     request = state["request"]
     plan = state["plan"]
     classification = state["classification"]
+    evidence = state.get("gate_1_evidence")
+    aws_permissions = evidence.matched_actions if evidence and hasattr(evidence, "matched_actions") else []
 
     logger.info("TRANSITION: TERRAFORM_GENERATE")
 
-    hcl = _generate_terraform_hcl(request, plan, classification)
+    action_dict = {
+        "actionName": request.title or "Digital Worker Resolution",
+        "actionDescription": request.description or "Automated execution for request",
+        "service": ", ".join(classification.services) if classification.services else classification.platform.value,
+        "kraCode": None,
+        "priorityLevel": classification.priority.value,
+        "steps": [step.action for step in plan.steps],
+    }
+
+    job_id = state.get("job_id") or request.request_id
+    orchestrator = ExecutionAgents(max_iterations=1, job_id=job_id)
+    sandbox_path = tempfile.mkdtemp(prefix=f"chandra-tf-{job_id}-")
+
+    result = orchestrator.GenerateTerraformOnly(
+        action=action_dict,
+        aws_permissions=aws_permissions,
+        sandbox_path=sandbox_path,
+        thread_id=job_id,
+    )
+
+    hcl = result.get("hcl", "")
+    if not hcl or result.get("status") == "error":
+        logger.warning("ExecutionAgents generation failed, using fallback.")
+        hcl = _deterministic_terraform_template(request, classification)
 
     return {
         "terraform_hcl": hcl,
+        "sandbox_path": sandbox_path,  # pass this so validate can use it
         "audit_trail": [
             _audit(
                 "terraform_generate",
@@ -523,9 +552,10 @@ def terraform_validate_plan(state: DigitalWorkerState) -> dict[str, Any]:
     from src.chandra.execution.terraform import validate_terraform
 
     hcl = state.get("terraform_hcl", "")
+    sandbox_path = state.get("sandbox_path")
     logger.info("TRANSITION: TERRAFORM_VALIDATE_PLAN")
 
-    result = validate_terraform(hcl, run_plan=False)
+    result = validate_terraform(hcl, run_plan=True, workdir=sandbox_path)
 
     add_count = 0
     change_count = 0
@@ -717,9 +747,19 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
             ],
         }
 
-    with tempfile.TemporaryDirectory(prefix="chandra-tf-apply-") as tmp:
-        workdir = Path(tmp)
-        (workdir / "main.tf").write_text(hcl, encoding="utf-8")
+    import contextlib
+    @contextlib.contextmanager
+    def _get_workdir():
+        sandbox_path = state.get("sandbox_path")
+        if sandbox_path:
+            yield Path(sandbox_path)
+        else:
+            with tempfile.TemporaryDirectory(prefix="chandra-tf-apply-") as tmp:
+                wd = Path(tmp)
+                (wd / "main.tf").write_text(hcl, encoding="utf-8")
+                yield wd
+
+    with _get_workdir() as workdir:
 
         # init
         init = subprocess.run(

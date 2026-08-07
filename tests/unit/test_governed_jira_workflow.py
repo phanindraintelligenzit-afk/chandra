@@ -81,6 +81,13 @@ def gov_workflow(
         "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL", "SMTP_HOST",
     ):
         monkeypatch.delenv(var, raising=False)
+    
+    # Mock ExecutionAgents.GenerateTerraformOnly to prevent slow LLM calls
+    monkeypatch.setattr(
+        "digitalworker_agents.aws_execution_agent.ExecutionAgents.GenerateTerraformOnly",
+        lambda *args, **kwargs: {"status": "success", "hcl": "terraform { }\noutput \"fake\" { value = \"1\" }"}
+    )
+    
     # Disable real terraform apply
     monkeypatch.delenv("CHANDRA_TERRAFORM_APPLY_ENABLED", raising=False)
     return build_digital_worker_graph(checkpointer=MemorySaver())

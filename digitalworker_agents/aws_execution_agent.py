@@ -3548,6 +3548,72 @@ Rules:
             aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
+
+    def GenerateTerraformOnly(
+        self,
+        action: Dict[str, Any],
+        aws_permissions: List[str],
+        sandbox_path: str,
+        thread_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Adapter for Phase 3C: Runs the Bedrock/Kimi generation without executing the loop.
+        Returns the generated HCL by running the generation sequence of nodes directly.
+        """
+        self.logger.info("=" * 80)
+        self.logger.info("RUNNING GENERATE TERRAFORM ADAPTER")
+        self.logger.info("=" * 80)
+        
+        # Build initial state
+        state: AgentState = {
+            "sandbox_path": sandbox_path,
+            "reference_folder": None,
+            "action": action,
+            "aws_permissions": aws_permissions,
+            "iteration": 1,
+            "aws_context": "",
+            "docs_context": "",
+            "messages": [],
+        }
+
+        kra_data = action.get("kraData")
+        if kra_data and isinstance(kra_data, dict):
+            state["aws_context"] = ""
+        else:
+            state["aws_context"] = self._gather_aws_context(force_refresh=True)
+
+        try:
+            # Run the specific sequence of nodes to generate the Terraform code
+            state = self._read_existing_node(state)
+            state = self._gather_docs_and_quotas_node(state)
+            state = self._analyze_node(state)
+            state = self._generate_node(state)
+            state = self._write_files_node(state)
+            
+            # Extract the generated HCL
+            import os
+            main_tf_path = os.path.join(sandbox_path, "main.tf")
+            hcl = ""
+            if os.path.exists(main_tf_path):
+                with open(main_tf_path, "r", encoding="utf-8") as f:
+                    hcl = f.read()
+            else:
+                self.logger.warning("main.tf was not generated.")
+
+            return {
+                "status": "success",
+                "hcl": hcl,
+                "executable_steps": state.get("executable_steps", []),
+                "plan_reasoning": state.get("action_analysis", {}).get("execution_strategy", "")
+            }
+        except Exception as exc:
+            self.logger.exception("GenerateTerraformOnly failed: %s", exc)
+            return {
+                "status": "error",
+                "hcl": "",
+                "error": str(exc)
+            }
+
         self._banner("UNIFIED AGENT PIPELINE STARTED")
         self.logger.info("Thread ID        : %s", tid)
         self.logger.info("Action           : %s", action.get("actionName"))
