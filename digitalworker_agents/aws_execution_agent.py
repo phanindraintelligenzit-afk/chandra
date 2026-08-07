@@ -2738,7 +2738,6 @@ command string — never a placeholder, never "...", never a comment."""
         if aws_permissions_ids:
             self.logger.info("VALIDATING EXECUTION AGAINST USER-SELECTED PERMISSION SETS BEFORE RUNNING...")
             import json
-            from pathlib import Path
             aws_permissions_file = Path(__file__).parent.parent / "aws_permissions.json"
             if not aws_permissions_file.exists():
                 aws_permissions_file = Path("aws_permissions.json")
