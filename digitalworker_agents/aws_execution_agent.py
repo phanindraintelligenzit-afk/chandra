@@ -3584,11 +3584,11 @@ Rules:
 
         try:
             # Run the specific sequence of nodes to generate the Terraform code
-            state = self._read_existing_node(state)
-            state = self._gather_docs_and_quotas_node(state)
-            state = self._analyze_node(state)
-            state = self._generate_node(state)
-            state = self._write_files_node(state)
+            state.update(self._read_existing_node(state))
+            state.update(self._gather_docs_and_quotas_node(state))
+            state.update(self._analyze_node(state))
+            state.update(self._generate_node(state))
+            state.update(self._write_files_node(state))
             
             # Extract the generated HCL
             import os

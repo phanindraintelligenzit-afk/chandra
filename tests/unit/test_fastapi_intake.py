@@ -198,6 +198,10 @@ class TestApprovalCenterDiscovery:
 
     def test_approve_resumes_to_completion(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CHANDRA_WEBHOOK_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "digitalworker_agents.aws_execution_agent.ExecutionAgents.GenerateTerraformOnly",
+            lambda *args, **kwargs: {"status": "success", "hcl": "terraform { }\noutput \"fake\" { value = \"1\" }"}
+        )
         payload = {
             "dry_run": True,
             "issue": {
