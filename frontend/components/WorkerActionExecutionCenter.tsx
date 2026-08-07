@@ -1,9 +1,9 @@
 "use client";
 
-import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, getDigitalWorkerSettings, updateDigitalWorkerSettings, type BackendLog } from "@/services/api";
+import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, getDigitalWorkerSettings, updateDigitalWorkerSettings, submitDigitalWorkerApproval, type BackendLog } from "@/services/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon } from "lucide-react";
+import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon, Shield, XCircle, CheckCircle } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 type ExecutingAction = {
@@ -28,6 +28,7 @@ type ExecutingAction = {
   originalJobId?: string;
   summary?: string;
   questions?: string[];
+  gate2Review?: any;
   requiredPermissions?: any[];
   sandboxPath?: string;
   detectorId?: string;
@@ -530,6 +531,43 @@ export const WorkerActionExecutionCenter = forwardRef<
     pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 5000));
   };
 
+
+  const submitGate2Decision = async (actionId: string, approved: boolean) => {
+    const action = executingActions.find(a => a.id === actionId);
+    if (!action) return;
+    
+    // Find comment input
+    const commentInput = document.getElementById(`gate2-comment-${actionId}`) as HTMLInputElement;
+    const comment = commentInput ? commentInput.value : "";
+    
+    // Optimistic UI update
+    setExecutingActions((current) =>
+      current.map((a) =>
+        a.id === actionId
+          ? { ...a, status: "running" as const }
+          : a
+      )
+    );
+    
+    try {
+      await submitDigitalWorkerApproval(action.originalJobId || action.jobId, {
+        approved,
+        comment,
+        approver: "operator", // could get from user context if available
+      });
+      // Polling will pick up the running state and new logs
+    } catch (err) {
+      console.error("Failed to submit Gate 2 decision:", err);
+      // Revert optimistic update
+      setExecutingActions((current) =>
+        current.map((a) =>
+          a.id === actionId
+            ? { ...a, status: "awaiting_gate2" as const }
+            : a
+        )
+      );
+    }
+  };
 
   const submitAnswers = async (actionId: string, providedAnswers?: string[], permissionSetId?: string) => {
     // Reading from ref ensures programmatic calls use latest state
@@ -1149,7 +1187,87 @@ export const WorkerActionExecutionCenter = forwardRef<
                         </div>
                       )}
 
-                      {(action.status === "awaiting_input" || action.status === "awaiting_gate2" || action.status === "awaiting_permission") && action.questions && action.questions.length > 0 && (
+                      {action.status === "awaiting_gate2" && action.gate2Review && (
+                        <div className="mb-3 rounded-lg border border-purple-400/30 bg-purple-400/10 p-3">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="text-[0.65rem] uppercase tracking-[0.18em] text-purple-300 font-semibold flex items-center gap-2">
+                              <Shield size={14} className="text-purple-400" />
+                              GATE 2: EXECUTION REVIEW
+                            </div>
+                            <div className="text-[0.6rem] text-muted flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+                              Awaiting Approval
+                            </div>
+                          </div>
+                          
+                          <div className="bg-black/40 rounded p-2.5 mb-3 border border-white/5 space-y-2">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Jira Issue</div>
+                                <div className="text-[0.65rem] text-frost/90 font-mono">{action.gate2Review.jira_issue_key || "N/A"}</div>
+                              </div>
+                              <div>
+                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Permission Set</div>
+                                <div className="text-[0.65rem] text-frost/90 font-mono">
+                                  {action.gate2Review.permission_set_id || "None"} 
+                                  {action.gate2Review.permission_set_version && <span className="text-muted ml-1">v{action.gate2Review.permission_set_version}</span>}
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="pt-2 border-t border-white/5">
+                              <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-1">Terraform Execution Plan</div>
+                              <div className="flex gap-4 text-[0.6rem] mb-2 font-mono">
+                                <span className="text-emerald-400">+{action.gate2Review.add_count} to add</span>
+                                <span className="text-amber-400">~{action.gate2Review.change_count} to change</span>
+                                <span className="text-rose-400">-{action.gate2Review.destroy_count} to destroy</span>
+                              </div>
+                            </div>
+                            
+                            {action.gate2Review.risk_level && (
+                              <div className="pt-2 border-t border-white/5">
+                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Assessed Risk</div>
+                                <div className={cx(
+                                  "text-[0.65rem] font-bold uppercase",
+                                  action.gate2Review.risk_level.toLowerCase() === 'high' ? "text-rose-400" :
+                                  action.gate2Review.risk_level.toLowerCase() === 'medium' ? "text-amber-400" :
+                                  "text-emerald-400"
+                                )}>
+                                  {action.gate2Review.risk_level}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="space-y-3">
+                            <input
+                              type="text"
+                              placeholder="Review comment (optional)..."
+                              className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-purple-400/50 transition"
+                              id={`gate2-comment-${action.id}`}
+                            />
+                            
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => submitGate2Decision(action.id, false)}
+                                className="flex-1 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-rose-300 hover:bg-rose-500/20 transition flex items-center justify-center gap-1.5"
+                              >
+                                <XCircle size={12} />
+                                Reject
+                              </button>
+                              <button
+                                onClick={() => submitGate2Decision(action.id, true)}
+                                className="flex-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-emerald-300 hover:bg-emerald-500/20 transition font-semibold shadow-[0_0_10px_rgba(16,185,129,0.2)] flex items-center justify-center gap-1.5"
+                              >
+                                <CheckCircle size={12} />
+                                Approve & Execute
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {(action.status === "awaiting_input" || action.status === "awaiting_permission") && action.questions && action.questions.length > 0 && (
                         <div className="mb-3 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3">
                           <div className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-300 mb-2 font-semibold">AGENT NEEDS INPUT</div>
                           <div className="space-y-3">

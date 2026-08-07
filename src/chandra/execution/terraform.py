@@ -65,7 +65,7 @@ def _run(args: list[str], cwd: Path) -> tuple[bool, str]:
     return proc.returncode == 0, output[:4000]
 
 
-def validate_terraform(hcl: str, *, run_plan: bool = False) -> TerraformValidation:
+def validate_terraform(hcl: str, *, run_plan: bool = False, workdir: str | None = None) -> TerraformValidation:
     """Validate a block of Terraform HCL. ``run_plan`` gates the (credential-
     requiring) ``terraform plan`` stage; leave False in unit/offline runs."""
     if not terraform_available():
@@ -76,9 +76,19 @@ def validate_terraform(hcl: str, *, run_plan: bool = False) -> TerraformValidati
         )
 
     stages: list[TerraformStage] = []
-    with tempfile.TemporaryDirectory(prefix="chandra-tf-") as tmp:
-        workdir = Path(tmp)
-        (workdir / "main.tf").write_text(hcl, encoding="utf-8")
+    
+    import contextlib
+    @contextlib.contextmanager
+    def _get_workdir():
+        if workdir:
+            yield Path(workdir)
+        else:
+            with tempfile.TemporaryDirectory(prefix="chandra-tf-") as tmp:
+                wd = Path(tmp)
+                (wd / "main.tf").write_text(hcl, encoding="utf-8")
+                yield wd
+
+    with _get_workdir() as wd:
 
         plan_stages = [
             ("fmt", ["fmt", "-check", "-diff"]),
@@ -89,7 +99,7 @@ def validate_terraform(hcl: str, *, run_plan: bool = False) -> TerraformValidati
             plan_stages.append(("plan", ["plan", "-input=false", "-no-color", "-lock=false"]))
 
         for name, args in plan_stages:
-            passed, output = _run(args, workdir)
+            passed, output = _run(args, wd)
             stages.append(TerraformStage(name=name, passed=passed, output=output))
             if not passed:
                 logger.warning("terraform.stage_failed", stage=name)

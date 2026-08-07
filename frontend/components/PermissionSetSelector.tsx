@@ -18,11 +18,15 @@ export default function PermissionSetSelector({
     let mounted = true;
     const fetchRecommendation = async () => {
       try {
+        let fetchedSets: any[] = [];
         // Fetch all sets
         const setsRes = await fetch(getApiUrl("/api/permission-sets"));
         if (setsRes.ok) {
           const setsData = await setsRes.json();
-          if (mounted && setsData.permissions) setAvailableSets(setsData.permissions);
+          if (setsData.permissions) {
+            fetchedSets = setsData.permissions;
+            if (mounted) setAvailableSets(fetchedSets);
+          }
         }
 
         // Fetch recommendation
@@ -38,9 +42,8 @@ export default function PermissionSetSelector({
             if (data.recommendation.recommendation_type === "existing" && data.recommendation.permission_set_id) {
               setSelectedSet(data.recommendation.permission_set_id);
             } else {
-              // If new is recommended, default to empty or the first available
-              if (setsData.permissions && setsData.permissions.length > 0) {
-                setSelectedSet(setsData.permissions[0].id);
+              if (fetchedSets.length > 0) {
+                setSelectedSet(fetchedSets[0].id);
               }
             }
           }
