@@ -5,7 +5,8 @@
     "description": "Full read/write access to S3",
     "aws_service": "S3",
     "actions": [
-      "s3:*"
+      "s3:*",
+      "s3:CreateBucket"
     ],
     "resource_arn": "arn:aws:s3:::*",
     "is_predefined": true,
