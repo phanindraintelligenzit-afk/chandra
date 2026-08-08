@@ -14,6 +14,7 @@ from src.chandra.digital_worker.schemas import (
     ExecutionOutcome,
     NotificationResult,
     RequestClassification,
+    RequiredPermission,
     ResolutionPlan,
     RiskAssessment,
     RootCause,
@@ -58,4 +59,21 @@ class DigitalWorkerState(TypedDict, total=False):
 
     status: str
     result: dict[str, Any]
+    required_permissions: list[RequiredPermission]
     permission_set_id: str
+    gate_1_passed: bool
+    gate_1_result: dict[str, Any]
+
+    # Phase 3C: Terraform preparation
+    terraform_hcl: str
+    terraform_validation: dict[str, Any]
+    terraform_plan_result: dict[str, Any]
+
+    # Phase 3D: Gate 2 human execution review
+    gate_2_passed: bool
+    gate_2_result: dict[str, Any]
+
+    # Phase 3E: Execution + verification
+    terraform_apply_result: dict[str, Any]
+    boto3_verification: dict[str, Any]
+    final_status: str

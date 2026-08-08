@@ -37,7 +37,7 @@ from langgraph.types import Command, interrupt
 # ─────────────────────────────────────────────
 # 1.  Minimal state
 # ─────────────────────────────────────────────
-class TestState(TypedDict):
+class MockState(TypedDict):
     action: str
     result: str
     clarification: str | None
@@ -69,22 +69,22 @@ def _reset_shared_checkpointer():
 #     vs each instance getting its OWN checkpointer (the bug)
 # ─────────────────────────────────────────────
 def _build_graph(checkpointer):
-    def analyze(state: TestState):
+    def analyze(state: MockState):
         """This is _analyze_node — throws KeyError: 'action' when state is empty."""
         action = state["action"]  # This was crashing
         return {"result": f"analyzed:{action}"}
 
-    def hitl_node(state: TestState):
+    def hitl_node(state: MockState):
         answers = interrupt(["What is the S3 bucket name?"])
         answer = answers[0] if isinstance(answers, list) else answers
         return {"clarification": answer}
 
-    def finish(state: TestState):
+    def finish(state: MockState):
         action = state["action"]
         clarification = state.get("clarification", "")
         return {"result": f"done:{action}:clarified_with:{clarification}"}
 
-    builder = StateGraph(TestState)
+    builder = StateGraph(MockState)
     builder.add_node("analyze", analyze)
     builder.add_node("hitl", hitl_node)
     builder.add_node("finish", finish)

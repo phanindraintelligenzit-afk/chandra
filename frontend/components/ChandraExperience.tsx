@@ -24,6 +24,8 @@ import {
   type LiveOpsEvent
 } from "@/services/mapping";
 import { AnimatePresence, motion } from "framer-motion";
+import { LogViewer } from "./LogViewer";
+import PermissionSetSelector from "./PermissionSetSelector";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -1113,8 +1115,8 @@ function OperationsCopilot({
 }: { 
   latestEvent?: OpsEvent; 
   unread: number;
-  pendingHitlRequests?: {actionId: string, actionName: string, kraCode: string, questions: string[]}[];
-  onSubmitHitl?: (actionId: string, answers: string[]) => void;
+  pendingHitlRequests?: {actionId: string, actionName: string, kraCode: string, questions: string[], status?: string, requiredPermissions?: any[]}[];
+  onSubmitHitl?: (actionId: string, answers: string[], permissionSetId?: string) => void;
   agentName?: string;
 }) {
   const displayAgentName = agentName || "Chandra";
@@ -1255,10 +1257,10 @@ function OperationsCopilot({
                 </div>
               ) : null}
               {pendingHitlRequests.map((req, idx) => (
-                <div key={`hitl-${req.actionId}-${idx}`} className="border border-blue-400/30 bg-blue-400/10 p-3 text-[0.7rem] text-frost/82 rounded-lg">
+                <div key={`hitl-${req.actionId}-${idx}`} className={`border p-3 text-[0.7rem] text-frost/82 rounded-lg ${req.status === "awaiting_permission" ? "border-cyan-400/30 bg-cyan-400/10" : "border-blue-400/30 bg-blue-400/10"}`}>
                   <div className="mb-2 flex items-center justify-between">
-                    <div className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-300 font-semibold">
-                      Agent Needs Input
+                    <div className={`text-[0.6rem] uppercase tracking-[0.18em] font-semibold ${req.status === "awaiting_permission" ? "text-cyan-300" : "text-blue-300"}`}>
+                      {req.status === "awaiting_permission" ? "Awaiting Permission Set Attachment" : "Agent Needs Input"}
                     </div>
                     <div className="text-[0.55rem] uppercase tracking-[0.16em] text-muted">
                       {req.kraCode}
@@ -1266,37 +1268,65 @@ function OperationsCopilot({
                   </div>
                   <div className="text-[0.65rem] font-semibold text-frost mb-2">{req.actionName}</div>
                   
+                  {req.status === "awaiting_permission" && req.requiredPermissions && req.requiredPermissions.length > 0 && (
+                    <div className="mb-3 space-y-2 mt-2">
+                      <div className="text-[0.6rem] text-frost/80 mb-1">Generated Required Permissions:</div>
+                      {req.requiredPermissions.map((perm: any, i: number) => (
+                        <div key={i} className="text-[0.65rem] bg-black/40 border border-white/5 rounded p-2">
+                          <div className="flex gap-2 mb-1">
+                            <span className="text-cyan-300 font-mono">{perm.action}</span>
+                            <span className="text-muted font-mono">{perm.resource}</span>
+                          </div>
+                          <div className="text-frost/70 italic">{perm.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="space-y-3 mt-3">
-                    {req.questions.map((q, i) => (
-                      <div key={i}>
-                        <div className="text-[0.65rem] text-frost mb-1.5">{q}</div>
-                        <input
-                          type="text"
-                          placeholder="Type your answer here..."
-                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-blue-400/50 transition"
-                          value={hitlAnswers[`${req.actionId}-${i}`] || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setHitlAnswers(prev => ({
-                              ...prev,
-                              [`${req.actionId}-${i}`]: val
-                            }));
+                    {req.status === "awaiting_permission" ? (
+                      <PermissionSetSelector 
+                        requiredPermissions={req.requiredPermissions || []} 
+                        onAttach={(setId) => {
+                          if (onSubmitHitl) {
+                            onSubmitHitl(req.actionId, [], setId);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <>
+                        {req.questions.map((q, i) => (
+                          <div key={i}>
+                            <div className="text-[0.65rem] text-frost mb-1.5">{q}</div>
+                            <input
+                              type="text"
+                              placeholder="Type your answer here..."
+                              className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none transition focus:border-blue-400/50"
+                              value={hitlAnswers[`${req.actionId}-${i}`] || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setHitlAnswers(prev => ({
+                                  ...prev,
+                                  [`${req.actionId}-${i}`]: val
+                                }));
+                              }}
+                            />
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => {
+                            if (onSubmitHitl) {
+                              const answers = req.questions.map((_, i) => hitlAnswers[`${req.actionId}-${i}`] || "");
+                              onSubmitHitl(req.actionId, answers);
+                            }
                           }}
-                        />
-                      </div>
-                    ))}
-                    <button
-                      onClick={() => {
-                        if (onSubmitHitl) {
-                          const answers = req.questions.map((_, i) => hitlAnswers[`${req.actionId}-${i}`] || "");
-                          onSubmitHitl(req.actionId, answers);
-                        }
-                      }}
-                      className="mt-2 w-full rounded border border-blue-400/40 bg-blue-400/20 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-blue-200 hover:bg-blue-400/30 transition"
-                    >
-                      Submit Responses
-                    </button>
-                  </div>
+                          className="mt-2 w-full rounded border border-blue-400/40 bg-blue-400/20 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-blue-200 hover:bg-blue-400/30 transition"
+                        >
+                          SUBMIT ANSWER
+                        </button>
+                      </>
+                    )}
+                  </div>               
                 </div>
               ))}
             </div>

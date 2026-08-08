@@ -263,7 +263,7 @@ def _build_checkpointer() -> Any:
                 conn_string = conn_string.replace("postgresql+psycopg://", "postgresql://", 1)
             with psycopg.connect(conn_string, autocommit=True) as conn:
                 PostgresSaver(conn).setup()
-            pool = ConnectionPool(conn_string, max_size=10)
+            pool = ConnectionPool(conn_string, max_size=10, open=True)
             atexit.register(pool.close)
             checkpointer = PostgresSaver(pool)
             logger.info("checkpointer.postgres_setup_success")
@@ -2738,7 +2738,6 @@ command string — never a placeholder, never "...", never a comment."""
         if aws_permissions_ids:
             self.logger.info("VALIDATING EXECUTION AGAINST USER-SELECTED PERMISSION SETS BEFORE RUNNING...")
             import json
-            from pathlib import Path
             aws_permissions_file = Path(__file__).parent.parent / "aws_permissions.json"
             if not aws_permissions_file.exists():
                 aws_permissions_file = Path("aws_permissions.json")
@@ -3548,6 +3547,192 @@ Rules:
             aws_ctx = self._gather_aws_context(force_refresh=True) if not answers else ""
 
         self.logger.info("")
+        self._banner("UNIFIED AGENT PIPELINE STARTED")
+        self.logger.info("Thread ID        : %s", tid)
+        self.logger.info("Action           : %s", action.get("actionName"))
+        self.logger.info("Reference Folder : %s", reference_folder or "None")
+        self.logger.info("Max Iterations   : %d", self.max_iterations)
+        self.logger.info("Command Timeout  : %ds per command", command_timeout)
+        self.logger.info("Memory entries   : %d total runs loaded", len(self.Memory.runs))
+        self.logger.info("")
+
+        try:
+            if answers:
+                self.Graph.invoke(Command(resume=answers), config=config)
+            else:
+                self.Graph.invoke(
+                    {
+                        "action": action,
+                        "aws_permissions": aws_permissions or [],
+                        "reference_folder": reference_folder or "",
+                        "command_timeout": command_timeout,
+                        "max_iterations": self.max_iterations,
+                        "iteration": 1,
+                        "records": [],
+                        "feedback_summary": "",
+                        "memory_context": memory_ctx,
+                        "aws_context": aws_ctx,
+                        "consecutive_same_error": 0,
+                        "last_error_class": "",
+
+                        "analysis": None,
+                        "clarification": None,
+                        "generated_files": [],
+                        "executable_steps": [],
+                        "sandbox_path": "",
+                        "existing_files": [],
+                        "reference_files": [],
+                        "input_sandbox_path": sandbox_path or "",
+                        "generator_summary": "",
+
+                        "folder_contents": None,
+                        "execution_plan": None,
+                        "execution_results": [],
+                        "success": False,
+                        "executor_summary": "",
+
+                        "final_status": "in_progress",
+                        "final_summary": "",
+                    },
+                    config=config,
+                )
+
+            snapshot = self.Graph.get_state(config)
+
+            if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
+                questions = snapshot.tasks[0].interrupts[0].value
+                is_mid_run = snapshot.values.get("consecutive_same_error", 0) >= 3
+                summary_msg = (
+                    f"Agent is stuck and needs your input (thread_id={tid}). "
+                    f"Re-call RunPipeline with answers=['your guidance'] and thread_id='{tid}'."
+                    if is_mid_run else
+                    f"Agent needs clarification before starting (thread_id={tid}). "
+                    f"Re-call RunPipeline with answers=[...] and thread_id='{tid}'."
+                )
+                return PipelineResponse(
+                    statusCode=202,
+                    status="needs_clarification",
+                    thread_id=tid,
+                    sandbox_path=snapshot.values.get("sandbox_path") or None,
+                    iterations_used=snapshot.values.get("iteration", 1),
+                    iterations=[
+                        IterationRecord(**r) for r in snapshot.values.get("records", [])
+                    ],
+                    questions=questions,
+                    summary=summary_msg,
+                )
+
+            final = snapshot.values
+            records = [IterationRecord(**r) for r in final.get("records", [])]
+            results = [ExecutionResult(**r) for r in final.get("execution_results", [])]
+            final_status = final.get("final_status", "failed")
+            sandbox_path_final = final.get("sandbox_path") or None
+
+            if final_status == "success":
+                return PipelineResponse(
+                    statusCode=200,
+                    status="success",
+                    thread_id=tid,
+                    sandbox_path=sandbox_path_final,
+                    iterations_used=final.get("iteration", len(records)),
+                    iterations=records,
+                    execution_results=results,
+                    summary=final.get("final_summary") or final.get("executor_summary"),
+                )
+
+            self._cleanup_sandbox(sandbox_path_final)
+            return PipelineResponse(
+                statusCode=207,
+                status="failed",
+                thread_id=tid,
+                sandbox_path=sandbox_path_final,
+                iterations_used=final.get("iteration", len(records)),
+                iterations=records,
+                execution_results=results,
+                summary=final.get("final_summary") or final.get("executor_summary"),
+            )
+
+        except Exception as exc:
+            self.logger.exception("RunPipeline error: %s", exc)
+            try:
+                snapshot = self.Graph.get_state(config)
+                orphaned_sandbox = snapshot.values.get("sandbox_path") if snapshot.values else None
+                if orphaned_sandbox:
+                    self._cleanup_sandbox(orphaned_sandbox)
+            except Exception:
+                pass
+            return PipelineResponse(
+                statusCode=500,
+                status="error",
+                exception=str(exc),
+                thread_id=tid,
+            )
+
+    def GenerateTerraformOnly(
+        self,
+        action: Dict[str, Any],
+        aws_permissions: List[str],
+        sandbox_path: str,
+        thread_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Adapter for Phase 3C: Runs the Bedrock/Kimi generation without executing the loop.
+        Returns the generated HCL by running the generation sequence of nodes directly.
+        """
+        self.logger.info("=" * 80)
+        self.logger.info("RUNNING GENERATE TERRAFORM ADAPTER")
+        self.logger.info("=" * 80)
+        
+        # Build initial state
+        state: AgentState = {
+            "sandbox_path": sandbox_path,
+            "reference_folder": None,
+            "action": action,
+            "aws_permissions": aws_permissions,
+            "iteration": 1,
+            "aws_context": "",
+            "docs_context": "",
+            "messages": [],
+        }
+
+        kra_data = action.get("kraData")
+        if kra_data and isinstance(kra_data, dict):
+            state["aws_context"] = ""
+        else:
+            state["aws_context"] = self._gather_aws_context(force_refresh=True)
+
+        try:
+            # Run the specific sequence of nodes to generate the Terraform code
+            state.update(self._read_existing_node(state))
+            state.update(self._gather_docs_and_quotas_node(state))
+            state.update(self._analyze_node(state))
+            state.update(self._generate_node(state))
+            state.update(self._write_files_node(state))
+            
+            # Extract the generated HCL
+            import os
+            main_tf_path = os.path.join(sandbox_path, "main.tf")
+            hcl = ""
+            if os.path.exists(main_tf_path):
+                with open(main_tf_path, "r", encoding="utf-8") as f:
+                    hcl = f.read()
+            else:
+                self.logger.warning("main.tf was not generated.")
+
+            return {
+                "status": "success",
+                "hcl": hcl,
+                "executable_steps": state.get("executable_steps", []),
+                "plan_reasoning": state.get("action_analysis", {}).get("execution_strategy", "")
+            }
+        except Exception as exc:
+            self.logger.exception("GenerateTerraformOnly failed: %s", exc)
+            return {
+                "status": "error",
+                "hcl": "",
+                "error": str(exc)
+            }
+
         self._banner("UNIFIED AGENT PIPELINE STARTED")
         self.logger.info("Thread ID        : %s", tid)
         self.logger.info("Action           : %s", action.get("actionName"))

@@ -27,15 +27,13 @@ class TaskAuthorizationService:
             logger.error(f"Failed to load permissions from {self.permissions_path}: {e}")
             return {}
 
-    def is_authorized(self, task_name: str, permission_set_id: str, required_actions: List[str] = None) -> bool:
+    def is_authorized(self, task_name: str, permission_set_id: str, required_actions: List[str] = None) -> Dict[str, Any]:
         """
         Check if the required actions are authorized by the given permission_set_id.
         This is a deterministic check.
         """
-        # In a real implementation, we would map required_actions to the policy document
-        # of the permission_set_id. For now, we ensure the permission_set_id exists.
         if not self.permissions:
-            return False
+            return {"pass": False, "missing_actions": required_actions or [], "matched_actions": [], "reason": "No permission sets found"}
             
         if isinstance(self.permissions, list):
             permission_sets = self.permissions
@@ -44,14 +42,45 @@ class TaskAuthorizationService:
         else:
             permission_sets = []
             
-        for pset in permission_sets:
-            if pset.get("id") == permission_set_id:
-                # Basic validation: check if the permission set allows anything or matches requirements
-                # Here we simply validate the permission set exists and is active/valid.
-                return True
+        target_pset = next((p for p in permission_sets if p.get("id") == permission_set_id), None)
+        
+        if not target_pset:
+            return {"pass": False, "missing_actions": required_actions or [], "matched_actions": [], "reason": f"Permission set {permission_set_id} not found."}
+            
+        allowed_actions = target_pset.get("actions", [])
+        
+        if not required_actions:
+            return {"pass": False, "missing_actions": [], "matched_actions": [], "reason": "No required actions could be determined for this task. Execution blocked for safety."}
+            
+        matched_actions = []
+        missing_actions = []
+        
+        import fnmatch
+        for req_action in required_actions:
+            # required_actions is usually a string, or it could be a dict if it comes straight from LLM.
+            req_str = req_action.get("action") if isinstance(req_action, dict) else req_action
+            if not req_str:
+                continue
                 
-        logger.warning(f"Permission set {permission_set_id} not found or unauthorized for task {task_name}.")
-        return False
+            matched = False
+            for allowed_action in allowed_actions:
+                if fnmatch.fnmatchcase(req_str.lower(), allowed_action.lower()):
+                    matched = True
+                    break
+            if matched:
+                matched_actions.append(req_str)
+            else:
+                missing_actions.append(req_str)
+                
+        is_pass = len(missing_actions) == 0
+        return {
+            "pass": is_pass,
+            "missing_actions": missing_actions,
+            "matched_actions": matched_actions,
+            "permission_set_id": permission_set_id,
+            "permission_set_version": target_pset.get("version"),
+            "reason": "All required actions are covered by the permission set." if is_pass else f"Missing {len(missing_actions)} required actions."
+        }
 
 
 class TerraformPlanPolicyValidator:

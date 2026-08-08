@@ -48,6 +48,7 @@ from src.chandra.digital_worker.schemas import (
     NotificationResult,
     RequestPriority,
     RiskLevel,
+    ValidationResult,
     WorkflowResult,
 )
 from src.chandra.digital_worker.state import DigitalWorkerState
@@ -235,6 +236,7 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
         classification=state["classification"],
         plan=state["plan"],
         risk=state["risk"],
+        source=state.get("source", ""),
     )
 
     logger.info(
@@ -253,9 +255,9 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
 
 def route_decision(state: DigitalWorkerState) -> str:
     mode = state["decision"].mode
-    if mode is DecisionMode.AUTO_EXECUTE:
+    if mode == DecisionMode.AUTO_EXECUTE:
         return "execute_automation"
-    if mode is DecisionMode.AWAIT_APPROVAL:
+    if mode == DecisionMode.AWAIT_APPROVAL:
         return "approval_gate"
     return "generate_guidance"
 
@@ -283,6 +285,7 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
         approved=record.approved,
         approver=record.approver,
     )
+    logger.info(f"TRANSITION: {'HUMAN_APPROVED' if record.approved else 'HUMAN_REJECTED'}")
     return {
         "approval": record,
         "audit_trail": [
@@ -300,7 +303,14 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
 def route_approval(state: DigitalWorkerState) -> str:
     approval = state.get("approval")
     if approval is not None and approval.approved:
-        if state["classification"].platform is CloudPlatform.AWS:
+        classification = state.get("classification")
+        platform = None
+        if isinstance(classification, dict):
+            platform = classification.get("platform")
+        elif classification is not None:
+            platform = getattr(classification, "platform", None)
+            
+        if platform == CloudPlatform.AWS or platform == "aws":
             return "permission_analysis"
         return "execute_automation"
     return "generate_guidance"
@@ -308,26 +318,41 @@ def route_approval(state: DigitalWorkerState) -> str:
 
 def permission_analysis(state: DigitalWorkerState) -> dict[str, Any]:
     """Determine what permissions are needed for the AWS action."""
-    # In a real implementation this might call an LLM to map the plan to IAM actions
-    # For now, we simply extract the required actions from the plan
+    from src.chandra.briefing.composer import analyze_required_permissions
+    from src.chandra.digital_worker.schemas import RequiredPermission
+
+    logger.info("TRANSITION: PERMISSION_ANALYSIS")
+    request_dict = state["request"].model_dump(mode="json", exclude={"raw_payload"})
+    plan_dict = state["plan"].model_dump(mode="json")
+    
+    raw_perms = analyze_required_permissions(request_dict, plan_dict)
+    permissions = [RequiredPermission(**p) for p in raw_perms]
+    
     return {
+        "required_permissions": permissions,
         "audit_trail": [
-            _audit("permission_analysis", "permissions_analyzed", status="completed")
+            _audit("permission_analysis", "permissions_analyzed", status="completed", count=len(permissions))
         ]
     }
 
 
 def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
     """Interrupt the graph to wait for Copilot to select the permission set."""
+    logger.info("TRANSITION: AWAITING_PERMISSION_SET")
+    
+    required_perms = [p.model_dump(mode="json") for p in state.get("required_permissions", [])]
+    
     payload = interrupt(
         {
-            "status": "awaiting_permission",
+            "action_required": "awaiting_permission_set",
             "request_id": state["request"].request_id,
+            "required_permissions": required_perms,
         }
     )
     
     # payload will contain the permission_set_id when resumed by Copilot
     permission_set_id = payload.get("permission_set_id") if isinstance(payload, dict) else None
+    logger.info("TRANSITION: PERMISSION_SELECTED")
     
     return {
         "permission_set_id": permission_set_id,
@@ -338,14 +363,555 @@ def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
 
 def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
     """Gate 1: Verify the attached permission set."""
+    from src.chandra.execution.services import TaskAuthorizationService
+    
     permission_set_id = state.get("permission_set_id")
     if not permission_set_id:
-        raise ValueError("Gate 1 failed: No permission set attached")
+        logger.info("TRANSITION: GATE_1_DENIED")
+        return {
+            "gate_1_passed": False,
+            "gate_1_result": {"pass": False, "missing_actions": [], "reason": "No permission set attached"},
+            "audit_trail": [
+                _audit("gate_1_verification", "gate_1_denied", reason="No permission set attached")
+            ]
+        }
         
+    auth_svc = TaskAuthorizationService()
+    task_name = state["request"].title
+    required_actions = [p.action for p in state.get("required_permissions", [])]
+    
+    # auth_svc.is_authorized now returns a dict
+    auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
+    
+    if not auth_result.get("pass", False):
+        logger.info("TRANSITION: GATE_1_DENIED")
+        return {
+            "gate_1_passed": False,
+            "gate_1_result": auth_result,
+            "audit_trail": [
+                _audit("gate_1_verification", "gate_1_denied", reason="Authorization denied by TaskAuthorizationService", details=auth_result)
+            ]
+        }
+
+    logger.info("TRANSITION: GATE_1_PASS")
     return {
+        "gate_1_passed": True,
+        "gate_1_result": auth_result,
         "audit_trail": [
-            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id)
+            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id, details=auth_result)
         ]
+    }
+
+def route_gate1(state: DigitalWorkerState) -> str:
+    logger.info("ROUTING GATE 1: %s", state.get("gate_1_passed"))
+    if state.get("gate_1_passed"):
+        return "terraform_generate"
+    return "permission_selection_pause"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3C: Terraform generation + validation + plan
+# ---------------------------------------------------------------------------
+
+
+def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
+    """Generate Terraform HCL from the approved request and resolution plan.
+
+    Uses the ExecutionAgents adapter to produce HCL that implements the plan
+    and falls back to deterministic template if it fails.
+    """
+    from src.chandra.digital_worker.schemas import TerraformPlanEvidence
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
+    import os
+    import tempfile
+
+    request = state["request"]
+    plan = state["plan"]
+    classification = state["classification"]
+    evidence = state.get("gate_1_evidence")
+    aws_permissions = evidence.matched_actions if evidence and hasattr(evidence, "matched_actions") else []
+
+    logger.info("TRANSITION: TERRAFORM_GENERATE")
+
+    action_dict = {
+        "actionName": request.title or "Digital Worker Resolution",
+        "actionDescription": request.description or "Automated execution for request",
+        "service": ", ".join(classification.services) if classification.services else classification.platform.value,
+        "kraCode": None,
+        "priorityLevel": classification.priority.value,
+        "steps": [step.action for step in plan.steps],
+    }
+
+    job_id = state.get("job_id") or request.request_id
+    orchestrator = ExecutionAgents(max_iterations=1, job_id=job_id)
+    sandbox_path = tempfile.mkdtemp(prefix=f"chandra-tf-{job_id}-")
+
+    result = orchestrator.GenerateTerraformOnly(
+        action=action_dict,
+        aws_permissions=aws_permissions,
+        sandbox_path=sandbox_path,
+        thread_id=job_id,
+    )
+
+    hcl = result.get("hcl", "")
+    if not hcl or result.get("status") == "error":
+        logger.warning("ExecutionAgents generation failed, using fallback.")
+        hcl = _deterministic_terraform_template(request, classification)
+
+    return {
+        "terraform_hcl": hcl,
+        "sandbox_path": sandbox_path,  # pass this so validate can use it
+        "audit_trail": [
+            _audit(
+                "terraform_generate",
+                "hcl_generated",
+                chars=len(hcl),
+                request_id=request.request_id,
+            )
+        ],
+    }
+
+
+def _generate_terraform_hcl(
+    request: CloudRequest, plan: Any, classification: Any
+) -> str:
+    """Use LLM to generate Terraform HCL, with deterministic fallback."""
+    try:
+        from src.chandra.llm import get_llm
+
+        llm = get_llm()
+        services = ", ".join(classification.services) if classification.services else "AWS"
+        steps_text = "\n".join(f"- {s.action}: {s.detail}" for s in plan.steps)
+
+        prompt = (
+            "Generate valid Terraform HCL (main.tf) for the following AWS operation.\n"
+            "Use the aws provider. Include required provider configuration.\n"
+            "Add terraform output blocks for any created resource identifiers.\n"
+            "Do NOT include any explanation — only raw HCL.\n\n"
+            f"Request: {request.title}\n"
+            f"Description: {request.description}\n"
+            f"Services: {services}\n"
+            f"Steps:\n{steps_text}\n"
+        )
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        # Extract HCL from markdown code blocks if present
+        if "```" in content:
+            import re
+            match = re.search(r"```(?:hcl|terraform)?\s*\n(.*?)```", content, re.DOTALL)
+            if match:
+                content = match.group(1)
+        return content.strip()
+    except Exception as exc:
+        logger.warning("terraform.llm_generation_failed_fallback", error=str(exc))
+        return _deterministic_terraform_template(request, classification)
+
+
+def _deterministic_terraform_template(request: CloudRequest, classification: Any) -> str:
+    """Minimal valid Terraform template when LLM is unavailable."""
+    services = classification.services if classification.services else []
+    title_lower = request.title.lower()
+
+    if "s3" in title_lower or "bucket" in title_lower or "s3" in [s.lower() for s in services]:
+        return (
+            'terraform {\n  required_providers {\n    aws = {\n'
+            '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
+            '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
+            'resource "aws_s3_bucket" "managed" {\n'
+            '  bucket_prefix = "chandra-managed-"\n'
+            '  tags = {\n    ManagedBy = "chandra"\n  }\n}\n\n'
+            'output "bucket_name" {\n  value = aws_s3_bucket.managed.id\n}\n'
+        )
+    if "ec2" in title_lower or "instance" in title_lower or "ec2" in [s.lower() for s in services]:
+        return (
+            'terraform {\n  required_providers {\n    aws = {\n'
+            '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
+            '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
+            'data "aws_ami" "amazon_linux" {\n  most_recent = true\n'
+            '  owners     = ["amazon"]\n  filter {\n    name   = "name"\n'
+            '    values = ["amzn2-ami-hvm-*-x86_64-gp2"]\n  }\n}\n\n'
+            'resource "aws_instance" "managed" {\n'
+            '  ami           = data.aws_ami.amazon_linux.id\n'
+            '  instance_type = "t3.micro"\n'
+            '  tags = {\n    ManagedBy = "chandra"\n  }\n}\n\n'
+            'output "instance_id" {\n  value = aws_instance.managed.id\n}\n'
+        )
+    # Generic fallback
+    return (
+        'terraform {\n  required_providers {\n    aws = {\n'
+        '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
+        '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
+        '# Placeholder — LLM unavailable, manual HCL required\n'
+        'output "status" {\n  value = "placeholder"\n}\n'
+    )
+
+
+def terraform_validate_plan(state: DigitalWorkerState) -> dict[str, Any]:
+    """Run terraform fmt → init → validate → plan on the generated HCL."""
+    from src.chandra.digital_worker.schemas import TerraformPlanEvidence
+    from src.chandra.execution.terraform import validate_terraform
+
+    hcl = state.get("terraform_hcl", "")
+    sandbox_path = state.get("sandbox_path")
+    logger.info("TRANSITION: TERRAFORM_VALIDATE_PLAN")
+
+    result = validate_terraform(hcl, run_plan=True, workdir=sandbox_path)
+
+    add_count = 0
+    change_count = 0
+    destroy_count = 0
+    plan_output = ""
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    for stage in result.stages:
+        if not stage.passed:
+            errors.append(f"{stage.name}: {stage.output[:500]}")
+        elif stage.name == "plan":
+            plan_output = stage.output
+            # Parse plan counts from output
+            import re
+            m = re.search(r"(\d+) to add", stage.output)
+            if m:
+                add_count = int(m.group(1))
+            m = re.search(r"(\d+) to change", stage.output)
+            if m:
+                change_count = int(m.group(1))
+            m = re.search(r"(\d+) to destroy", stage.output)
+            if m:
+                destroy_count = int(m.group(1))
+
+    evidence = TerraformPlanEvidence(
+        validation_passed=result.ok,
+        plan_passed=result.ok,
+        resources_to_add=add_count,
+        resources_to_change=change_count,
+        resources_to_destroy=destroy_count,
+        hcl_snippet=hcl[:2000],
+        plan_output=plan_output[:4000],
+        warnings=warnings,
+        errors=errors,
+    )
+
+    return {
+        "terraform_validation": evidence.model_dump(mode="json"),
+        "terraform_plan_result": {
+            "status": result.status,
+            "stages": [s.model_dump(mode="json") for s in result.stages],
+            "detail": result.detail,
+        },
+        "audit_trail": [
+            _audit(
+                "terraform_validate_plan",
+                "terraform_validated",
+                status=result.status,
+                add=add_count,
+                change=change_count,
+                destroy=destroy_count,
+            )
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3D: Gate 2 — Human execution review
+# ---------------------------------------------------------------------------
+
+
+def gate_2_review(state: DigitalWorkerState) -> dict[str, Any]:
+    """Gate 2: Present full execution evidence for human review.
+
+    This is a genuine LangGraph interrupt boundary. CHANDRA_AUTO_APPROVE,
+    ExecutionAgents, or any other shortcut MUST NOT bypass this gate for
+    governed Jira execution.
+    """
+    from src.chandra.digital_worker.schemas import Gate2Decision, Gate2ReviewPayload
+
+    request = state["request"]
+    logger.info("TRANSITION: GATE_2_REVIEW")
+
+    review_payload = Gate2ReviewPayload(
+        jira_issue_key=request.external_id,
+        original_request=f"{request.title}: {request.description}",
+        planned_operation=", ".join(s.action for s in state["plan"].steps),
+        required_permissions=[
+            p.model_dump(mode="json") for p in state.get("required_permissions", [])
+        ],
+        permission_set_id=state.get("permission_set_id"),
+        permission_set_version=state.get("gate_1_result", {}).get("permission_set_version"),
+        gate_1_result=state.get("gate_1_result", {}),
+        terraform_validation=state.get("terraform_validation", {}),
+        terraform_plan=state.get("terraform_plan_result", {}),
+        add_count=state.get("terraform_validation", {}).get("resources_to_add", 0),
+        change_count=state.get("terraform_validation", {}).get("resources_to_change", 0),
+        destroy_count=state.get("terraform_validation", {}).get("resources_to_destroy", 0),
+        risk_level=state["risk"].level.value,
+        job_id=state.get("job_id") or request.request_id,
+    )
+
+    payload = interrupt(
+        {
+            "type": "gate2_execution_review",
+            "review": review_payload.model_dump(mode="json"),
+        }
+    )
+
+    decision = (
+        payload
+        if isinstance(payload, Gate2Decision)
+        else Gate2Decision.model_validate(payload)
+    )
+
+    logger.info(
+        "TRANSITION: GATE_2_%s",
+        "APPROVED" if decision.approved else "REJECTED",
+    )
+
+    return {
+        "gate_2_passed": decision.approved,
+        "gate_2_result": {
+            "approved": decision.approved,
+            "approver": decision.approver,
+            "comment": decision.comment,
+        },
+        "audit_trail": [
+            _audit(
+                "gate_2_review",
+                "gate_2_decided",
+                approved=decision.approved,
+                approver=decision.approver,
+            )
+        ],
+    }
+
+
+def route_gate2(state: DigitalWorkerState) -> str:
+    if state.get("gate_2_passed"):
+        return "terraform_apply"
+    return "generate_guidance"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3E: Terraform apply + boto3 verification + Jira completion
+# ---------------------------------------------------------------------------
+
+
+def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
+    """Execute terraform apply. Real AWS mutation is disabled unless
+    CHANDRA_TERRAFORM_APPLY_ENABLED=true is explicitly set."""
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    request = state["request"]
+    hcl = state.get("terraform_hcl", "")
+    apply_enabled = os.environ.get("CHANDRA_TERRAFORM_APPLY_ENABLED", "false").lower() == "true"
+
+    logger.info("TRANSITION: TERRAFORM_APPLY", enabled=apply_enabled)
+
+    if not apply_enabled:
+        return {
+            "terraform_apply_result": {
+                "success": False,
+                "dry_run": True,
+                "detail": "Terraform apply disabled (CHANDRA_TERRAFORM_APPLY_ENABLED != true)",
+                "outputs": {},
+            },
+            "execution": ExecutionOutcome(
+                status="dry_run",
+                dry_run=True,
+                detail="Terraform apply disabled — dry run mode",
+            ),
+            "audit_trail": [
+                _audit("terraform_apply", "terraform_apply_skipped", reason="disabled")
+            ],
+        }
+
+    from src.chandra.execution.terraform import terraform_available
+
+    if not terraform_available():
+        return {
+            "terraform_apply_result": {
+                "success": False,
+                "detail": "terraform binary not available",
+                "outputs": {},
+            },
+            "execution": ExecutionOutcome(
+                status="failed",
+                dry_run=False,
+                detail="terraform binary not available",
+            ),
+            "audit_trail": [
+                _audit("terraform_apply", "terraform_unavailable")
+            ],
+        }
+
+    import contextlib
+    @contextlib.contextmanager
+    def _get_workdir():
+        sandbox_path = state.get("sandbox_path")
+        if sandbox_path:
+            yield Path(sandbox_path)
+        else:
+            with tempfile.TemporaryDirectory(prefix="chandra-tf-apply-") as tmp:
+                wd = Path(tmp)
+                (wd / "main.tf").write_text(hcl, encoding="utf-8")
+                yield wd
+
+    with _get_workdir() as workdir:
+
+        # init
+        init = subprocess.run(
+            ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
+            cwd=str(workdir), capture_output=True, text=True, timeout=120, check=False,
+        )
+        if init.returncode != 0:
+            return {
+                "terraform_apply_result": {
+                    "success": False,
+                    "detail": f"terraform init failed: {init.stderr[:1000]}",
+                    "outputs": {},
+                },
+                "execution": ExecutionOutcome(
+                    status="failed", dry_run=False,
+                    detail=f"terraform init failed: {init.stderr[:500]}",
+                ),
+                "audit_trail": [_audit("terraform_apply", "init_failed")],
+            }
+
+        # apply -auto-approve
+        apply = subprocess.run(
+            ["terraform", "apply", "-auto-approve", "-input=false", "-no-color"],
+            cwd=str(workdir), capture_output=True, text=True, timeout=300, check=False,
+        )
+
+        if apply.returncode != 0:
+            return {
+                "terraform_apply_result": {
+                    "success": False,
+                    "detail": f"terraform apply failed: {apply.stderr[:1000]}",
+                    "outputs": {},
+                },
+                "execution": ExecutionOutcome(
+                    status="failed", dry_run=False,
+                    detail=f"terraform apply failed: {apply.stderr[:500]}",
+                    execution_logs=apply.stdout[:4000],
+                ),
+                "audit_trail": [
+                    _audit("terraform_apply", "apply_failed", stderr=apply.stderr[:500])
+                ],
+            }
+
+        # Capture outputs
+        outputs_proc = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=str(workdir), capture_output=True, text=True, timeout=30, check=False,
+        )
+        import json
+        outputs = {}
+        if outputs_proc.returncode == 0:
+            try:
+                outputs = json.loads(outputs_proc.stdout)
+            except json.JSONDecodeError:
+                pass
+
+    return {
+        "terraform_apply_result": {
+            "success": True,
+            "detail": "terraform apply succeeded",
+            "outputs": outputs,
+            "stdout": apply.stdout[:4000],
+        },
+        "execution": ExecutionOutcome(
+            status="executed",
+            dry_run=False,
+            detail="Terraform apply succeeded",
+            execution_logs=apply.stdout[:4000],
+        ),
+        "audit_trail": [
+            _audit("terraform_apply", "apply_succeeded", outputs=list(outputs.keys()))
+        ],
+    }
+
+
+def verify_aws_resources(state: DigitalWorkerState) -> dict[str, Any]:
+    """Fresh boto3 verification of the AWS postcondition.
+
+    Terraform success alone MUST NOT mark the workflow VERIFIED or COMPLETED.
+    Required semantics:
+      Apply SUCCESS + boto3 SUCCESS → VERIFIED → COMPLETED
+      Apply SUCCESS + boto3 FAILURE → FAILED
+      Apply FAILURE → FAILED
+      boto3 unavailable → INDETERMINATE (never SUCCESS)
+    """
+    from src.chandra.digital_worker.schemas import VerificationEvidence
+
+    apply_result = state.get("terraform_apply_result", {})
+    request = state["request"]
+
+    logger.info("TRANSITION: BOTO3_VERIFICATION")
+
+    if apply_result.get("dry_run"):
+        evidence = VerificationEvidence(
+            terraform_apply_success=False,
+            boto3_verification_status="INDETERMINATE",
+            detail="Terraform apply was a dry run — no resources to verify",
+        )
+        final = "INDETERMINATE"
+    elif not apply_result.get("success"):
+        evidence = VerificationEvidence(
+            terraform_apply_success=False,
+            boto3_verification_status="FAILED",
+            detail="Terraform apply did not succeed — verification skipped",
+        )
+        final = "FAILED"
+    else:
+        outputs = apply_result.get("outputs", {})
+        try:
+            from src.chandra.execution.services import AwsResourceVerifier
+            verifier = AwsResourceVerifier()
+            status = verifier.verify_resource(request.title, outputs)
+            verified_resources = []
+            for k, v in outputs.items():
+                verified_resources.append({"key": k, "value": v.get("value") if isinstance(v, dict) else v})
+
+            if status == "VERIFIED":
+                final = "COMPLETED"
+            elif status == "UNVERIFIED":
+                final = "INDETERMINATE"
+                status = "INDETERMINATE"
+            else:
+                final = "FAILED"
+
+            evidence = VerificationEvidence(
+                terraform_apply_success=True,
+                boto3_verification_status=status,
+                verified_resources=verified_resources,
+                detail=f"boto3 verification: {status}",
+            )
+        except Exception as exc:
+            logger.warning("boto3_verification_failed", error=str(exc))
+            evidence = VerificationEvidence(
+                terraform_apply_success=True,
+                boto3_verification_status="INDETERMINATE",
+                detail=f"boto3 verification unavailable: {exc}",
+            )
+            final = "INDETERMINATE"
+
+    logger.info("TRANSITION: %s", final)
+
+    return {
+        "boto3_verification": evidence.model_dump(mode="json"),
+        "final_status": final,
+        "audit_trail": [
+            _audit(
+                "verify_aws_resources",
+                "verification_complete",
+                status=evidence.boto3_verification_status,
+                final=final,
+            )
+        ],
     }
 
 
@@ -435,6 +1001,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
                         fastapi_app._job_store[dw_job_id]["decision_mode"] = "auto_execute"
 
         # Run it synchronously
+        logger.info("TRANSITION: EXECUTION_STARTED")
         response = orchestrator.RunPipeline(
             action=action_dict,
             sandbox_path=None,
@@ -444,10 +1011,17 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         )
 
         if response.statusCode == 202:
+            is_gate2 = any("terraform" in str(q).lower() or "approval" in str(q).lower() 
+                           for q in (response.questions or []))
+            interrupt_type = "gate2_approval" if is_gate2 else "clarification"
+            
+            if is_gate2:
+                logger.info("TRANSITION: AWAITING_GATE_2")
+
             # Propagate pause to Digital Worker graph
             user_answers = interrupt(
                 {
-                    "type": "clarification",
+                    "type": interrupt_type,
                     "questions": response.questions,
                     "summary": response.summary,
                 }
@@ -526,11 +1100,12 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
         state["context"],
     )
     approval = state.get("approval")
-    detail = (
-        "automation rejected by approver; engineer guidance produced"
-        if approval is not None and not approval.approved
-        else "engineer guidance produced"
-    )
+    
+    if approval is not None and not approval.approved:
+        detail = f"Request REJECTED by {approval.approver}. Reason: {approval.comment}"
+    else:
+        detail = "engineer guidance produced"
+        
     return {
         "guidance_md": guidance,
         "execution": ExecutionOutcome(status="skipped", dry_run=True, detail=detail),
@@ -546,7 +1121,20 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
     from src.chandra.digital_worker.verifier import verify_execution
 
-    execution = state["execution"]
+    execution = state.get("execution") or ExecutionOutcome(status="skipped", dry_run=True)
+
+    # Governed path — verification already done in verify_aws_resources
+    if state.get("final_status"):
+        from src.chandra.digital_worker.schemas import ValidationCheck, ValidationResult
+        v_status = state.get("boto3_verification", {}).get("boto3_verification_status", "INDETERMINATE")
+        passed = state["final_status"] == "COMPLETED"
+        return {
+            "validation": ValidationResult(
+                passed=passed,
+                checks=[ValidationCheck(name="governed_verification", passed=passed, detail=v_status)],
+            ),
+            "audit_trail": [_audit("validate_result", "governed_validation", status=v_status)],
+        }
 
     if state.get("guidance_md") and execution.status == "skipped":
         # Guidance path, no real execution to verify
@@ -564,12 +1152,17 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
             ],
         )
     else:
+        logger.info("TRANSITION: AWS_VERIFICATION")
         validation = verify_execution(
             request=state["request"],
             classification=state["classification"],
             plan=state["plan"],
             execution=execution,
         )
+        if validation.passed:
+            logger.info("TRANSITION: VERIFIED")
+        else:
+            logger.info("TRANSITION: VERIFICATION_FAILED")
 
     return {
         "validation": validation,
@@ -585,19 +1178,57 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
-    execution = state["execution"]
-    validation = state["validation"]
-    resolved = execution.status == "executed" and validation.passed
-    if state.get("guidance_md"):
+    execution = state.get("execution")
+    validation = state.get("validation")
+
+    # Governed Jira path (Phase 3E completion)
+    final_status = state.get("final_status")
+    if final_status:
+        verification = state.get("boto3_verification", {})
+        gate_2 = state.get("gate_2_result", {})
+        resolved = final_status == "COMPLETED"
+        comment = (
+            f"Chandra Governed Workflow — Final Status: {final_status}\n\n"
+            f"Gate 1: {'PASS' if state.get('gate_1_passed') else 'FAIL'}\n"
+            f"Gate 2: {'APPROVED' if gate_2.get('approved') else 'REJECTED'} "
+            f"(by {gate_2.get('approver', 'unknown')})\n"
+            f"Terraform Apply: {'SUCCESS' if state.get('terraform_apply_result', {}).get('success') else 'FAILED/DRY_RUN'}\n"
+            f"boto3 Verification: {verification.get('boto3_verification_status', 'N/A')}\n"
+            f"Final: {final_status}"
+        )
+        update = update_request_ticket(state["request"], comment, resolved)
+        return {
+            "tracker_updates": [update],
+            "status": "completed" if resolved else "completed_with_issues",
+            "audit_trail": [
+                _audit("update_tracker", "governed_tracker_updated",
+                       status=update.status, final=final_status)
+            ],
+        }
+
+    # Standard (non-governed) path
+    if execution is None:
+        execution = ExecutionOutcome(status="skipped", dry_run=True, detail="No execution")
+    resolved = False
+    if validation is not None:
+        resolved = execution.status == "executed" and validation.passed
+
+    approval = state.get("approval")
+    is_rejected = approval is not None and not approval.approved
+
+    if is_rejected:
+        comment = f"Chandra Digital Worker outcome: REJECTED\n\n{execution.detail}"
+    elif state.get("guidance_md"):
         comment = (
             "Chandra Digital Worker analyzed this request and produced engineer "
             f"guidance (decision: {state['decision'].reason}).\n\n{state['guidance_md'][:6000]}"
         )
     else:
+        passed = validation.passed if validation else False
         comment = (
             f"Chandra Digital Worker outcome: {execution.status} "
             f"(dry_run={execution.dry_run}). {execution.detail} "
-            f"Validation passed: {validation.passed}."
+            f"Validation passed: {passed}."
         )
     update = update_request_ticket(state["request"], comment, resolved)
     return {
@@ -659,6 +1290,17 @@ def notify(state: DigitalWorkerState) -> dict[str, Any]:
 
 def audit(state: DigitalWorkerState) -> dict[str, Any]:
     """Assemble the terminal WorkflowResult from all stage artifacts."""
+    execution = state.get("execution") or ExecutionOutcome(status="skipped", dry_run=True)
+    validation = state.get("validation") or ValidationResult(passed=False)
+
+    final_status = state.get("final_status")
+    if final_status:
+        status = "completed" if final_status == "COMPLETED" else "completed_with_issues"
+    elif validation.passed:
+        status = "completed"
+    else:
+        status = "completed_with_issues"
+
     result = WorkflowResult(
         request=state["request"],
         classification=state["classification"],
@@ -666,13 +1308,14 @@ def audit(state: DigitalWorkerState) -> dict[str, Any]:
         plan=state["plan"],
         risk=state["risk"],
         decision=state["decision"],
-        execution=state["execution"],
-        validation=state["validation"],
+        execution=execution,
+        validation=validation,
         tracker_updates=state.get("tracker_updates", []),
         notifications=state.get("notifications", []),
         guidance_md=state.get("guidance_md", ""),
         audit_trail=state.get("audit_trail", []),
-        status="completed" if state["validation"].passed else "completed_with_issues",
+        status=status,
+        required_permissions=state.get("required_permissions", []),
     )
     return {
         "result": result.model_dump(mode="json"),
@@ -751,6 +1394,11 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("permission_analysis", permission_analysis)
     graph.add_node("permission_selection_pause", permission_selection_pause)
     graph.add_node("gate_1_verification", gate_1_verification)
+    graph.add_node("terraform_generate", terraform_generate)
+    graph.add_node("terraform_validate_plan", terraform_validate_plan)
+    graph.add_node("gate_2_review", gate_2_review)
+    graph.add_node("terraform_apply", terraform_apply)
+    graph.add_node("verify_aws_resources", verify_aws_resources)
     graph.add_node("execute_automation", execute_automation)
     graph.add_node("generate_guidance", generate_guidance)
     graph.add_node("validate_result", validate_result)
@@ -780,10 +1428,35 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
         ["execute_automation", "generate_guidance", "permission_analysis"],
     )
 
+    # Phase 3B: Permission analysis → Gate 1
     graph.add_edge("permission_analysis", "permission_selection_pause")
     graph.add_edge("permission_selection_pause", "gate_1_verification")
-    graph.add_edge("gate_1_verification", "execute_automation")
 
+    graph.add_conditional_edges(
+        "gate_1_verification",
+        route_gate1,
+        {
+            "terraform_generate": "terraform_generate",
+            "permission_selection_pause": "permission_selection_pause",
+        },
+    )
+
+    # Phase 3C: Terraform generation → validation → plan
+    graph.add_edge("terraform_generate", "terraform_validate_plan")
+    graph.add_edge("terraform_validate_plan", "gate_2_review")
+
+    # Phase 3D: Gate 2 human execution review
+    graph.add_conditional_edges(
+        "gate_2_review",
+        route_gate2,
+        ["terraform_apply", "generate_guidance"],
+    )
+
+    # Phase 3E: Terraform apply → verification → completion
+    graph.add_edge("terraform_apply", "verify_aws_resources")
+    graph.add_edge("verify_aws_resources", "validate_result")
+
+    # Standard paths
     graph.add_edge("execute_automation", "validate_result")
     graph.add_edge("generate_guidance", "validate_result")
     graph.add_edge("validate_result", "update_tracker")
@@ -793,7 +1466,4 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("persist", END)
 
     saver = checkpointer if checkpointer is not None else build_checkpointer()
-    # ``interrupt_before`` makes the human gate real (see the core graph's
-    # build_graph for why the function-level interrupt alone is not enough
-    # in LangGraph 1.x).
-    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate", "permission_selection_pause"])
+    return graph.compile(checkpointer=saver, interrupt_before=["approval_gate"])
