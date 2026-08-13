@@ -187,6 +187,8 @@ def verify_execution(
     try:
         with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
             print("--- Starting Verification ---")
+            import time
+            time.sleep(15)  # Wait for AWS eventual consistency
             exec(code, exec_globals)
             print("--- Verification Complete ---")
     except Exception as exc:

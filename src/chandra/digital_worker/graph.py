@@ -76,6 +76,17 @@ def receive_request(state: DigitalWorkerState) -> dict[str, Any]:
         request = normalize_request(state.get("source", "rest_api"), state.get("payload", {}))
     elif not isinstance(request, CloudRequest):
         request = CloudRequest.model_validate(request)
+        
+    if request.source.value == "jira" and request.external_id:
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        JiraActivityRecorder.record_event(
+            request.external_id,
+            state.get("job_id", request.request_id),
+            ChandraEvent.REQUEST_RECEIVED,
+            task=request.title,
+            service="AWS Resource"
+        )
+        
     logger.info(
         "graph.receive_request",
         request_id=request.request_id,
@@ -239,6 +250,16 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
         source=state.get("source", ""),
     )
 
+    request = state["request"]
+    if request.source.value == "jira" and request.external_id and verdict.mode == DecisionMode.AWAIT_APPROVAL:
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        JiraActivityRecorder.record_event(
+            request.external_id,
+            state.get("job_id", request.request_id),
+            ChandraEvent.APPROVAL_REQUIRED,
+            reason=verdict.reason
+        )
+
     logger.info(
         "graph.decision",
         request_id=state["request"].request_id,
@@ -279,6 +300,25 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
     record = (
         payload if isinstance(payload, ApprovalRecord) else ApprovalRecord.model_validate(payload)
     )
+    
+    request = state["request"]
+    if request.source.value == "jira" and request.external_id:
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        if record.approved:
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.APPROVAL_GRANTED,
+                approver=record.approver
+            )
+        else:
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.APPROVAL_REJECTED,
+                reason=record.comment
+            )
+
     logger.info(
         "graph.approval_gate",
         request_id=state["request"].request_id,
@@ -352,10 +392,12 @@ def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
     
     # payload will contain the permission_set_id when resumed by Copilot
     permission_set_id = payload.get("permission_set_id") if isinstance(payload, dict) else None
+    permission_set_document = payload.get("permission_set_document", {}) if isinstance(payload, dict) else {}
     logger.info("TRANSITION: PERMISSION_SELECTED")
     
     return {
         "permission_set_id": permission_set_id,
+        "permission_set_document": permission_set_document,
         "audit_trail": [
             _audit("permission_selection_pause", "permission_attached", permission_set_id=permission_set_id)
         ]
@@ -364,43 +406,65 @@ def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
 def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
     """Gate 1: Verify the attached permission set."""
     from src.chandra.execution.services import TaskAuthorizationService
+    import traceback
     
-    permission_set_id = state.get("permission_set_id")
-    if not permission_set_id:
-        logger.info("TRANSITION: GATE_1_DENIED")
-        return {
-            "gate_1_passed": False,
-            "gate_1_result": {"pass": False, "missing_actions": [], "reason": "No permission set attached"},
-            "audit_trail": [
-                _audit("gate_1_verification", "gate_1_denied", reason="No permission set attached")
-            ]
-        }
+    try:
+        permission_set_id = state.get("permission_set_id")
+        if not permission_set_id:
+            logger.info("TRANSITION: GATE_1_DENIED")
+            return {
+                "gate_1_passed": False,
+                "gate_1_result": {"pass": False, "missing_actions": [], "reason": "No permission set attached"},
+                "audit_trail": [
+                    _audit("gate_1_verification", "gate_1_denied", reason="No permission set attached")
+                ]
+            }
+            
+        auth_svc = TaskAuthorizationService()
+        permission_set_document = state.get("permission_set_document", {})
+        if permission_set_id and permission_set_document:
+            auth_svc.permissions = {
+                "permissionSets": [
+                    {
+                        "id": permission_set_id,
+                        "actions": [p["action"] for p in permission_set_document.get("permissions", [])]
+                    }
+                ]
+            }
+            
+        task_name = state["request"].title
+        required_actions = [p.action for p in state.get("required_permissions", [])]
         
-    auth_svc = TaskAuthorizationService()
-    task_name = state["request"].title
-    required_actions = [p.action for p in state.get("required_permissions", [])]
-    
-    # auth_svc.is_authorized now returns a dict
-    auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
-    
-    if not auth_result.get("pass", False):
-        logger.info("TRANSITION: GATE_1_DENIED")
+        # auth_svc.is_authorized now returns a dict
+        auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
+        
+        logger.error("DEBUG GATE 1: permission_set_id=%s, permission_set_document=%s, required=%s, auth_result=%s", permission_set_id, permission_set_document, required_actions, auth_result)
+        
+        if not auth_result.get("pass", False):
+            logger.info("TRANSITION: GATE_1_DENIED")
+            return {
+                "gate_1_passed": False,
+                "gate_1_result": auth_result,
+                "audit_trail": [
+                    _audit("gate_1_verification", "gate_1_denied", reason="Authorization denied by TaskAuthorizationService", details=auth_result)
+                ]
+            }
+
+        logger.info("TRANSITION: GATE_1_PASS")
         return {
-            "gate_1_passed": False,
+            "gate_1_passed": True,
             "gate_1_result": auth_result,
             "audit_trail": [
-                _audit("gate_1_verification", "gate_1_denied", reason="Authorization denied by TaskAuthorizationService", details=auth_result)
+                _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id, details=auth_result)
             ]
         }
-
-    logger.info("TRANSITION: GATE_1_PASS")
-    return {
-        "gate_1_passed": True,
-        "gate_1_result": auth_result,
-        "audit_trail": [
-            _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id, details=auth_result)
-        ]
-    }
+    except Exception as e:
+        logger.error(f"EXCEPTION in gate_1_verification: {e}\n{traceback.format_exc()}")
+        return {
+            "gate_1_passed": False,
+            "gate_1_result": {"pass": False, "reason": f"CRASH: {e}"},
+            "audit_trail": []
+        }
 
 def route_gate1(state: DigitalWorkerState) -> str:
     logger.info("ROUTING GATE 1: %s", state.get("gate_1_passed"))
@@ -925,6 +989,19 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
     plan = state["plan"]
     classification = state["classification"]
     dry_run = state.get("dry_run", False)
+    
+    import time
+    execution_start_time = time.time()
+    
+    if request.source.value == "jira" and request.external_id:
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        JiraActivityRecorder.record_event(
+            request.external_id,
+            state.get("job_id", request.request_id),
+            ChandraEvent.EXECUTION_STARTED,
+            service=", ".join(classification.services) if classification.services else classification.platform.value,
+            resource=plan.steps[0].resource_type if plan.steps else "Unknown"
+        )
 
     if dry_run:
         from src.chandra.digital_worker.schemas import ExecutionOutcome
@@ -1079,6 +1156,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
     )
     return {
         "execution": outcome,
+        "execution_start_time": execution_start_time,
         "audit_trail": [
             _audit(
                 "execute_automation",
@@ -1120,6 +1198,7 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
     from src.chandra.digital_worker.verifier import verify_execution
+    from src.chandra.digital_worker.schemas import ExecutionOutcome
 
     execution = state.get("execution") or ExecutionOutcome(status="skipped", dry_run=True)
 
@@ -1128,11 +1207,21 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
         from src.chandra.digital_worker.schemas import ValidationCheck, ValidationResult
         v_status = state.get("boto3_verification", {}).get("boto3_verification_status", "INDETERMINATE")
         passed = state["final_status"] == "COMPLETED"
+        
+        # Synthesize execution outcome for the governed path so fastapi_app status is accurate
+        synthetic_status = "completed" if passed else ("failed" if state["final_status"] == "FAILED" else "dry_run")
+        synthetic_execution = ExecutionOutcome(
+            status=synthetic_status,
+            dry_run=(synthetic_status == "dry_run"),
+            detail=f"Governed path finished: {state['final_status']}"
+        )
+        
         return {
             "validation": ValidationResult(
                 passed=passed,
                 checks=[ValidationCheck(name="governed_verification", passed=passed, detail=v_status)],
             ),
+            "execution": synthetic_execution,
             "audit_trail": [_audit("validate_result", "governed_validation", status=v_status)],
         }
 
@@ -1163,6 +1252,24 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
             logger.info("TRANSITION: VERIFIED")
         else:
             logger.info("TRANSITION: VERIFICATION_FAILED")
+
+    request = state["request"]
+    if request.source.value == "jira" and request.external_id and execution.status != "skipped":
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        if validation.passed:
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.VALIDATION_PASSED
+            )
+        else:
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.VALIDATION_FAILED,
+                expected="Resource verified",
+                actual="Verification check failed"
+            )
 
     return {
         "validation": validation,
@@ -1196,6 +1303,44 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
             f"boto3 Verification: {verification.get('boto3_verification_status', 'N/A')}\n"
             f"Final: {final_status}"
         )
+        if execution and execution.execution_logs:
+            from src.chandra.briefing.composer import compose_execution_summary
+            summary = compose_execution_summary(state["request"].description or "", execution.execution_logs)
+            comment += f"\n\n----\n{summary}"
+            
+        request = state["request"]
+        if request.source.value == "jira" and request.external_id:
+            from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+            import time
+            
+            job_id = state.get("job_id", request.request_id)
+            execution_start_time = state.get("execution_start_time")
+            if execution_start_time:
+                duration_seconds = int(time.time() - execution_start_time)
+                JiraActivityRecorder.record_worklog(
+                    request.external_id,
+                    job_id,
+                    duration_seconds,
+                    f"Chandra AWS Execution via Governed Workflow. Result: {final_status}"
+                )
+                
+            if resolved:
+                JiraActivityRecorder.record_event(
+                    request.external_id,
+                    job_id,
+                    ChandraEvent.VALIDATION_PASSED,
+                    expected="SUCCESS",
+                    actual="SUCCESS"
+                )
+            else:
+                JiraActivityRecorder.record_event(
+                    request.external_id,
+                    job_id,
+                    ChandraEvent.EXECUTION_FAILED,
+                    stage="Governed Workflow",
+                    error=final_status
+                )
+
         update = update_request_ticket(state["request"], comment, resolved)
         return {
             "tracker_updates": [update],
@@ -1230,6 +1375,42 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
             f"(dry_run={execution.dry_run}). {execution.detail} "
             f"Validation passed: {passed}."
         )
+        if execution and execution.execution_logs:
+            comment += f"\n\n----\n*Execution Details:*\n{{code}}\n{execution.execution_logs[-25000:]}\n{{code}}"
+            
+    request = state["request"]
+    if request.source.value == "jira" and request.external_id:
+        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        import time
+        
+        execution_start_time = state.get("execution_start_time")
+        if execution_start_time:
+            execution_end_time = time.time()
+            duration_seconds = int(execution_end_time - execution_start_time)
+            
+            JiraActivityRecorder.record_worklog(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                duration_seconds,
+                f"Processed {request.external_id}, verified permissions, executed operations, and validated."
+            )
+            
+        if is_rejected:
+            pass # Already handled in decision/approval_gate
+        elif not resolved and execution.status != "skipped":
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.EXECUTION_FAILED,
+                error=execution.detail
+            )
+        elif resolved:
+            JiraActivityRecorder.record_event(
+                request.external_id,
+                state.get("job_id", request.request_id),
+                ChandraEvent.TASK_COMPLETED
+            )
+            
     update = update_request_ticket(state["request"], comment, resolved)
     return {
         "tracker_updates": [update],

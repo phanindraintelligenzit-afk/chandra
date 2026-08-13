@@ -3600,7 +3600,18 @@ Rules:
             snapshot = self.Graph.get_state(config)
 
             if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
-                questions = snapshot.tasks[0].interrupts[0].value
+                interrupt_val = snapshot.tasks[0].interrupts[0].value
+                
+                questions = []
+                hitl_payload = None
+                
+                if isinstance(interrupt_val, dict):
+                    hitl_payload = interrupt_val
+                elif isinstance(interrupt_val, list):
+                    questions = [str(x) for x in interrupt_val]
+                else:
+                    questions = [str(interrupt_val)]
+
                 is_mid_run = snapshot.values.get("consecutive_same_error", 0) >= 3
                 summary_msg = (
                     f"Agent is stuck and needs your input (thread_id={tid}). "
@@ -3619,6 +3630,7 @@ Rules:
                         IterationRecord(**r) for r in snapshot.values.get("records", [])
                     ],
                     questions=questions,
+                    hitl_payload=hitl_payload,
                     summary=summary_msg,
                 )
 

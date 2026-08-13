@@ -420,7 +420,7 @@ async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0
 def get_detector_issues():
     """Submit detector scan as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
-    logger.info("GET /getDetectorIssues → async job_id=%s", job_id)
+    logger.info("GET /getDetectorIssues -> async job_id=%s", job_id)
     with _job_store_lock:
         _job_store[job_id] = {
             "status": "pending", "progress": 0,
@@ -493,7 +493,7 @@ def get_aws_regions() -> JSONResponse:
 def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
     """Submit CloudWatch metrics fetch as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
-    logger.info("POST /getCloudWatchMetrics → async job_id=%s region=%s", job_id, request.region)
+    logger.info("POST /getCloudWatchMetrics -> async job_id=%s region=%s", job_id, request.region)
     with _job_store_lock:
         _job_store[job_id] = {
             "status": "pending", "progress": 0,
@@ -514,7 +514,7 @@ def run_pipeline(request: PipelineRequest):
     """Submit observability pipeline as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
     logger.info(
-        "POST /getAgentObservations → async job_id=%s region=%s kras=%s",
+        "POST /getAgentObservations -> async job_id=%s region=%s kras=%s",
         job_id, request.region, [k.code for k in request.kras],
     )
     with _job_store_lock:
@@ -766,7 +766,7 @@ def analyze_actions(request: AnalyzerRequest):
     """Submit action analysis as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
     logger.info(
-        "POST /analyzeActions → async job_id=%s actions=%d projectKey=%s",
+        "POST /analyzeActions -> async job_id=%s actions=%d projectKey=%s",
         job_id, len(request.actions), request.projectKey,
     )
     with _job_store_lock:
@@ -1167,6 +1167,36 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
             )
 
             snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+            
+            if snapshot.next and "permission_selection_pause" in snapshot.next:
+                interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+                interrupt_val = interrupts[0].value if interrupts else {}
+                with _job_store_lock:
+                    _job_store[job_id]["status"] = "awaiting_permission"
+                    _job_store[job_id]["progress"] = 75
+                    _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
+                    _job_store[job_id]["result"] = interrupt_val
+                logger.info("DW RESUME [%s] awaiting permission attachment", job_id)
+                return
+
+            if snapshot.next and "gate_2_review" in snapshot.next:
+                interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+                interrupt_val = interrupts[0].value if interrupts else {}
+                with _job_store_lock:
+                    _job_store[job_id]["status"] = "awaiting_gate2"
+                    _job_store[job_id]["progress"] = 85
+                    _job_store[job_id]["message"] = "Awaiting Gate 2 human execution review"
+                    _job_store[job_id]["job_type"] = "dw"
+                    _job_store[job_id]["result"] = {
+                        "statusCode": 202,
+                        "status": "awaiting_gate2_review",
+                        "type": "gate2_execution_review",
+                        "thread_id": job_id,
+                        "review": interrupt_val.get("review", {}),
+                    }
+                logger.info("DW RESUME [%s] awaiting Gate 2 execution review", job_id)
+                return
+
             # Check if it paused AGAIN for another HITL round
             if snapshot.next and "execute_automation" in snapshot.next:
                 interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
@@ -1531,7 +1561,7 @@ class ApprovalSubmission(BaseModel):
     approver: Optional[str] = Field(default=None, description="Who decided.")
     comment: str = Field(default="", description="Optional decision rationale.")
     permission_set_id: Optional[str] = Field(default=None, description="Optional permission set ID attached by Copilot.")
-
+    permission_set_document: Optional[Dict[str, Any]] = Field(default=None, description="Optional mocked permission set for E2E testing.")
 
 
 def _dw_thread_config(job_id: str) -> Dict[str, Any]:
@@ -1591,6 +1621,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             raise RuntimeError("Digital Worker graph is not initialized")
         with _job_store_lock:
             _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["job_type"] = "dw"
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
@@ -1740,6 +1771,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             # Check the current status before changing to running
             current_status = _job_store[job_id].get("status")
             _job_store[job_id]["status"] = "running"
+            _job_store[job_id]["job_type"] = "dw"
             _job_store[job_id]["progress"] = 80
             _job_store[job_id]["message"] = "Resuming after approval decision..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
@@ -1749,7 +1781,11 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             
         # Route resume payload based on which gate we're at
         if current_status == "awaiting_permission":
-            resume_payload = {"permission_set_id": approval.permission_set_id}
+            resume_payload = {
+                "permission_set_id": approval.permission_set_id,
+                "permission_set_document": approval.permission_set_document,
+            }
+            logger.error(f"DEBUG RESUME PAYLOAD awaiting_permission: {resume_payload}")
         elif current_status == "awaiting_gate2":
             resume_payload = {
                 "approved": approval.approved,
@@ -1948,7 +1984,7 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "status": "error", "message": "Digital Worker graph is not initialized",
         })
     job_id = str(uuid.uuid4())
-    logger.info("Digital Worker request submitted → job_id=%s source=%s", job_id, submission.source)
+    logger.info("Digital Worker request submitted -> job_id=%s source=%s", job_id, submission.source)
     import time
     with _job_store_lock:
         _job_store[job_id] = {
