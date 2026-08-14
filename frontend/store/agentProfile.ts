@@ -63,6 +63,30 @@ export const agentAvatars: AgentAvatar[] = [
     signal: "AUD",
     image: "Woman with Hijab.png",
     gender: "Female"
+  },
+  {
+    id: "synth-core",
+    label: "Synth Core",
+    specialty: "autonomous orchestration",
+    signal: "SYN",
+    image: "synth-core.png",
+    gender: "Neutral / Synthetic AI"
+  },
+  {
+    id: "synth-nexus",
+    label: "Synth Nexus",
+    specialty: "data mesh intelligence",
+    signal: "NXS",
+    image: "synth-nexus.png",
+    gender: "Neutral / Synthetic AI"
+  },
+  {
+    id: "synth-pulse",
+    label: "Synth Pulse",
+    specialty: "real-time telemetry",
+    signal: "PLS",
+    image: "synth-pulse.png",
+    gender: "Neutral / Synthetic AI"
   }
 ];
 
@@ -102,6 +126,10 @@ export function generateEmployeeId(name: string) {
 
 export function getAvatarById(id: string) {
   return agentAvatars.find((avatar) => avatar.id === id) ?? agentAvatars[0];
+}
+
+export function getAvatarsByGender(selectedGender: AgentGender): AgentAvatar[] {
+  return agentAvatars.filter((avatar) => avatar.gender === selectedGender);
 }
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";

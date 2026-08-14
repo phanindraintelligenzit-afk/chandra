@@ -16,6 +16,7 @@ import {
   generateEmployeeId,
   getAvatarById,
   getAvatarImageSrc,
+  getAvatarsByGender,
   getRoleIconSrc,
   isDuplicateAgentName,
   normalizeAgentName,
@@ -209,6 +210,7 @@ export default function OnboardingWizard() {
   const displayName = (agentName || normalizedName || "").toUpperCase();
   const currentAgentId = agentName ? employeeId || employeeIdPreview : employeeIdPreview;
   const showProfilePill = hasSelectedAvatar && hasName;
+  const filteredAvatars = useMemo(() => getAvatarsByGender(gender), [gender]);
 
   useEffect(() => {
     setLocalName((current) => (current === agentName ? current : agentName));
@@ -484,7 +486,16 @@ export default function OnboardingWizard() {
                     <button
                       key={option}
                       type="button"
-                      onClick={() => setGender(option)}
+                      onClick={() => {
+                        setGender(option);
+                        // Clear avatar if it doesn't belong to the new gender
+                        if (avatarId) {
+                          const currentAvatar = getAvatarById(avatarId);
+                          if (currentAvatar && currentAvatar.gender !== option) {
+                            setAvatarId("");
+                          }
+                        }
+                      }}
                       className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${
                         gender === option ? "border-emerald-300/50 bg-emerald-300/10 text-emerald-200" : "border-white/10 bg-black/30 text-frost/75 hover:border-emerald-300/20"
                       }`}
@@ -498,7 +509,7 @@ export default function OnboardingWizard() {
                 <div>
                   <div className="mb-3 text-[0.62rem] uppercase tracking-[0.2em] text-amber">SELECT AVATAR</div>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-                    {agentAvatars.map((avatar) => {
+                    {filteredAvatars.map((avatar) => {
                       const selected = avatarId === avatar.id;
                       return (
                         <button
@@ -631,7 +642,7 @@ export default function OnboardingWizard() {
               </div>
 
               {/* Custom KRAs list — shown ABOVE the inputs */}
-              {customKras.length > 0 && (() => {
+              {false && customKras.length > 0 && (() => {
                 const search = customKraSearch.trim().toLowerCase();
                 const filtered = search
                   ? customKras.filter((k) =>
@@ -768,6 +779,7 @@ export default function OnboardingWizard() {
 
 
               {/* ADD CUSTOM KRA — placed AT THE BOTTOM of step 3 */}
+              {false && (
               <div className="mt-4 rounded-3xl border border-white/10 bg-black/30 p-5">
                 <div className="mb-3 text-[0.62rem] uppercase tracking-[0.2em] text-amber">ADD CUSTOM KRA</div>
                 <div className="flex flex-col gap-3">
@@ -808,6 +820,7 @@ export default function OnboardingWizard() {
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="mt-6 flex items-center gap-3">
                 <button onClick={prev} className="rounded-2xl border border-white/10 px-4 py-3 text-sm uppercase tracking-[0.14em] text-muted">BACK</button>

@@ -304,11 +304,18 @@ class ActionAnalysis(BaseModel):
         description="List of exact Terraform resource types expected to be used (e.g., ['aws_instance', 'aws_lambda_function', 'aws_api_gateway_rest_api']). Must not be empty.",
     )
     needs_clarification: bool = Field(
+        default=False,
         description="True ONLY when critical information is missing that cannot be resolved dynamically"
     )
     questions: List[str] = Field(default_factory=list)
-    recommended_approach: str = Field(description="'python' | 'terraform' | 'both'")
-    reasoning: str = Field(description="Brief justification")
+    recommended_approach: str = Field(
+        default="terraform",
+        description="'python' | 'terraform' | 'both'"
+    )
+    reasoning: str = Field(
+        default="Standard infrastructure deployment.",
+        description="Brief justification"
+    )
     dynamic_resolutions: List[str] = Field(
         default_factory=list,
         description=(

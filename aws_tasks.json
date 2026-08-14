@@ -28,5 +28,15 @@
     "version": 1,
     "is_preset": false,
     "is_predefined": false
+  },
+  {
+    "id": "task_1786688484339",
+    "name": "Deploy Data Processor Lambda",
+    "description": "Create a new Node.js Lambda function to process incoming S3 events and update DynamoDB. Must include necessary IAM execution role and CloudWatch log group.",
+    "category": "Lambda",
+    "ownership": "Nagendra Panda",
+    "version": 1,
+    "is_preset": false,
+    "is_predefined": false
   }
 ]

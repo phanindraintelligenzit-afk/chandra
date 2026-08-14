@@ -2342,7 +2342,74 @@ AWS_ACTION_CATALOG = {
     ],
     "iam": [
         "iam:CreateUser", "iam:CreateRole", "iam:AttachUserPolicy", "iam:AttachRolePolicy",
-        "iam:PutUserPolicy", "iam:GetUser", "iam:ListAttachedUserPolicies"
+        "iam:PutUserPolicy", "iam:GetUser", "iam:ListAttachedUserPolicies", "iam:PassRole"
+    ],
+    "lambda": [
+        "lambda:CreateFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration",
+        "lambda:DeleteFunction", "lambda:GetFunction", "lambda:InvokeFunction",
+        "lambda:CreateEventSourceMapping", "lambda:DeleteEventSourceMapping"
+    ],
+    "dynamodb": [
+        "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+        "dynamodb:Scan", "dynamodb:Query", "dynamodb:CreateTable"
+    ],
+    "cloudwatch": [
+        "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "cloudwatch:PutMetricData"
+    ],
+    "vpc": [
+        "ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateRouteTable", "ec2:CreateInternetGateway",
+        "ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DeleteVpc", "ec2:DeleteSubnet"
+    ],
+    "rds": [
+        "rds:CreateDBInstance", "rds:DeleteDBInstance", "rds:ModifyDBInstance", 
+        "rds:DescribeDBInstances", "rds:CreateDBCluster", "rds:CreateDBSnapshot"
+    ],
+    "sqs": [
+        "sqs:CreateQueue", "sqs:DeleteQueue", "sqs:SendMessage", "sqs:ReceiveMessage",
+        "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ListQueues"
+    ],
+    "sns": [
+        "sns:CreateTopic", "sns:DeleteTopic", "sns:Publish", "sns:Subscribe",
+        "sns:Unsubscribe", "sns:ListTopics", "sns:ListSubscriptions"
+    ],
+    "ecs": [
+        "ecs:CreateCluster", "ecs:DeleteCluster", "ecs:RegisterTaskDefinition", 
+        "ecs:RunTask", "ecs:StartTask", "ecs:StopTask", "ecs:DescribeClusters"
+    ],
+    "elb": [
+        "elasticloadbalancing:CreateLoadBalancer", "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:RegisterTargets", "elasticloadbalancing:DescribeLoadBalancers"
+    ],
+    "cloudfront": [
+        "cloudfront:CreateDistribution", "cloudfront:UpdateDistribution",
+        "cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:CreateInvalidation"
+    ],
+    "elasticache": [
+        "elasticache:CreateCacheCluster", "elasticache:DeleteCacheCluster",
+        "elasticache:DescribeCacheClusters", "elasticache:CreateReplicationGroup"
+    ],
+    "apigateway": [
+        "apigateway:POST", "apigateway:GET", "apigateway:PUT", "apigateway:DELETE", "apigateway:PATCH"
+    ],
+    "kms": [
+        "kms:CreateKey", "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", 
+        "kms:DescribeKey", "kms:ScheduleKeyDeletion"
+    ],
+    "secretsmanager": [
+        "secretsmanager:CreateSecret", "secretsmanager:GetSecretValue", 
+        "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret"
+    ],
+    "route53": [
+        "route53:CreateHostedZone", "route53:ChangeResourceRecordSets",
+        "route53:ListHostedZones", "route53:ListResourceRecordSets"
+    ],
+    "stepfunctions": [
+        "states:CreateStateMachine", "states:UpdateStateMachine", "states:DeleteStateMachine",
+        "states:StartExecution", "states:DescribeExecution"
+    ],
+    "athena": [
+        "athena:StartQueryExecution", "athena:GetQueryExecution", 
+        "athena:GetQueryResults", "athena:CreateWorkGroup"
     ]
 }
 
