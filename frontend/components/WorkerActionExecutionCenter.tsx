@@ -16,7 +16,7 @@ type ExecutingAction = {
   steps: string[];
   jiraKey: string;
   jiraUrl?: string;
-  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "awaiting_gate2" | "awaiting_permission" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped" | "skipped";
+  status: "pending" | "running" | "completed" | "failed" | "awaiting_input" | "awaiting_gate2" | "awaiting_permission" | "exhausted" | "destroying" | "destroyed" | "stopping" | "stopped" | "skipped" | "dry_run";
   jobId: string;
   threadId: string;
   startedAt: number;
@@ -46,6 +46,7 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     running: "border-signal/45 bg-signal/12 text-signal",
     completed: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     failed: "border-signal/45 bg-signal/15 text-signal",
+    dry_run: "border-emerald-300/40 bg-emerald-300/12 text-emerald-300",
     awaiting_input: "border-blue-400/40 bg-blue-400/12 text-blue-300",
     awaiting_gate2: "border-purple-400/40 bg-purple-400/12 text-purple-300",
     awaiting_permission: "border-cyan-400/40 bg-cyan-400/12 text-cyan-300",
@@ -61,6 +62,7 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
     running: <Loader2 size={12} className="animate-spin" />,
     completed: <CheckCircle2 size={12} />,
     failed: <AlertTriangle size={12} />,
+    dry_run: <CheckCircle2 size={12} />,
     awaiting_input: <Clock size={12} />,
     awaiting_gate2: <Clock size={12} />,
     awaiting_permission: <Clock size={12} />,
@@ -83,6 +85,8 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
       ? "DESTROYING..."
       : status === "stopping"
       ? "STOPPING..."
+      : status === "dry_run"
+      ? "DRY RUN OK"
       : status.toUpperCase();
 
   return (
@@ -95,7 +99,7 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
 
 export type WorkerActionExecutionCenterHandle = {
   execute: (action: any) => void;
-  submitActionAnswers: (actionId: string, answers: string[]) => Promise<void>;
+  submitActionAnswers: (actionId: string, answers: string[], permissionSetId?: string) => Promise<void>;
 };
 
 export const WorkerActionExecutionCenter = forwardRef<
@@ -179,8 +183,8 @@ export const WorkerActionExecutionCenter = forwardRef<
 
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction,
-    submitActionAnswers: async (actionId, answers) => {
-      await submitAnswers(actionId, answers);
+    submitActionAnswers: async (actionId, answers, permissionSetId) => {
+      await submitAnswers(actionId, answers, permissionSetId);
     }
   }));
 
@@ -220,9 +224,9 @@ export const WorkerActionExecutionCenter = forwardRef<
           const dwJobs = res.requests.filter(r => {
             // Must be in a trackable state
             if (r.requires_approval) return false;
-            if (r.status !== "running" && r.status !== "completed" && r.status !== "failed") return false;
+            if (r.status !== "running" && r.status !== "completed" && r.status !== "failed" && r.status !== "awaiting_permission" && r.status !== "awaiting_gate2" && r.status !== "dry_run") return false;
             // Completed/failed jobs always surface (post-execution summary)
-            if (r.status === "completed" || r.status === "failed") return true;
+            if (r.status === "completed" || r.status === "failed" || r.status === "dry_run") return true;
             // For running jobs, apply smart gating:
             // - decision_mode is null → still in early processing (Phase 2) → exclude
             // - decision_mode is auto_execute → no approval needed → include
@@ -277,10 +281,11 @@ export const WorkerActionExecutionCenter = forwardRef<
                   steps: [],
                   jiraKey: job.external_id || job.job_id.substring(0,8),
                   jiraUrl: job.external_id ?? undefined,
-                  status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : (job.status === "skipped" ? "skipped" : "failed")),
+                  status: job.status as ExecutingAction["status"],
                   jobId: job.job_id,
                   threadId: job.job_id,
                   startedAt: job.started_at ? job.started_at * 1000 : Date.now(),
+                  questions: (job.status === "awaiting_input" || job.status === "awaiting_gate2" || job.status === "awaiting_permission") ? ["Please provide the required input to proceed."] : undefined,
                   logs: [],
                   progress: job.progress || 0,
                   jobMessage: job.message,
@@ -295,15 +300,15 @@ export const WorkerActionExecutionCenter = forwardRef<
                 newActions.forEach(a => {
                    if (a.status === "running") {
                      startPolling(a.id, a.jobId, a.startedAt, a.jiraKey);
-                   } else if (a.status === "completed") {
+                   } else if (a.status === "completed" || a.status === "dry_run") {
                      // Verify if the job was actually exhausted or failed
                      getJobStatus(a.jobId).then(jobStatus => {
                         const result = jobStatus.result as any;
                         const statusCode = result?.statusCode ?? 0;
-                        let finalStatus = "completed";
+                        let finalStatus = a.status;
                         if (statusCode === 207) finalStatus = "exhausted";
                         else if (statusCode !== 200 && statusCode !== 0) finalStatus = "failed";
-                        if (finalStatus !== "completed") {
+                        if (finalStatus !== a.status) {
                            setExecutingActions(curr => curr.map(currAction => currAction.id === a.id ? { ...currAction, status: finalStatus as any } : currAction));
                         }
                      }).catch(e => console.error("Failed to verify completed job status", e));
@@ -396,9 +401,11 @@ export const WorkerActionExecutionCenter = forwardRef<
         const jobDone =
           jobStatus.status === "completed" ||
           jobStatus.status === "failed" ||
+          jobStatus.status === "dry_run" ||
           jobStatus.status === "stopped" ||
           jobStatus.status === "skipped" ||
           jobStatus.status === "awaiting_permission" ||
+          jobStatus.status === "awaiting_gate2" ||
           jobStatus.status === "not_found";
 
         if (jobDone) {
@@ -428,8 +435,8 @@ export const WorkerActionExecutionCenter = forwardRef<
             finalStatus = "awaiting_gate2";
           } else if (jobStatus.status === "awaiting_permission") {
             finalStatus = "awaiting_permission";
-          } else if (jobStatus.status === "completed") {
-            if (statusCode === 200 || statusCode === 0) finalStatus = "completed";
+          } else if (jobStatus.status === "completed" || jobStatus.status === "dry_run") {
+            if (statusCode === 200 || statusCode === 0) finalStatus = jobStatus.status;
             else if (statusCode === 202) finalStatus = "awaiting_input";
             else if (statusCode === 207) finalStatus = "exhausted";
             else finalStatus = "failed";
@@ -481,6 +488,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                     jobMessage: jobStatus.message,
                     summary: llmSummary,
                     questions: extractedQuestions,
+                    gate2Review: result?.review || a.gate2Review,
                     sandboxPath: finalStatus === "stopped" ? "" : ((jobStatus as any).sandbox_path || result?.sandbox_path || a.sandboxPath || "")
                   };
                   updatedActionForCallback = updated;
@@ -494,9 +502,10 @@ export const WorkerActionExecutionCenter = forwardRef<
           
           scrollLogsToBottom(actionId);
 
-          if (finalStatus === "completed") {
+          if (finalStatus === "completed" || finalStatus === "dry_run") {
             // ✅ Read callbacks from refs — always latest props, not stale closure
-            if (onActionApprovedRef.current && currentAction) onActionApprovedRef.current({ ...currentAction, status: "completed", progress: 100 });
+            const currentAction = executingActionsRef.current.find(a => a.id === actionId);
+            if (onActionApprovedRef.current && currentAction) onActionApprovedRef.current({ ...currentAction, status: finalStatus, progress: 100 });
             if (onActionCompletedRef.current) onActionCompletedRef.current(kraCodeToFire, actionId, currentAction?.originalJobId);
           }
         } else {
@@ -550,12 +559,13 @@ export const WorkerActionExecutionCenter = forwardRef<
     );
     
     try {
-      await submitDigitalWorkerApproval(action.originalJobId || action.jobId, {
-        approved,
-        comment,
-        approver: "operator", // could get from user context if available
-      });
-      // Polling will pick up the running state and new logs
+        await submitDigitalWorkerApproval(action.originalJobId || action.jobId, {
+          approved,
+          comment,
+          approver: "operator", // could get from user context if available
+        });
+        // Start polling immediately to get logs and status updates
+        startPolling(action.id, action.jobId, Date.now(), action.jiraKey);
     } catch (err) {
       console.error("Failed to submit Gate 2 decision:", err);
       // Revert optimistic update
@@ -779,7 +789,7 @@ export const WorkerActionExecutionCenter = forwardRef<
     CRITICAL: "border-l-signal"
   };
 
-  const executedCount = executingActions.filter(a => a.status === "completed").length;
+  const executedCount = executingActions.filter(a => a.status === "completed" || a.status === "dry_run").length;
   const pendingCount = executingActions.filter(a => a.status === "pending" || a.status === "running" || a.status === "awaiting_input" || a.status === "awaiting_gate2" || a.status === "awaiting_permission" || a.status === "stopping").length;
   const failedCount = executingActions.filter(a => a.status === "failed" || a.status === "exhausted").length;
 
@@ -950,7 +960,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         {/* Action Buttons — only for terminal states that have buttons */}
                         {(action.sandboxPath || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
-                            {action.sandboxPath && action.status === "completed" && (
+                            {action.sandboxPath && (action.status === "completed" || action.status === "dry_run") && (
                               <>
                               <button 
                                 onClick={(e) => {
@@ -1062,7 +1072,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                               </button>
                             )}
                             
-                            {action.jobId && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
+                            {action.jobId && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped" || action.status === "dry_run") && (
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1161,6 +1171,110 @@ export const WorkerActionExecutionCenter = forwardRef<
                     </div>
                   </div>
 
+                  {action.status === "awaiting_gate2" && action.gate2Review && (
+                    <div className="m-3 rounded-lg border border-purple-400/30 bg-purple-400/10 p-3" onClick={e => e.stopPropagation()}>
+                      <div className="flex justify-between items-center mb-2">
+                        <div className="text-[0.65rem] uppercase tracking-[0.18em] text-purple-300 font-semibold flex items-center gap-2">
+                          <Shield size={14} className="text-purple-400" />
+                          GATE 2: EXECUTION REVIEW
+                        </div>
+                        <div className="text-[0.6rem] text-muted flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+                          Awaiting Approval
+                        </div>
+                      </div>
+                      
+                      <div className="bg-black/40 rounded p-2.5 mb-3 border border-white/5 space-y-2">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Jira Issue</div>
+                            <div className="text-[0.65rem] text-frost/90 font-mono">{action.gate2Review.jira_issue_key || "N/A"}</div>
+                          </div>
+                          <div>
+                            <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Permission Set</div>
+                            <div className="text-[0.65rem] text-frost/90 font-mono">
+                              {action.gate2Review.permission_set_id || "None"} 
+                              {action.gate2Review.permission_set_version && <span className="text-muted ml-1">v{action.gate2Review.permission_set_version}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="pt-2 border-t border-white/5">
+                          <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-1">Terraform Execution Plan</div>
+                          <div className="flex gap-4 text-[0.6rem] mb-2 font-mono">
+                            <span className="text-emerald-400">+{action.gate2Review.add_count} to add</span>
+                            <span className="text-amber-400">~{action.gate2Review.change_count} to change</span>
+                            <span className="text-rose-400">-{action.gate2Review.destroy_count} to destroy</span>
+                          </div>
+                        </div>
+                        
+                        {action.gate2Review.risk_level && (
+                          <div className="pt-2 border-t border-white/5">
+                            <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Assessed Risk</div>
+                            <div className={cx(
+                              "text-[0.65rem] font-bold uppercase",
+                              action.gate2Review.risk_level.toLowerCase() === 'high' ? "text-rose-400" :
+                              action.gate2Review.risk_level.toLowerCase() === 'medium' ? "text-amber-400" :
+                              "text-emerald-400"
+                            )}>
+                              {action.gate2Review.risk_level}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded border border-black/40 bg-black/40 overflow-hidden mb-3">
+                        <div className="bg-white/5 px-2 py-1.5 flex items-center justify-between border-b border-white/5">
+                          <div className="text-[0.6rem] font-mono text-purple-300">Terraform Plan</div>
+                          <div className="text-[0.55rem] text-muted uppercase">terraform diff</div>
+                        </div>
+                        <div className="p-2 font-mono text-[0.6rem] overflow-x-auto max-h-48 custom-scrollbar">
+                          <pre className="text-frost/80 m-0">
+                            {action.gate2Review.plan_output?.split('\n').map((line, i) => {
+                              let colorClass = "text-frost/80";
+                              if (line.startsWith('+')) colorClass = "text-emerald-400";
+                              else if (line.startsWith('-')) colorClass = "text-signal";
+                              else if (line.startsWith('~')) colorClass = "text-amber";
+                              return <div key={i} className={colorClass}>{line}</div>;
+                            })}
+                          </pre>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <input
+                          type="text"
+                          placeholder="Review comment (optional)..."
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-purple-400/50 transition"
+                          id={`gate2-comment-${action.id}`}
+                        />
+                        
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              submitGate2Decision(action.id, false);
+                            }}
+                            className="flex-1 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-rose-300 hover:bg-rose-500/20 transition flex items-center justify-center gap-1.5"
+                          >
+                            <XCircle size={12} />
+                            Reject
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              submitGate2Decision(action.id, true);
+                            }}
+                            className="flex-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-emerald-300 hover:bg-emerald-500/20 transition font-semibold shadow-[0_0_10px_rgba(16,185,129,0.2)] flex items-center justify-center gap-1.5"
+                          >
+                            <CheckCircle size={12} />
+                            Approve & Execute
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {open && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
@@ -1187,85 +1301,6 @@ export const WorkerActionExecutionCenter = forwardRef<
                         </div>
                       )}
 
-                      {action.status === "awaiting_gate2" && action.gate2Review && (
-                        <div className="mb-3 rounded-lg border border-purple-400/30 bg-purple-400/10 p-3">
-                          <div className="flex justify-between items-center mb-2">
-                            <div className="text-[0.65rem] uppercase tracking-[0.18em] text-purple-300 font-semibold flex items-center gap-2">
-                              <Shield size={14} className="text-purple-400" />
-                              GATE 2: EXECUTION REVIEW
-                            </div>
-                            <div className="text-[0.6rem] text-muted flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
-                              Awaiting Approval
-                            </div>
-                          </div>
-                          
-                          <div className="bg-black/40 rounded p-2.5 mb-3 border border-white/5 space-y-2">
-                            <div className="grid grid-cols-2 gap-4">
-                              <div>
-                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Jira Issue</div>
-                                <div className="text-[0.65rem] text-frost/90 font-mono">{action.gate2Review.jira_issue_key || "N/A"}</div>
-                              </div>
-                              <div>
-                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Permission Set</div>
-                                <div className="text-[0.65rem] text-frost/90 font-mono">
-                                  {action.gate2Review.permission_set_id || "None"} 
-                                  {action.gate2Review.permission_set_version && <span className="text-muted ml-1">v{action.gate2Review.permission_set_version}</span>}
-                                </div>
-                              </div>
-                            </div>
-                            
-                            <div className="pt-2 border-t border-white/5">
-                              <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-1">Terraform Execution Plan</div>
-                              <div className="flex gap-4 text-[0.6rem] mb-2 font-mono">
-                                <span className="text-emerald-400">+{action.gate2Review.add_count} to add</span>
-                                <span className="text-amber-400">~{action.gate2Review.change_count} to change</span>
-                                <span className="text-rose-400">-{action.gate2Review.destroy_count} to destroy</span>
-                              </div>
-                            </div>
-                            
-                            {action.gate2Review.risk_level && (
-                              <div className="pt-2 border-t border-white/5">
-                                <div className="text-[0.55rem] uppercase tracking-wider text-muted mb-0.5">Assessed Risk</div>
-                                <div className={cx(
-                                  "text-[0.65rem] font-bold uppercase",
-                                  action.gate2Review.risk_level.toLowerCase() === 'high' ? "text-rose-400" :
-                                  action.gate2Review.risk_level.toLowerCase() === 'medium' ? "text-amber-400" :
-                                  "text-emerald-400"
-                                )}>
-                                  {action.gate2Review.risk_level}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          
-                          <div className="space-y-3">
-                            <input
-                              type="text"
-                              placeholder="Review comment (optional)..."
-                              className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[0.65rem] text-frost outline-none focus:border-purple-400/50 transition"
-                              id={`gate2-comment-${action.id}`}
-                            />
-                            
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => submitGate2Decision(action.id, false)}
-                                className="flex-1 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-rose-300 hover:bg-rose-500/20 transition flex items-center justify-center gap-1.5"
-                              >
-                                <XCircle size={12} />
-                                Reject
-                              </button>
-                              <button
-                                onClick={() => submitGate2Decision(action.id, true)}
-                                className="flex-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-emerald-300 hover:bg-emerald-500/20 transition font-semibold shadow-[0_0_10px_rgba(16,185,129,0.2)] flex items-center justify-center gap-1.5"
-                              >
-                                <CheckCircle size={12} />
-                                Approve & Execute
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
 
                       {(action.status === "awaiting_input" || action.status === "awaiting_permission") && action.questions && action.questions.length > 0 && (
                         <div className="mb-3 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3">

@@ -1116,7 +1116,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         result = job.get("result") or {}
         
         is_paused = (
-            result.get("status") == "needs_clarification" or
+            result.get("status") in ("needs_clarification", "awaiting_gate2_review") or
             result.get("action_required") == "awaiting_permission_set"
         )
         
@@ -1160,6 +1160,13 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
             resume_payload: Any = answers
             if request.permission_set_id:
                 resume_payload = {"permission_set_id": request.permission_set_id}
+            elif result.get("status") == "awaiting_gate2_review":
+                is_approved = bool(answers and answers[0].lower() == "approved")
+                resume_payload = {
+                    "approved": is_approved,
+                    "approver": "human",
+                    "comment": "Approved via UI" if is_approved else "Rejected via UI"
+                }
                 
             final_state = _digital_worker.invoke(
                 LGCommand(resume=resume_payload),
@@ -1972,6 +1979,13 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+def _extract_external_id(submission: CloudRequestSubmission) -> Optional[str]:
+    if submission.source == "jira":
+        issue = submission.payload.get("issue")
+        if isinstance(issue, dict):
+            return issue.get("key")
+    return None
+
 def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONResponse:
     if submission.source not in SUPPORTED_SOURCES:
         return JSONResponse(status_code=400, content={
@@ -1983,10 +1997,23 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
         return JSONResponse(status_code=503, content={
             "status": "error", "message": "Digital Worker graph is not initialized",
         })
-    job_id = str(uuid.uuid4())
-    logger.info("Digital Worker request submitted -> job_id=%s source=%s", job_id, submission.source)
+        
+    external_id = _extract_external_id(submission)
+    
     import time
     with _job_store_lock:
+        if external_id:
+            for existing_job_id, existing_job in _job_store.items():
+                if existing_job.get("external_id") == external_id and existing_job.get("status") in ["pending", "running", "running_gate2"]:
+                    logger.info("Duplicate request for %s ignored (active job: %s)", external_id, existing_job_id)
+                    return JSONResponse(status_code=202, content={
+                        "job_id": existing_job_id, "status": "accepted",
+                        "message": "Already processing this request.",
+                        "poll_url": f"/jobs/status/{existing_job_id}",
+                    })
+                    
+        job_id = str(uuid.uuid4())
+        logger.info("Digital Worker request submitted -> job_id=%s source=%s external_id=%s", job_id, submission.source, external_id)
         _job_store[job_id] = {
             # ``kind`` tags this job as a Digital Worker request so the
             # GET /requests discovery endpoint can list it apart from the
@@ -1994,6 +2021,7 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "kind": "digital_worker",
             "source": submission.source,
             "title": _dw_submission_title(submission),
+            "external_id": external_id,
             "dry_run": submission.dry_run,
             "submitted_at": time.time(),
             "status": "pending", "progress": 0,

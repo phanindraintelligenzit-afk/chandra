@@ -282,6 +282,7 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFA
   try {
     const response = await fetch(getApiUrl(path), {
       ...init,
+      cache: "no-store",
       signal: controller.signal,
       headers: {
         Accept: "application/json",

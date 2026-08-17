@@ -6,7 +6,9 @@
     "aws_service": "S3",
     "actions": [
       "s3:*",
-      "s3:CreateBucket"
+      "s3:CreateBucket",
+      "kms:GenerateDataKey",
+      "kms:Decrypt"
     ],
     "resource_arn": "arn:aws:s3:::*",
     "is_predefined": true,

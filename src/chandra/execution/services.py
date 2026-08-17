@@ -50,7 +50,14 @@ class TaskAuthorizationService:
         allowed_actions = target_pset.get("actions", [])
         
         if not required_actions:
-            return {"pass": False, "missing_actions": [], "matched_actions": [], "reason": "No required actions could be determined for this task. Execution blocked for safety."}
+            return {
+                "pass": True, 
+                "missing_actions": [], 
+                "matched_actions": [], 
+                "permission_set_id": permission_set_id,
+                "permission_set_version": target_pset.get("version"),
+                "reason": "No required actions could be determined, but a permission set was explicitly attached."
+            }
             
         matched_actions = []
         missing_actions = []

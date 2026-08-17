@@ -1293,6 +1293,11 @@ function OperationsCopilot({
                           }
                         }}
                       />
+                    ) : req.status === "awaiting_gate2" ? (
+                      <div className="mt-2 text-[0.65rem] text-frost bg-black/40 border border-purple-500/30 rounded p-3 text-center">
+                        <div className="text-purple-300 font-semibold mb-1">EXECUTION PLAN READY</div>
+                        An execution plan has been generated. Please expand the corresponding card in the Worker Action Execution Center to review the Terraform diff and provide your Gate 2 Approval.
+                      </div>
                     ) : (
                       <>
                         {req.questions.map((q, i) => (
@@ -1309,6 +1314,14 @@ function OperationsCopilot({
                                   ...prev,
                                   [`${req.actionId}-${i}`]: val
                                 }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  if (onSubmitHitl) {
+                                    const answer = hitlAnswers[`${req.actionId}-${i}`] || "";
+                                    onSubmitHitl(req.actionId, [answer]);
+                                  }
+                                }
                               }}
                             />
                           </div>
@@ -3043,9 +3056,9 @@ export function ChandraExperience() {
         latestEvent={events[0]} 
         unread={unread}
         pendingHitlRequests={pendingHitlRequests}
-        onSubmitHitl={async (actionId, answers) => {
+        onSubmitHitl={async (actionId, answers, permissionSetId) => {
           if (workerRef.current) {
-            await workerRef.current.submitActionAnswers(actionId, answers);
+            await workerRef.current.submitActionAnswers(actionId, answers, permissionSetId);
             // The execution center will call onInputResolved once it updates,
             // but we can also optimistically remove it here for instant feedback.
             setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));

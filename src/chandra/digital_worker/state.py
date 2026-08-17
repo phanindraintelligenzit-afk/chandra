@@ -59,6 +59,7 @@ class DigitalWorkerState(TypedDict, total=False):
 
     status: str
     result: dict[str, Any]
+    execution_start_time: float
     required_permissions: list[RequiredPermission]
     permission_set_id: str
     gate_1_passed: bool

@@ -92,9 +92,14 @@ def receive_request(state: DigitalWorkerState) -> dict[str, Any]:
         request_id=request.request_id,
         source=request.source.value,
     )
+    
+    import time
+    start_time = state.get("execution_start_time") or time.time()
+    
     return {
         "request": request,
         "status": "in_progress",
+        "execution_start_time": start_time,
         "audit_trail": [
             _audit(
                 "receive_request",
