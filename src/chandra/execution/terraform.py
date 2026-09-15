@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -82,7 +83,7 @@ def validate_terraform(
     import contextlib
 
     @contextlib.contextmanager
-    def _get_workdir():
+    def _get_workdir() -> Iterator[Path]:
         if workdir:
             yield Path(workdir)
         else:

@@ -207,10 +207,10 @@ class TestDigitalWorkerSecurityInvariants:
         from src.chandra.digital_worker.graph import execute_automation
 
         class DummyResult:
-            statusCode = 200
+            statusCode = 200  # noqa: N815 - mirrors the upstream ExecutionAgents result shape
             summary = "test"
             exception = None
-            execution_results = []
+            execution_results: ClassVar[list[Any]] = []
             sandbox_path = ""
 
             def model_dump(self):
@@ -239,10 +239,10 @@ class TestDigitalWorkerSecurityInvariants:
         from src.chandra.digital_worker.graph import execute_automation
 
         class DummyResult:
-            statusCode = 200
+            statusCode = 200  # noqa: N815 - mirrors the upstream ExecutionAgents result shape
             summary = "test"
             exception = None
-            execution_results = []
+            execution_results: ClassVar[list[Any]] = []
             sandbox_path = ""
 
             def model_dump(self):
@@ -267,8 +267,7 @@ class TestDigitalWorkerSecurityInvariants:
         from langgraph.checkpoint.memory import MemorySaver
         from src.chandra.digital_worker.graph import build_digital_worker_graph
 
-        graph = build_digital_worker_graph(checkpointer=MemorySaver())
-        pass
+        build_digital_worker_graph(checkpointer=MemorySaver())
 
     def test_llm_cannot_execute_terraform_apply_without_auth(self) -> None:
         """Terraform Apply requires CHANDRA_TERRAFORM_APPLY_ENABLED and human Gate 2 authorization."""

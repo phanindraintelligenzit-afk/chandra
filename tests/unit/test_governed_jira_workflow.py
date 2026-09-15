@@ -97,7 +97,7 @@ def gov_workflow(
     return build_digital_worker_graph(checkpointer=MemorySaver())
 
 
-class TestPhase3B_Gate1:
+class TestPhase3BGate1:
     """Phase 3B: Permission analysis → Copilot → Permission Set → Gate 1."""
 
     def test_jira_aws_pauses_at_approval(self, gov_workflow: Any) -> None:
@@ -107,7 +107,7 @@ class TestPhase3B_Gate1:
         assert "approval_gate" in snapshot.next
 
     def test_approved_jira_enters_permission_analysis(self, gov_workflow: Any) -> None:
-        """After APPROVE, AWS platform request enters permission_analysis, not execute_automation."""
+        """After APPROVE, an AWS request enters permission_analysis, not execute_automation."""
         gov_workflow.invoke(dict(JIRA_AWS_PAYLOAD), config=THREAD)
         # Approve
         gov_workflow.invoke(
@@ -176,7 +176,7 @@ class TestPhase3B_Gate1:
         assert "permission_selection_pause" in snapshot.next
 
 
-class TestPhase3C_TerraformPreparation:
+class TestPhase3CTerraformPreparation:
     """Phase 3C: Gate 1 PASS → Terraform generate → validate → plan → STOP at Gate 2."""
 
     def _advance_to_gate1_pass(self, wf: Any) -> None:
@@ -219,7 +219,7 @@ class TestPhase3C_TerraformPreparation:
         assert values.get("boto3_verification") is None
 
 
-class TestPhase3D_Gate2:
+class TestPhase3DGate2:
     """Phase 3D: Gate 2 human execution review."""
 
     def _advance_to_gate2(self, wf: Any) -> None:
@@ -269,7 +269,7 @@ class TestPhase3D_Gate2:
         assert apply_result.get("dry_run") is True
 
 
-class TestPhase3E_Execution:
+class TestPhase3EExecution:
     """Phase 3E: Terraform apply → boto3 verification → Jira update."""
 
     def _advance_to_gate2_approved(self, wf: Any) -> dict[str, Any]:

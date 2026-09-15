@@ -10,8 +10,8 @@ missing configuration or an unreachable Jira yields a ``skipped`` /
 from __future__ import annotations
 
 import os
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from jira import JIRA
 from src.chandra.digital_worker.schemas import (
@@ -23,7 +23,7 @@ from src.chandra.logging import get_logger
 logger = get_logger(__name__)
 
 
-class ChandraEvent(str, Enum):
+class ChandraEvent(StrEnum):
     REQUEST_RECEIVED = "REQUEST_RECEIVED"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     APPROVAL_GRANTED = "APPROVAL_GRANTED"
@@ -112,7 +112,8 @@ def update_request_ticket(
                 # Fallback to a shorter comment if the logs were too long
                 client.add_comment(
                     issue_key,
-                    "Chandra Governed Workflow completed.\n(Terminal logs omitted due to Jira length limits. Check Chandra dashboard for full logs).",
+                    "Chandra Governed Workflow completed.\n(Terminal logs omitted due to Jira "
+                    "length limits. Check Chandra dashboard for full logs).",
                 )
 
             if resolved:
@@ -172,7 +173,7 @@ def _transition(client: Any, issue_key: str, status_name: str) -> None:
 class JiraActivityRecorder:
     """Centralized service for writing execution milestones to Jira Activity."""
 
-    _recorded_events: set[str] = set()
+    _recorded_events: ClassVar[set[str]] = set()
 
     @classmethod
     def record_event(
@@ -224,7 +225,9 @@ class JiraActivityRecorder:
             logger.error("tracker.record_worklog_failed", issue=issue_key, error=str(exc))
 
     @staticmethod
-    def _format_comment(event: ChandraEvent, job_id: str, **kwargs: Any) -> str | None:
+    def _format_comment(  # noqa: PLR0911 - one branch per event type
+        event: ChandraEvent, job_id: str, **kwargs: Any
+    ) -> str | None:
         if event == ChandraEvent.REQUEST_RECEIVED:
             return (
                 "CHANDRA EXECUTION UPDATE\n\n"

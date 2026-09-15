@@ -20,5 +20,5 @@ def test_gate2_retry_classification():
     assert result.get("last_error_class") == "Gate2PlanValidationFailed"
     assert result.get("consecutive_same_error") == 3
     # With stuck threshold=3, we expect the pipeline to be halted/failed
-    # Actually _evaluator_node handles "stuck_threshold" and if consecutive >= STUCK_THRESHOLD, it returns "failed"
+    # _evaluator_node applies "stuck_threshold": consecutive >= STUCK_THRESHOLD -> "failed"
     assert result.get("final_status") == "stuck"

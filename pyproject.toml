@@ -120,6 +120,11 @@ explicit_package_bases = true
 mypy_path = "."
 
 [[tool.mypy.overrides]]
+# signal.SIGALRM/setitimer do not exist on Windows; the ignores are needed there.
+module = ["src.chandra.observability"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
 module = [
     "boto3.*",
     "botocore.*",

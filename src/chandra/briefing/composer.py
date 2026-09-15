@@ -309,7 +309,8 @@ def analyze_required_permissions(
         llm = get_llm()
         prompt = (
             "You are an AWS Security Expert. Analyze the following request and execution plan.\n"
-            "Identify the absolute minimum IAM permissions required to successfully execute the plan.\n"
+            "Identify the absolute minimum IAM permissions required to successfully execute "
+            "the plan.\n"
             "Return a JSON object with a single 'permissions' key containing a list of objects.\n"
             "Each object must have:\n"
             "- 'action': The exact IAM action (e.g., 's3:PutObject')\n"
@@ -329,8 +330,9 @@ def analyze_required_permissions(
         import json_repair
 
         parsed = json_repair.loads(text)
-        if isinstance(parsed, dict) and "permissions" in parsed:
-            return parsed["permissions"]
+        if isinstance(parsed, dict) and isinstance(parsed.get("permissions"), list):
+            perms: list[dict[str, Any]] = parsed["permissions"]
+            return perms
         return []
     except Exception as exc:
         logger.warning("llm.permission_analysis_failed", error=str(exc))
@@ -561,3 +563,51 @@ def _truncate(text: str, n: int) -> str:
     if len(text) <= n:
         return text
     return text[: n - 1] + "…"
+
+
+# ---------------------------------------------------------------------------
+# Execution log summary (Digital Worker Jira/Slack final comment)
+# ---------------------------------------------------------------------------
+
+_EXEC_LOG_TAIL_CHARS = 12_000
+_EXEC_FALLBACK_LINES = 15
+
+
+def _deterministic_execution_summary(logs: str) -> str:
+    """Last lines of the log, no LLM. Used when a provider is unreachable."""
+    tail = [ln for ln in logs.strip().splitlines() if ln.strip()][-_EXEC_FALLBACK_LINES:]
+    body = "\n".join(tail) if tail else "(no execution output captured)"
+    return f"*Execution summary (raw tail):*\n{{code}}\n{body}\n{{code}}"
+
+
+def compose_execution_summary(request_description: str, execution_logs: str) -> str:
+    """Plain-language narrative of what an execution did, for the final tracker comment.
+
+    Narrative only: this never decides status, success or next steps — those are
+    set deterministically upstream in ``validate_result``. Falls back to a raw
+    log tail when no LLM provider is reachable.
+    """
+    logs = execution_logs[-_EXEC_LOG_TAIL_CHARS:]
+    try:
+        from src.chandra.llm import get_llm
+
+        llm = get_llm()
+        prompt = (
+            "You are summarising the execution log of an AWS change performed by an "
+            "automated cloud engineer for an operations reviewer.\n"
+            "Write 3-6 short bullet points, plain language, no marketing tone. Cover: "
+            "what was changed, which resources were touched, and any warnings or "
+            "errors visible in the log. Do NOT state whether the change succeeded or "
+            "failed overall and do NOT recommend next steps — those are reported "
+            "separately. Do not invent details not present in the log.\n\n"
+            f"Request:\n{request_description}\n\nExecution log (tail):\n{logs}"
+        )
+        response = llm.invoke(prompt)
+        text = response.content if isinstance(response.content, str) else str(response.content)
+        text = text.strip()
+        if not text:
+            return _deterministic_execution_summary(logs)
+        return f"*Execution summary:*\n{text}"
+    except Exception as exc:
+        logger.warning("llm.execution_summary_failed", error=str(exc))
+        return _deterministic_execution_summary(logs)

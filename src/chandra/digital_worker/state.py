@@ -77,4 +77,7 @@ class DigitalWorkerState(TypedDict, total=False):
     # Phase 3E: Execution + verification
     terraform_apply_result: dict[str, Any]
     boto3_verification: dict[str, Any]
+    gate_1_evidence: dict[str, Any]
+    permission_set_document: dict[str, Any]
+    sandbox_path: str | None
     final_status: str

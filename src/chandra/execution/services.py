@@ -4,7 +4,7 @@ Reusable services for executing and verifying AWS tasks via Terraform.
 
 import json
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 import boto3
 
@@ -24,13 +24,14 @@ class TaskAuthorizationService:
     def _load_permissions(self) -> dict[str, Any]:
         try:
             with open(self.permissions_path, encoding="utf-8") as f:
-                return json.load(f)
+                data: dict[str, Any] = json.load(f)
+                return data
         except Exception as e:
             logger.error(f"Failed to load permissions from {self.permissions_path}: {e}")
             return {}
 
     def is_authorized(
-        self, task_name: str, permission_set_id: str, required_actions: list[str] = None
+        self, task_name: str, permission_set_id: str, required_actions: list[str] | None = None
     ) -> dict[str, Any]:
         """
         Check if the required actions are authorized by the given permission_set_id.
@@ -70,7 +71,10 @@ class TaskAuthorizationService:
                 "matched_actions": [],
                 "permission_set_id": permission_set_id,
                 "permission_set_version": target_pset.get("version"),
-                "reason": "No required actions could be determined, but a permission set was explicitly attached.",
+                "reason": (
+                    "No required actions could be determined, but a permission set "
+                    "was explicitly attached."
+                ),
             }
 
         matched_actions = []
@@ -79,7 +83,7 @@ class TaskAuthorizationService:
         import fnmatch
 
         for req_action in required_actions:
-            # required_actions is usually a string, or it could be a dict if it comes straight from LLM.
+            # Usually a string; may be a dict when it comes straight from the LLM.
             req_str = req_action.get("action") if isinstance(req_action, dict) else req_action
             if not req_str:
                 continue
@@ -113,7 +117,7 @@ class TerraformPlanPolicyValidator:
     before apply. Parses `terraform show -json tfplan`.
     """
 
-    ALLOWED_DEPENDENCIES = {
+    ALLOWED_DEPENDENCIES: ClassVar[dict[str, set[str]]] = {
         "EC2": {
             "aws_instance",
             "aws_key_pair",
@@ -134,7 +138,7 @@ class TerraformPlanPolicyValidator:
         },
     }
 
-    HELPER_RESOURCES = {
+    HELPER_RESOURCES: ClassVar[set[str]] = {
         "random_id",
         "random_string",
         "tls_private_key",
@@ -146,7 +150,7 @@ class TerraformPlanPolicyValidator:
         self.permissions_path = permissions_path
         self.auth_service = TaskAuthorizationService(permissions_path)
 
-    def validate_plan(
+    def validate_plan(  # noqa: PLR0912
         self, plan_json_path: str, permission_set_id: str, approved_task_name: str
     ) -> tuple[bool, str]:
         """
@@ -178,18 +182,20 @@ class TerraformPlanPolicyValidator:
                         after_props = change.get("change", {}).get("after", {}) or {}
                         # Validate that helper resources do not write files outside the sandbox
                         for key, val in after_props.items():
-                            if isinstance(val, str) and key in ("filename", "content_base64"):
-                                if "filename" in key:
-                                    if (
-                                        ".." in val
-                                        or val.startswith("/")
-                                        or val.startswith("\\")
-                                        or ":" in val
-                                    ):
-                                        return (
-                                            False,
-                                            f"Unauthorized helper path in {resource_type}: {val}",
-                                        )
+                            if (
+                                isinstance(val, str)
+                                and key == "filename"
+                                and (
+                                    ".." in val
+                                    or val.startswith("/")
+                                    or val.startswith("\\")
+                                    or ":" in val
+                                )
+                            ):
+                                return (
+                                    False,
+                                    f"Unauthorized helper path in {resource_type}: {val}",
+                                )
                     elif resource_type not in allowed_res and not any(
                         resource_type.startswith(ar) for ar in allowed_res
                     ):
@@ -229,7 +235,7 @@ class AwsResourceVerifier:
     def __init__(self, region: str = "us-east-1"):
         self.region = region
 
-    def verify_s3_bucket(self, bucket_name: str) -> bool:
+    def verify_s3_bucket(self, bucket_name: str) -> str:
         try:
             s3 = boto3.client("s3", region_name=self.region)
             s3.head_bucket(Bucket=bucket_name)
@@ -273,7 +279,9 @@ class AwsResourceVerifier:
             logger.error(f"Lambda verification failed for {function_name}: {e}")
             return "FAILED"
 
-    def verify_resource(self, task_name: str, outputs: dict[str, Any]) -> str:
+    def verify_resource(  # noqa: PLR0911, PLR0912 - one branch per resource family
+        self, task_name: str, outputs: dict[str, Any]
+    ) -> str:
         """
         Verify the resource created by the task exists.
         Outputs come from `terraform output -json`.

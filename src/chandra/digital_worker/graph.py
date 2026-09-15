@@ -17,6 +17,7 @@ router in this module are deterministic, mirroring the core graph's
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -363,7 +364,7 @@ def route_approval(state: DigitalWorkerState) -> str:
         elif classification is not None:
             platform = getattr(classification, "platform", None)
 
-        if platform == CloudPlatform.AWS or platform == "aws":
+        if platform in (CloudPlatform.AWS, "aws"):
             return "permission_analysis"
         return "execute_automation"
     return "generate_guidance"
@@ -473,7 +474,8 @@ def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
         auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
 
         logger.error(
-            "DEBUG GATE 1: permission_set_id=%s, permission_set_document=%s, required=%s, auth_result=%s",
+            "DEBUG GATE 1: permission_set_id=%s, permission_set_document=%s, "
+            "required=%s, auth_result=%s",
             permission_set_id,
             permission_set_document,
             required_actions,
@@ -820,7 +822,6 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
     import tempfile
     from pathlib import Path
 
-    request = state["request"]
     hcl = state.get("terraform_hcl", "")
     apply_enabled = os.environ.get("CHANDRA_TERRAFORM_APPLY_ENABLED", "false").lower() == "true"
 
@@ -864,7 +865,7 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
     import contextlib
 
     @contextlib.contextmanager
-    def _get_workdir():
+    def _get_workdir() -> Iterator[Path]:
         sandbox_path = state.get("sandbox_path")
         if sandbox_path:
             yield Path(sandbox_path)
@@ -940,10 +941,8 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
 
         outputs = {}
         if outputs_proc.returncode == 0:
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 outputs = json.loads(outputs_proc.stdout)
-            except json.JSONDecodeError:
-                pass
 
     return {
         "terraform_apply_result": {
@@ -1070,7 +1069,7 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
             service=", ".join(classification.services)
             if classification.services
             else classification.platform.value,
-            resource=plan.steps[0].resource_type if plan.steps else "Unknown",
+            resource=plan.steps[0].action if plan.steps else "Unknown",
         )
 
     if dry_run:
@@ -1366,7 +1365,7 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
     }
 
 
-def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
+def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     execution = state.get("execution")
     validation = state.get("validation")
 
@@ -1376,12 +1375,17 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
         verification = state.get("boto3_verification", {})
         gate_2 = state.get("gate_2_result", {})
         resolved = final_status == "COMPLETED"
+        tf_apply_label = (
+            "SUCCESS"
+            if state.get("terraform_apply_result", {}).get("success")
+            else "FAILED/DRY_RUN"
+        )
         comment = (
             f"Chandra Governed Workflow — Final Status: {final_status}\n\n"
             f"Gate 1: {'PASS' if state.get('gate_1_passed') else 'FAIL'}\n"
             f"Gate 2: {'APPROVED' if gate_2.get('approved') else 'REJECTED'} "
             f"(by {gate_2.get('approver', 'unknown')})\n"
-            f"Terraform Apply: {'SUCCESS' if state.get('terraform_apply_result', {}).get('success') else 'FAILED/DRY_RUN'}\n"
+            f"Terraform Apply: {tf_apply_label}\n"
             f"boto3 Verification: {verification.get('boto3_verification_status', 'N/A')}\n"
             f"Final: {final_status}"
         )
@@ -1466,7 +1470,10 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
             f"Validation passed: {passed}."
         )
         if execution and execution.execution_logs:
-            comment += f"\n\n----\n*Execution Details:*\n{{code}}\n{execution.execution_logs[-25000:]}\n{{code}}"
+            comment += (
+                f"\n\n----\n*Execution Details:*\n{{code}}\n"
+                f"{execution.execution_logs[-25000:]}\n{{code}}"
+            )
 
     request = state["request"]
     if request.source.value == "jira" and request.external_id:
@@ -1483,7 +1490,8 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
                 request.external_id,
                 state.get("job_id", request.request_id),
                 duration_seconds,
-                f"Processed {request.external_id}, verified permissions, executed operations, and validated.",
+                f"Processed {request.external_id}, verified permissions, "
+                "executed operations, and validated.",
             )
 
         if is_rejected:
@@ -1642,7 +1650,7 @@ def persist(state: DigitalWorkerState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
+def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:  # noqa: PLR0915
     """Compile the Digital Worker request workflow.
 
     Pass an explicit checkpointer in tests (e.g. a ``MemorySaver``);

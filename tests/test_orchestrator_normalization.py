@@ -67,7 +67,7 @@ def test_run_commands_sandbox_enforcement(tmp_path):
 
     commands = [{"command": "echo Hello", "working_dir": "some/child/dir", "order": 1}]
 
-    results, halted = agent._run_commands(commands, tmp_path, 30)
+    results, _halted = agent._run_commands(commands, tmp_path, 30)
 
     assert len(results) == 1
     # working_dir is forcibly evaluated to the absolute path of tmp_path

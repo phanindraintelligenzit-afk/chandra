@@ -13,7 +13,9 @@ def test_frontend_payload_permission_propagation():
     payload = {
         "action": {
             "actionName": "Create S3 bucket",
-            "actionDescription": "Provision a new S3 bucket named 'chandra-test-bucket' in us-east-1",
+            "actionDescription": (
+                "Provision a new S3 bucket named 'chandra-test-bucket' in us-east-1"
+            ),
             "service": "S3",
             "region": "us-east-1",
             "isAwsTask": True,

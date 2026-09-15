@@ -30,7 +30,7 @@ def test_aws_task_never_routes_to_detector_path(mock_action_executor, mock_execu
 @patch("fastapi_app.ExecutionAgents")
 @patch("src.chandra.graphs.action_nodes.action_executor.action_executor_node")
 def test_kra_detector_still_routes_correctly(mock_action_executor, mock_execution_agents):
-    """Test that a KRA remediation request (isAwsTask=False) with detectorId routes to action_executor_node."""
+    """KRA remediation (isAwsTask=False) with detectorId routes to action_executor_node."""
     request = OrchestrateRequest(
         action=ActionInput(
             actionName="Remediate KRA",
