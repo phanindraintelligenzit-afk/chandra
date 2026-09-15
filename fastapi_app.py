@@ -289,100 +289,76 @@ def health_ready():
     })
 
 
-# ── Custom KRA persistence (customKras.json) ──────────────────────────────────
-CUSTOM_KRA_FILE = Path(__file__).parent / "customKras.json"
-_custom_kra_lock = threading.Lock()
+# ── Custom KRA persistence (Postgres: custom_kras) ───────────────────────────
+# PRD §26.8: PostgreSQL is the system of record for DFTE configuration.
+# The JSON files that used to live here are imported once, read-through, if the
+# table is empty (MIGRATION SHIM — removed at the end of Phase 1).
+from src.chandra.catalog import DEFAULT_TENANT, DIGITAL_WORKER_SETTINGS_KEY, ConfigRepository
+
+_LEGACY_JSON_DIR = Path(__file__).parent
+_LEGACY_JSON = {
+    "aws_tasks": _LEGACY_JSON_DIR / "aws_tasks.json",
+    "permission_sets": _LEGACY_JSON_DIR / "aws_permissions.json",
+    "custom_kras": _LEGACY_JSON_DIR / "customKras.json",
+    "agent_memory": _LEGACY_JSON_DIR / "agent_memory.json",
+    "digital_worker_config": _LEGACY_JSON_DIR / "digital_worker_config.json",
+}
+_legacy_import_done = threading.Event()
+_legacy_import_lock = threading.Lock()
+
+
+def _read_legacy_json(path: Path) -> Any:
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("legacy_json.unreadable path=%s err=%s", path, exc)
+    return None
+
+
+def _run_legacy_json_import_once(repo: ConfigRepository) -> None:
+    """MIGRATION SHIM: seed empty tables from the repo-root JSON files, once per process."""
+    if _legacy_import_done.is_set():
+        return
+    with _legacy_import_lock:
+        if _legacy_import_done.is_set():
+            return
+        try:
+            imported = repo.import_legacy_json(
+                aws_tasks=_read_legacy_json(_LEGACY_JSON["aws_tasks"]),
+                permission_sets=_read_legacy_json(_LEGACY_JSON["permission_sets"]),
+                custom_kras=_read_legacy_json(_LEGACY_JSON["custom_kras"]),
+                agent_memory=_read_legacy_json(_LEGACY_JSON["agent_memory"]),
+                digital_worker_config=_read_legacy_json(_LEGACY_JSON["digital_worker_config"]),
+            )
+            if imported:
+                logger.info("legacy_json.imported %s", imported)
+        except Exception as exc:  # DB unreachable: endpoints will surface their own error
+            logger.warning("legacy_json.import_failed err=%s", exc)
+            return
+        _legacy_import_done.set()
+
+
+def _config_repo(tenant_id: str = DEFAULT_TENANT) -> ConfigRepository:
+    repo = ConfigRepository(tenant_id=tenant_id)
+    _run_legacy_json_import_once(repo)
+    return repo
 
 
 def _load_custom_kras_from_disk() -> list:
-    """Load custom KRAs from the JSON file on disk. Returns an empty list if the file is missing or invalid."""
-    try:
-        if not CUSTOM_KRA_FILE.exists():
-            return []
-        with CUSTOM_KRA_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            return []
-        # Normalize: ensure each entry is { name, description, selected? }
-        normalized: list = []
-        seen: set = set()
-        for entry in data:
-            if isinstance(entry, str):
-                name = entry.strip()
-                if not name:
-                    continue
-                key = name.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                normalized.append({"name": name, "description": name, "selected": True})
-            elif isinstance(entry, dict):
-                name = str(entry.get("name") or entry.get("code") or "").strip()
-                if not name:
-                    continue
-                key = name.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                description = str(entry.get("description") or entry.get("desc") or name).strip()
-                normalized.append(
-                    {
-                        "name": name,
-                        "description": description or name,
-                        "selected": entry.get("selected", True),
-                    }
-                )
-        return normalized
-    except Exception as exc:
-        logger.exception("Failed to read customKras.json: %s", exc)
-        return []
+    """Compatibility name kept for callers; reads Postgres."""
+    return _config_repo().list_custom_kras()
 
 
 def _save_custom_kras_to_disk(entries: list) -> int:
-    """Persist custom KRAs to customKras.json. Returns the number of entries written."""
-    with _custom_kra_lock:
-        # Deduplicate by name (case-insensitive) and re-normalize.
-        seen: set = set()
-        cleaned: list = []
-        for entry in entries:
-            if isinstance(entry, str):
-                name = entry.strip()
-                if not name:
-                    continue
-                key = name.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                cleaned.append({"name": name, "description": name, "selected": True})
-                continue
-            if not isinstance(entry, dict):
-                continue
-            name = str(entry.get("name") or entry.get("code") or "").strip()
-            if not name:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            description = str(entry.get("description") or entry.get("desc") or name).strip()
-            cleaned.append(
-                {
-                    "name": name,
-                    "description": description or name,
-                    "selected": entry.get("selected", True),
-                }
-            )
-        # Atomic write so a partial file is never observed on disk.
-        tmp_path = CUSTOM_KRA_FILE.with_suffix(".json.tmp")
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(cleaned, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, CUSTOM_KRA_FILE)
-        return len(cleaned)
+    """Compatibility name kept for callers; writes Postgres (full replace)."""
+    return _config_repo().replace_custom_kras(entries)
 
 
 @app.get("/customKras")
 def get_custom_kras():
-    """Read all custom KRAs persisted in customKras.json."""
+    """Read all custom KRAs for the tenant (Postgres)."""
     entries = _load_custom_kras_from_disk()
     return JSONResponse(
         status_code=200,
@@ -392,13 +368,13 @@ def get_custom_kras():
 
 class CustomKrasPayload(BaseModel):
     kras: List[Dict[str, Any]] = Field(
-        description="Full list of custom KRAs to persist. Replaces the contents of customKras.json."
+        description="Full list of custom KRAs to persist. Replaces the tenant's set."
     )
 
 
 @app.put("/customKras")
 def put_custom_kras(payload: CustomKrasPayload):
-    """Replace the contents of customKras.json with the supplied list."""
+    """Replace the tenant's custom KRAs with the supplied list."""
     try:
         written = _save_custom_kras_to_disk(payload.kras)
         return JSONResponse(
@@ -406,7 +382,7 @@ def put_custom_kras(payload: CustomKrasPayload):
             content={"status": "success", "count": written, "message": f"Saved {written} custom KRAs"},
         )
     except Exception as exc:
-        logger.exception("Failed to write customKras.json: %s", exc)
+        logger.exception("Failed to write custom KRAs: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 @app.get("/logs")
@@ -2143,26 +2119,20 @@ class DigitalWorkerSettings(BaseModel):
 
 @app.get("/settings/digital-worker", response_model=DigitalWorkerSettings)
 def get_digital_worker_settings():
-    """Get the global digital worker settings."""
-    config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
-    if os.path.exists(config_path):
-        import json
-        try:
-            with open(config_path, "r") as f:
-                data = json.load(f)
-                return DigitalWorkerSettings(**data)
-        except Exception as e:
-            logger.warning("Failed to load digital_worker_config.json: %s", e)
+    """Get the tenant's digital worker settings (Postgres tenant_settings)."""
+    try:
+        data = _config_repo().get_setting(DIGITAL_WORKER_SETTINGS_KEY)
+        if data:
+            return DigitalWorkerSettings(**data)
+    except Exception as e:
+        logger.warning("Failed to load digital worker settings: %s", e)
     return DigitalWorkerSettings()
 
 @app.post("/settings/digital-worker")
 def update_digital_worker_settings(settings: DigitalWorkerSettings):
-    """Update the global digital worker settings."""
-    config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
-    import json
+    """Update the tenant's digital worker settings."""
     try:
-        with open(config_path, "w") as f:
-            json.dump(settings.model_dump(), f, indent=4)
+        _config_repo().put_setting(DIGITAL_WORKER_SETTINGS_KEY, settings.model_dump())
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -2227,51 +2197,23 @@ from pathlib import Path
 import threading
 import json
 
-AWS_TASKS_FILE = Path(__file__).parent / "aws_tasks.json"
-AWS_PERMISSIONS_FILE = Path(__file__).parent / "aws_permissions.json"
-
-_aws_tasks_lock = threading.Lock()
-_aws_permissions_lock = threading.Lock()
-
 def _load_aws_tasks_from_disk() -> list:
-    try:
-        if not AWS_TASKS_FILE.exists():
-            return []
-        with AWS_TASKS_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.exception("Failed to read aws_tasks.json: %s", exc)
-        return []
+    """Compatibility name kept for callers; reads Postgres (aws_tasks)."""
+    return _config_repo().list_aws_tasks()
+
 
 def _save_aws_tasks_to_disk(entries: list) -> int:
-    with _aws_tasks_lock:
-        tmp_path = AWS_TASKS_FILE.with_suffix(".json.tmp")
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(entries, f, indent=2, ensure_ascii=False)
-        import os
-        os.replace(tmp_path, AWS_TASKS_FILE)
-        return len(entries)
+    return _config_repo().replace_aws_tasks(entries)
+
 
 def _load_aws_permissions_from_disk() -> list:
-    try:
-        if not AWS_PERMISSIONS_FILE.exists():
-            return []
-        with AWS_PERMISSIONS_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.exception("Failed to read aws_permissions.json: %s", exc)
-        return []
+    """Compatibility name kept for callers; reads Postgres (permission_sets)."""
+    return _config_repo().list_permission_sets()
+
 
 def _save_aws_permissions_to_disk(entries: list) -> int:
-    with _aws_permissions_lock:
-        tmp_path = AWS_PERMISSIONS_FILE.with_suffix(".json.tmp")
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(entries, f, indent=2, ensure_ascii=False)
-        import os
-        os.replace(tmp_path, AWS_PERMISSIONS_FILE)
-        return len(entries)
+    return _config_repo().replace_permission_sets(entries)
+
 
 class AwsTasksPayload(BaseModel):
     tasks: List[Dict[str, Any]] = Field(description="List of AWS Tasks to persist.")
@@ -2295,7 +2237,7 @@ def put_aws_tasks(payload: AwsTasksPayload):
             content={"status": "success", "count": written, "message": f"Saved {written} AWS tasks"}
         )
     except Exception as exc:
-        logger.exception("Failed to write aws_tasks.json: %s", exc)
+        logger.exception("Failed to write AWS tasks: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 class PermissionSetsPayload(BaseModel):
@@ -2355,7 +2297,7 @@ def put_permission_sets(payload: PermissionSetsPayload):
             content={"status": "success", "count": written, "message": f"Saved {written} permission sets"}
         )
     except Exception as exc:
-        logger.exception("Failed to write aws_permissions.json: %s", exc)
+        logger.exception("Failed to write permission sets: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 AWS_ACTION_CATALOG = {

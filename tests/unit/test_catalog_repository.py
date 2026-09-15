@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from src.chandra.catalog import ConfigRepository, normalize_custom_kras
 from src.chandra.db.models import Base
 
@@ -21,7 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def scope() -> Iterator[object]:
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 

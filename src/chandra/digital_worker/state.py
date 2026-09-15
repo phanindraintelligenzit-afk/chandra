@@ -34,6 +34,8 @@ class DigitalWorkerState(TypedDict, total=False):
     source: str
     payload: dict[str, Any]
     job_id: str
+    tenant_id: str
+    correlation_id: str
     # When False, execute_automation performs the real mutating call for
     # plans with a registered handler. Defaults to True (dry run).
     dry_run: bool

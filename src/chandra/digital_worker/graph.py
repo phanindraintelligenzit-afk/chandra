@@ -24,6 +24,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy.exc import SQLAlchemyError
+from src.chandra.catalog import DEFAULT_TENANT, DIGITAL_WORKER_SETTINGS_KEY, ConfigRepository
 from src.chandra.config import settings
 from src.chandra.db.models import CloudRequestRecord
 from src.chandra.db.session import session_scope
@@ -1099,26 +1100,20 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         # Instantiate orchestrator using the native job_id injected into state
         dw_job_id = state.get("job_id") or request.request_id
 
-        # Load global digital worker settings if available
-        import json
-        import os
-
-        # graph.py is in src/chandra/digital_worker/
-        # so dirname(dirname(dirname(dirname(__file__)))) is the root
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-            "digital_worker_config.json",
-        )
+        # Tenant digital-worker settings (Postgres tenant_settings; defaults when unset/unreachable)
         max_iters = 5
         cmd_timeout = 300
-        if os.path.exists(config_path):
-            try:
-                with open(config_path) as f:
-                    data = json.load(f)
-                    max_iters = data.get("max_iterations", max_iters)
-                    cmd_timeout = data.get("command_timeout", cmd_timeout)
-            except Exception:
-                pass
+        try:
+            worker_settings = ConfigRepository(
+                tenant_id=state.get("tenant_id") or DEFAULT_TENANT,
+                session_factory=session_scope,
+            ).get_setting(DIGITAL_WORKER_SETTINGS_KEY)
+        except SQLAlchemyError as exc:
+            logger.warning("digital_worker.settings_unavailable", error=str(exc))
+            worker_settings = None
+        if worker_settings:
+            max_iters = int(worker_settings.get("max_iterations", max_iters))
+            cmd_timeout = int(worker_settings.get("command_timeout", cmd_timeout))
 
         orchestrator = ExecutionAgents(max_iterations=max_iters, job_id=dw_job_id)
         exec_thread_id = f"exec-{dw_job_id}"

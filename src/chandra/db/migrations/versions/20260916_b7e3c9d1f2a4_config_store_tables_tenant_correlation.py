@@ -1,6 +1,6 @@
 """Postgres as system of record for DFTE configuration; tenant + correlation ids.
 
-Adds aws_tasks, permission_sets, custom_kras, agent_run_memory (replacing the
+Adds aws_tasks, permission_sets, custom_kras, agent_run_memory, tenant_settings (replacing the
 JSON files formerly read/written at the repo root) and adds tenant_id /
 correlation_id to cloud_requests (PRD §26.8, §26.11).
 
@@ -100,8 +100,18 @@ def upgrade() -> None:
     op.create_index("ix_agent_run_memory_correlation_id", "agent_run_memory", ["correlation_id"])
     op.create_index("ix_agent_run_memory_action_name", "agent_run_memory", ["action_name"])
 
+    op.create_table(
+        "tenant_settings",
+        sa.Column("tenant_id", sa.String(64), nullable=False, server_default="default"),
+        sa.Column("key", sa.String(128), nullable=False),
+        sa.Column("value_jsonb", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.Column("updated_at", _TS, server_default=_NOW, nullable=False),
+        sa.PrimaryKeyConstraint("tenant_id", "key"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("tenant_settings")
     op.drop_table("agent_run_memory")
     op.drop_table("custom_kras")
     op.drop_table("permission_sets")

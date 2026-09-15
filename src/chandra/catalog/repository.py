@@ -6,6 +6,7 @@ Replaces the JSON files that used to live at the repo root:
     aws_permissions.json  -> permission_sets
     customKras.json       -> custom_kras
     agent_memory.json     -> agent_run_memory
+    digital_worker_config.json -> tenant_settings (key 'digital_worker')
 
 This module is the **only** place these tables are written. Every function is
 tenant-scoped. The wire format returned to the API is kept identical to the
@@ -29,6 +30,7 @@ from src.chandra.db.models import (
     AwsTaskRecord,
     CustomKraRecord,
     PermissionSetRecord,
+    TenantSettingRecord,
 )
 from src.chandra.db.session import session_scope as _default_session_scope
 from src.chandra.logging import get_logger
@@ -36,6 +38,7 @@ from src.chandra.logging import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_TENANT = "default"
+DIGITAL_WORKER_SETTINGS_KEY = "digital_worker"
 
 SessionFactory = Callable[[], AbstractContextManager[Session]]
 
@@ -343,6 +346,29 @@ class ConfigRepository:
                 for r in rows
             ]
 
+    # -- Tenant settings --------------------------------------------------
+
+    def get_setting(self, key: str) -> dict[str, Any] | None:
+        with self._scope() as s:
+            row = s.get(TenantSettingRecord, (self.tenant_id, key))
+            return dict(row.value_jsonb) if row else None
+
+    def put_setting(self, key: str, value: dict[str, Any]) -> None:
+        with self._scope() as s:
+            row = s.get(TenantSettingRecord, (self.tenant_id, key))
+            if row is None:
+                s.add(
+                    TenantSettingRecord(
+                        tenant_id=self.tenant_id,
+                        key=key,
+                        value_jsonb=dict(value),
+                        updated_at=_now(),
+                    )
+                )
+            else:
+                row.value_jsonb = dict(value)
+                row.updated_at = _now()
+
     # -- Bulk import (one-off migration from the legacy JSON files) -------
 
     def import_legacy_json(
@@ -352,6 +378,7 @@ class ConfigRepository:
         permission_sets: list[dict[str, Any]] | None = None,
         custom_kras: list[Any] | None = None,
         agent_memory: dict[str, Any] | None = None,
+        digital_worker_config: dict[str, Any] | None = None,
         overwrite: bool = False,
     ) -> dict[str, int]:
         """Load the legacy JSON payloads. Skips a table that already has rows
@@ -378,5 +405,10 @@ class ConfigRepository:
                     recorded_at=_parse_ts(run.get("timestamp")),
                 )
             result["agent_run_memory"] = len(runs)
+        if digital_worker_config is not None and (
+            overwrite or self.get_setting(DIGITAL_WORKER_SETTINGS_KEY) is None
+        ):
+            self.put_setting(DIGITAL_WORKER_SETTINGS_KEY, digital_worker_config)
+            result["tenant_settings"] = 1
         logger.info("catalog.legacy_import", tenant=self.tenant_id, **result)
         return result

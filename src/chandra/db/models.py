@@ -3,7 +3,7 @@
 Schema is defined here once; alembic migrations diff against this metadata.
 Write discipline: LangGraph nodes write only from ``persist``; the Digital
 Worker configuration tables (``aws_tasks``, ``permission_sets``,
-``custom_kras``, ``agent_run_memory``) are written only through
+``custom_kras``, ``agent_run_memory``, ``tenant_settings``) are written only through
 ``chandra.catalog.repository``; everything else is read-only or Alembic.
 """
 
@@ -322,3 +322,18 @@ class AgentRunMemoryRecord(Base):
     fixes_jsonb: Mapped[list[Any]] = mapped_column("fixes_jsonb", nullable=False, default=list)
     lesson: Mapped[str] = mapped_column(Text, nullable=False, default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TenantSettingRecord(Base):
+    """Key/value settings per tenant (formerly digital_worker_config.json)."""
+
+    __tablename__ = "tenant_settings"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_jsonb: Mapped[dict[str, Any]] = mapped_column("value_jsonb", nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
