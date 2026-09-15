@@ -1,8 +1,10 @@
 """SQLAlchemy ORM models for Chandra's relational state.
 
 Schema is defined here once; alembic migrations diff against this metadata.
-Per the master prompt's anti-pattern list: NOTHING outside the ``persist``
-node and migrations is allowed to write to these tables.
+Write discipline: LangGraph nodes write only from ``persist``; the Digital
+Worker configuration tables (``aws_tasks``, ``permission_sets``,
+``custom_kras``, ``agent_run_memory``) are written only through
+``chandra.catalog.repository``; everything else is read-only or Alembic.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -151,6 +154,10 @@ class CloudRequestRecord(Base):
         default=_uuid,
     )
     request_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="default", server_default="default", index=True
+    )
+    correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     external_id: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -218,3 +225,100 @@ class EvalRun(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="eval_run")
+
+
+# ---------------------------------------------------------------------------
+# Digital Worker configuration — PRD §26.8 "DFTE configuration: PostgreSQL"
+# Formerly aws_tasks.json / aws_permissions.json / customKras.json /
+# agent_memory.json at the repo root. Every row is tenant-scoped.
+# ---------------------------------------------------------------------------
+
+
+class AwsTaskRecord(Base):
+    """Approved-task catalogue entry (PRD L2 §7 task model)."""
+
+    __tablename__ = "aws_tasks"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    ownership: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_preset: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_predefined: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    extra_jsonb: Mapped[dict[str, Any]] = mapped_column("extra_jsonb", nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PermissionSetRecord(Base):
+    """Permission-set catalogue entry (PRD L2 §8 permission model)."""
+
+    __tablename__ = "permission_sets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    aws_service: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    actions_jsonb: Mapped[list[Any]] = mapped_column("actions_jsonb", nullable=False, default=list)
+    resource_arn: Mapped[str] = mapped_column(Text, nullable=False, default="*")
+    is_predefined: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    extra_jsonb: Mapped[dict[str, Any]] = mapped_column("extra_jsonb", nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CustomKraRecord(Base):
+    """User-defined KRA shown in the onboarding ceremony."""
+
+    __tablename__ = "custom_kras"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+
+class AgentRunMemoryRecord(Base):
+    """Per-run lesson log of the AWS execution agent (formerly agent_memory.json).
+
+    Knowledge only — never consulted for authorization (PRD §26.6).
+    """
+
+    __tablename__ = "agent_run_memory"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False).with_variant(String(36), "sqlite"),
+        primary_key=True,
+        default=_uuid,
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="default", server_default="default", index=True
+    )
+    correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    action_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    final_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    iterations_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors_jsonb: Mapped[list[Any]] = mapped_column("errors_jsonb", nullable=False, default=list)
+    fixes_jsonb: Mapped[list[Any]] = mapped_column("fixes_jsonb", nullable=False, default=list)
+    lesson: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
