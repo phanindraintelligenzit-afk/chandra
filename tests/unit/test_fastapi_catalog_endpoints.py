@@ -1,7 +1,6 @@
 """Catalog endpoints read/write Postgres via ConfigRepository, not JSON files.
 
-The repository is routed to in-memory SQLite; the legacy-JSON import shim is
-disabled so the assertions reflect only what the API wrote.
+The repository is routed to in-memory SQLite.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ LEGACY_FILES = [
     "executions.json",
     "digital_worker_config.json",
 ]
+SEEDS_DIR = REPO_ROOT / "src" / "chandra" / "catalog" / "seeds"
 
 
 @pytest.fixture
@@ -58,10 +58,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
 
 def _mtimes() -> dict[str, float | None]:
-    return {
-        f: (REPO_ROOT / f).stat().st_mtime if (REPO_ROOT / f).exists() else None
-        for f in LEGACY_FILES
-    }
+    files = [REPO_ROOT / f for f in LEGACY_FILES] + sorted(SEEDS_DIR.glob("*.json"))
+    return {str(p): p.stat().st_mtime if p.exists() else None for p in files}
+
+
+def test_no_legacy_json_state_files_at_repo_root() -> None:
+    assert [f for f in LEGACY_FILES if (REPO_ROOT / f).exists()] == []
 
 
 def test_custom_kras_round_trip_without_touching_disk(client: TestClient) -> None:

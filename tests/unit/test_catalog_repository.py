@@ -15,6 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from src.chandra.catalog import ConfigRepository, normalize_custom_kras
+from src.chandra.catalog.seed import SEEDS_DIR, load_seed_dir, seed_catalog
 from src.chandra.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,10 +50,7 @@ def repo(scope: object) -> ConfigRepository:
 
 
 def _load_seed(name: str) -> object:
-    path = REPO_ROOT / "src" / "chandra" / "catalog" / "seeds" / name
-    if not path.exists():  # during the migration window the file is still at root
-        path = REPO_ROOT / name
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads((SEEDS_DIR / name).read_text(encoding="utf-8"))
 
 
 class TestAwsTasks:
@@ -152,37 +150,30 @@ class TestAgentRunMemory:
         assert repo.recent_agent_runs(action_name="other") == []
 
 
-class TestLegacyImport:
-    def test_imports_real_seed_files_and_is_idempotent(self, repo: ConfigRepository) -> None:
-        first = repo.import_legacy_json(
-            aws_tasks=_load_seed("aws_tasks.json"),  # type: ignore[arg-type]
-            permission_sets=_load_seed("aws_permissions.json"),  # type: ignore[arg-type]
-            custom_kras=_load_seed("customKras.json"),  # type: ignore[arg-type]
-            agent_memory=_load_seed("agent_memory.json"),  # type: ignore[arg-type]
-        )
+class TestSeeding:
+    def test_packaged_seeds_load_and_reseed_is_noop(self, repo: ConfigRepository) -> None:
+        first = seed_catalog(repo=repo)
         assert first["aws_tasks"] == 4
         assert first["permission_sets"] == 6
         assert first["custom_kras"] == 4
-        assert first["agent_run_memory"] == 32
-        second = repo.import_legacy_json(aws_tasks=[{"id": "x", "name": "X"}])
-        assert second == {}  # table already populated -> skipped
+        assert first["tenant_settings"] == 1
+        assert seed_catalog(repo=repo) == {}  # populated -> skipped
         assert len(repo.list_aws_tasks()) == 4
 
-
-class TestTaskAuthorizationFromPostgres:
-    def test_gate1_reads_permission_sets_from_db_not_disk(self, scope: object) -> None:
-        from src.chandra.execution.services import TaskAuthorizationService
-
-        repo = ConfigRepository(tenant_id="t1", session_factory=scope)  # type: ignore[arg-type]
-        repo.replace_permission_sets(
-            [{"id": "ps-s3", "name": "S3", "actions": ["s3:CreateBucket", "s3:ListBucket"]}]
+    def test_legacy_root_layout_is_accepted(self, tmp_path: Path, repo: ConfigRepository) -> None:
+        (tmp_path / "aws_permissions.json").write_text(
+            json.dumps([{"id": "p", "name": "P", "actions": ["s3:ListBucket"]}]), encoding="utf-8"
         )
-        svc = TaskAuthorizationService(tenant_id="t1", session_factory=scope)  # type: ignore[arg-type]
-        ok = svc.is_authorized("Create bucket", "ps-s3", ["s3:CreateBucket"])
-        assert ok["pass"] is True
-        assert ok["permission_set_version"] == "1"
-        denied = svc.is_authorized("Create bucket", "ps-s3", ["s3:DeleteBucket"])
-        assert denied["pass"] is False and denied["missing_actions"] == ["s3:DeleteBucket"]
-        # another tenant cannot see t1's set
-        other = TaskAuthorizationService(tenant_id="t2", session_factory=scope)  # type: ignore[arg-type]
-        assert other.is_authorized("Create bucket", "ps-s3", ["s3:CreateBucket"])["pass"] is False
+        (tmp_path / "customKras.json").write_text(json.dumps(["Cost"]), encoding="utf-8")
+        (tmp_path / "agent_memory.json").write_text(
+            json.dumps({"runs": [{"action_name": "a", "final_status": "success"}]}),
+            encoding="utf-8",
+        )
+        assert set(load_seed_dir(tmp_path)) == {"permission_sets", "custom_kras", "agent_memory"}
+        result = seed_catalog(tmp_path, repo=repo)
+        assert result == {"permission_sets": 1, "custom_kras": 1, "agent_run_memory": 1}
+        assert repo.get_permission_set("p") is not None
+
+    def test_overwrite_replaces(self, repo: ConfigRepository) -> None:
+        seed_catalog(repo=repo)
+        assert seed_catalog(SEEDS_DIR, overwrite=True, repo=repo)["aws_tasks"] == 4

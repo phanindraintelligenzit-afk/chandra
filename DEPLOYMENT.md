@@ -354,13 +354,14 @@ For production (AWS RDS):
 - Enable automated snapshots (daily, 7-day retention minimum)
 - Manual snapshot before migrations: `aws rds create-db-snapshot --db-instance-identifier chandra --db-snapshot-identifier chandra-pre-migration-$(date +%Y%m%d)`
 
-### Agent memory
+### Digital Worker configuration and agent memory
 
-The `agent_memory.json` file at the repo root contains learned patterns and resolution memory. Back it up alongside the database:
-
-```bash
-cp agent_memory.json agent_memory.json.$(date +%Y%m%d)
-```
+Approved tasks, permission sets, custom KRAs, worker settings and the execution
+agent's lesson log live in Postgres (`aws_tasks`, `permission_sets`,
+`custom_kras`, `tenant_settings`, `agent_run_memory`) and are covered by the
+database backups above. Fresh install: `uv run chandra catalog seed`. Migrating a
+pre-Phase-1 deployment that still has the repo-root JSON files:
+`uv run chandra catalog seed --from /path/to/old/checkout`.
 
 ### Terraform state
 

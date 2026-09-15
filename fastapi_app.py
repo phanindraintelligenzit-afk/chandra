@@ -289,61 +289,16 @@ def health_ready():
     })
 
 
-# ── Custom KRA persistence (Postgres: custom_kras) ───────────────────────────
-# PRD §26.8: PostgreSQL is the system of record for DFTE configuration.
-# The JSON files that used to live here are imported once, read-through, if the
-# table is empty (MIGRATION SHIM — removed at the end of Phase 1).
+# ── Digital Worker configuration (Postgres system of record, PRD §26.8) ──────
+# aws_tasks / permission_sets / custom_kras / tenant_settings are read and
+# written only through ConfigRepository. Fresh installs load the packaged
+# catalogue with `chandra catalog seed`; migrating an existing deployment's
+# JSON files: `chandra catalog seed --from <dir>`.
 from src.chandra.catalog import DEFAULT_TENANT, DIGITAL_WORKER_SETTINGS_KEY, ConfigRepository
-
-_LEGACY_JSON_DIR = Path(__file__).parent
-_LEGACY_JSON = {
-    "aws_tasks": _LEGACY_JSON_DIR / "aws_tasks.json",
-    "permission_sets": _LEGACY_JSON_DIR / "aws_permissions.json",
-    "custom_kras": _LEGACY_JSON_DIR / "customKras.json",
-    "agent_memory": _LEGACY_JSON_DIR / "agent_memory.json",
-    "digital_worker_config": _LEGACY_JSON_DIR / "digital_worker_config.json",
-}
-_legacy_import_done = threading.Event()
-_legacy_import_lock = threading.Lock()
-
-
-def _read_legacy_json(path: Path) -> Any:
-    try:
-        if path.exists():
-            with path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-    except (OSError, ValueError) as exc:
-        logger.warning("legacy_json.unreadable path=%s err=%s", path, exc)
-    return None
-
-
-def _run_legacy_json_import_once(repo: ConfigRepository) -> None:
-    """MIGRATION SHIM: seed empty tables from the repo-root JSON files, once per process."""
-    if _legacy_import_done.is_set():
-        return
-    with _legacy_import_lock:
-        if _legacy_import_done.is_set():
-            return
-        try:
-            imported = repo.import_legacy_json(
-                aws_tasks=_read_legacy_json(_LEGACY_JSON["aws_tasks"]),
-                permission_sets=_read_legacy_json(_LEGACY_JSON["permission_sets"]),
-                custom_kras=_read_legacy_json(_LEGACY_JSON["custom_kras"]),
-                agent_memory=_read_legacy_json(_LEGACY_JSON["agent_memory"]),
-                digital_worker_config=_read_legacy_json(_LEGACY_JSON["digital_worker_config"]),
-            )
-            if imported:
-                logger.info("legacy_json.imported %s", imported)
-        except Exception as exc:  # DB unreachable: endpoints will surface their own error
-            logger.warning("legacy_json.import_failed err=%s", exc)
-            return
-        _legacy_import_done.set()
 
 
 def _config_repo(tenant_id: str = DEFAULT_TENANT) -> ConfigRepository:
-    repo = ConfigRepository(tenant_id=tenant_id)
-    _run_legacy_json_import_once(repo)
-    return repo
+    return ConfigRepository(tenant_id=tenant_id)
 
 
 def _load_custom_kras_from_disk() -> list:

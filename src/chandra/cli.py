@@ -187,6 +187,34 @@ def _print_scorecard(scorecard: dict[str, int]) -> None:
     console.print(table)
 
 
+catalog_app = typer.Typer(
+    help="Digital Worker configuration catalogue (Postgres system of record)."
+)
+app.add_typer(catalog_app, name="catalog")
+
+
+@catalog_app.command("seed")
+def catalog_seed(
+    directory: Path | None = typer.Option(
+        None,
+        "--from",
+        help="Directory of JSON files. Default: packaged seeds. Accepts the legacy "
+        "repo-root layout (aws_permissions.json, customKras.json, agent_memory.json ...).",
+    ),
+    tenant: str = typer.Option("default", help="Tenant to load into."),
+    overwrite: bool = typer.Option(False, help="Replace tables that already have rows."),
+) -> None:
+    """Seed or migrate aws_tasks / permission_sets / custom_kras / settings / agent memory."""
+    from src.chandra.catalog.seed import seed_catalog
+
+    result = seed_catalog(directory, tenant_id=tenant, overwrite=overwrite)
+    if not result:
+        typer.echo("Nothing imported (tables already populated, or no files found).")
+        return
+    for table, count in result.items():
+        typer.echo(f"{table}: {count}")
+
+
 def main() -> None:
     """Console-script entrypoint."""
     configure_observability(
