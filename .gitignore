@@ -56,3 +56,8 @@ Thumbs.db
 terraform_runs/
 add_test.py
 fix_test.py
+
+# Terraform state (never commit)
+*.tfstate
+*.tfstate.*
+.terraform/
