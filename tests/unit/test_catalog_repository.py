@@ -167,3 +167,22 @@ class TestLegacyImport:
         second = repo.import_legacy_json(aws_tasks=[{"id": "x", "name": "X"}])
         assert second == {}  # table already populated -> skipped
         assert len(repo.list_aws_tasks()) == 4
+
+
+class TestTaskAuthorizationFromPostgres:
+    def test_gate1_reads_permission_sets_from_db_not_disk(self, scope: object) -> None:
+        from src.chandra.execution.services import TaskAuthorizationService
+
+        repo = ConfigRepository(tenant_id="t1", session_factory=scope)  # type: ignore[arg-type]
+        repo.replace_permission_sets(
+            [{"id": "ps-s3", "name": "S3", "actions": ["s3:CreateBucket", "s3:ListBucket"]}]
+        )
+        svc = TaskAuthorizationService(tenant_id="t1", session_factory=scope)  # type: ignore[arg-type]
+        ok = svc.is_authorized("Create bucket", "ps-s3", ["s3:CreateBucket"])
+        assert ok["pass"] is True
+        assert ok["permission_set_version"] == "1"
+        denied = svc.is_authorized("Create bucket", "ps-s3", ["s3:DeleteBucket"])
+        assert denied["pass"] is False and denied["missing_actions"] == ["s3:DeleteBucket"]
+        # another tenant cannot see t1's set
+        other = TaskAuthorizationService(tenant_id="t2", session_factory=scope)  # type: ignore[arg-type]
+        assert other.is_authorized("Create bucket", "ps-s3", ["s3:CreateBucket"])["pass"] is False

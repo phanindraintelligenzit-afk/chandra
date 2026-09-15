@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -22,11 +23,49 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture(scope="module")
 def client() -> Iterator[TestClient]:
+    """Real app object, with the Digital Worker's Postgres routed to an in-memory
+    SQLite seeded with the permission-set catalogue (Postgres is the system of
+    record for permission sets; Gate 1 reads it live)."""
     import fastapi_app
     from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from src.chandra.catalog import ConfigRepository
+    from src.chandra.db.models import Base
+    from src.chandra.digital_worker import graph as dw_graph
 
-    with TestClient(fastapi_app.app) as test_client:
-        yield test_client
+    from tests.conftest import seed_permission_sets
+
+    engine = create_engine(
+        "sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def _scope() -> Iterator[Any]:
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(dw_graph, "session_scope", _scope)
+    mp.setattr(
+        fastapi_app, "_config_repo", lambda tenant_id="default": ConfigRepository(tenant_id, _scope)
+    )
+    seed_permission_sets(_scope)
+    try:
+        with TestClient(fastapi_app.app) as test_client:
+            yield test_client
+    finally:
+        mp.undo()
 
 
 def _poll_request(

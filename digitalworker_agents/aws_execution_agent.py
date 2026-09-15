@@ -21,7 +21,7 @@ Memory (cross-run, persistent JSON file):
       encountered, fixes applied, and whether it succeeded.
     - Loaded at pipeline start and injected into the analyze + generate prompts.
     - Written back at end of every run (success or failure).
-    - Location: agent_memory.json (override via AGENT_MEMORY_PATH env var).
+    - Location: Postgres table agent_run_memory (tenant-scoped, correlation_id per run).
 
 Mid-run HITL (when stuck):
     - After N consecutive identical error types with no progress, the pipeline
@@ -79,61 +79,37 @@ PLAN_REVIEW_MAX_RETRIES = 2
 
 class AgentMemory:
     """
-    Lightweight JSON-file memory that persists across RunPipeline calls.
+    Persistent lesson log for the execution pipeline — Postgres ``agent_run_memory``
+    (formerly agent_memory.json). Tenant-scoped; every run row carries the
+    correlation_id of the job that produced it.
 
-    Stores a rolling log of past pipeline runs so the agent can learn from
-    previous mistakes and successes without repeating the same errors.
-
-    Schema (agent_memory.json):
-    {
-      "runs": [
-        {
-          "timestamp": "2026-06-26T11:00:00",
-          "action_name": "Deploy EC2 ...",
-          "iterations": 2,
-          "final_status": "failed",
-          "errors_encountered": ["InvalidAMIID.NotFound: ami-0c55...", ...],
-          "fixes_applied": ["Switched to aws_ami data source", ...],
-          "lesson": "AMI IDs are region-specific — always use aws_ami data source"
-        },
-        ...
-      ]
-    }
+    Knowledge only. Nothing here is consulted by any permission, policy, risk or
+    approval check (PRD §26.6 — memory is not an authorization source).
     """
 
     MAX_RUNS = 50
     MAX_ERRORS_PER_RUN = 5
 
-    def __init__(self, memory_path: Optional[str] = None) -> None:
-        self.path = Path(
-            memory_path
-            or os.getenv("AGENT_MEMORY_PATH", "agent_memory.json")
-        )
-        self._data: Dict[str, Any] = self._load()
+    def __init__(
+        self,
+        tenant_id: str = "default",
+        correlation_id: Optional[str] = None,
+        session_factory: Any = None,
+    ) -> None:
+        from src.chandra.catalog import ConfigRepository  # noqa: PLC0415
 
-    def _load(self) -> Dict[str, Any]:
-        if self.path.exists():
-            try:
-                with open(self.path, encoding="utf-8") as f:
-                    data = json.load(f)
-                logger.info("memory.loaded  path=%s  runs=%d", self.path, len(data.get("runs", [])))
-                return data
-            except Exception as exc:
-                logger.warning("memory.load_failed path=%s err=%s — starting fresh", self.path, exc)
-        return {"runs": []}
-
-    def _save(self) -> None:
-        try:
-            self._data["runs"] = self._data["runs"][-self.MAX_RUNS:]
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
-            logger.info("memory.saved  path=%s  runs=%d", self.path, len(self._data["runs"]))
-        except Exception as exc:
-            logger.warning("memory.save_failed: %s", exc)
+        self.tenant_id = tenant_id
+        self.correlation_id = correlation_id
+        self._repo = ConfigRepository(tenant_id=tenant_id, session_factory=session_factory)
 
     @property
     def runs(self) -> List[Dict]:
-        return self._data.get("runs", [])
+        """Most recent runs, oldest first (matches the old JSON list order)."""
+        try:
+            return list(reversed(self._repo.recent_agent_runs(limit=self.MAX_RUNS)))
+        except Exception as exc:  # DB unreachable -> behave like an empty memory
+            logger.warning("memory.load_failed: %s", exc)
+            return []
 
     def record_run(
         self,
@@ -144,7 +120,7 @@ class AgentMemory:
         records: List[Dict],
         lesson: str = "",
     ) -> None:
-        """Append a run summary and persist to disk."""
+        """Summarise a run and persist it."""
         _ANSI_AND_BOX = re.compile(r"\x1b\[[0-9;]*m|[╷│╵]")
 
         def _clean(text: str) -> str:
@@ -175,24 +151,26 @@ class AgentMemory:
                 if sentence and sentence not in fixes:
                     fixes.append(sentence)
 
-        entry = {
-            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
-            "action_name": action_name,
-            "iterations_used": iterations_used,
-            "final_status": final_status,
-            "errors_encountered": errors,
-            "fixes_applied": fixes,
-            "lesson": lesson,
-        }
-        self._data.setdefault("runs", []).append(entry)
-        self._save()
+        try:
+            self._repo.record_agent_run(
+                action_name=action_name,
+                final_status=final_status,
+                iterations_used=iterations_used,
+                errors=errors,
+                fixes=fixes,
+                lesson=lesson,
+                correlation_id=self.correlation_id,
+            )
+            logger.info("memory.saved tenant=%s action=%s", self.tenant_id, action_name)
+        except Exception as exc:
+            logger.warning("memory.save_failed: %s", exc)
 
     def context_for_action(self, action_name: str, max_relevant: int = 5) -> str:
         """
         Return a formatted memory context string to inject into prompts.
         Prioritises runs for the same action, then recent runs for any action.
         """
-        runs = self._data.get("runs", [])
+        runs = self.runs
         if not runs:
             return ""
 
@@ -1142,7 +1120,13 @@ _GLOBAL_AWS_CONTEXT_LOCK = threading.Lock()
 
 class ExecutionAgents:
 
-    def __init__(self, max_iterations: int = MAX_ITERATIONS, memory_path: Optional[str] = None, job_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        max_iterations: int = MAX_ITERATIONS,
+        job_id: Optional[str] = None,
+        tenant_id: str = "default",
+        correlation_id: Optional[str] = None,
+    ) -> None:
         self.max_iterations = max_iterations
         self.job_id = job_id or "default"
         self._quotas_cache = {}
@@ -1166,7 +1150,7 @@ class ExecutionAgents:
         try:
             from src.chandra.llm import get_llm  # noqa: PLC0415
             self.Llm = get_llm()
-            self.Memory = AgentMemory(memory_path)
+            self.Memory = AgentMemory(tenant_id=tenant_id, correlation_id=correlation_id or job_id)
             self.Checkpointer = _get_shared_checkpointer()
             self.Graph = self._build_graph()
             self.logger.info("ExecutionAgents initialised successfully")
@@ -1539,8 +1523,8 @@ cautious regarding IAM and security: ALWAYS ask the user if target identities or
         permission_set_id = permission_sets[0] if isinstance(permission_sets, list) else permission_sets
         auth_service = TaskAuthorizationService()
         
-        is_authorized = auth_service.is_authorized(action_name, permission_set_id)
-        if not is_authorized:
+        auth_result = auth_service.is_authorized(action_name, permission_set_id)
+        if not auth_result.get("pass"):
              self.logger.warning(f"Task {action_name} not authorized by {permission_set_id}")
              return {"permission_issues": [f"Task {action_name} is not authorized by the selected permission set {permission_set_id}."]}
         

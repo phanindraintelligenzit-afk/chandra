@@ -81,3 +81,32 @@ def cloudwatch(aws: None) -> object:
 @pytest.fixture
 def events(aws: None) -> object:
     return boto3.client("events", region_name="us-east-1")
+
+
+# ---------------------------------------------------------------------------
+# Catalogue seeding for SQLite-backed graph tests (Postgres is the system of
+# record for permission sets since Phase 1; tests must seed what they rely on).
+# ---------------------------------------------------------------------------
+import json as _json
+from pathlib import Path as _Path
+
+_REPO_ROOT = _Path(__file__).resolve().parents[1]
+
+
+def load_catalog_seed(name: str) -> object:
+    """Load a catalogue seed file (``permission_sets.json`` / ``aws_tasks.json``)."""
+    candidates = [
+        _REPO_ROOT / "src" / "chandra" / "catalog" / "seeds" / name,
+        _REPO_ROOT / {"permission_sets.json": "aws_permissions.json"}.get(name, name),
+    ]
+    for path in candidates:
+        if path.exists():
+            return _json.loads(path.read_text(encoding="utf-8"))
+    raise FileNotFoundError(name)
+
+
+def seed_permission_sets(session_factory: object, tenant_id: str = "default") -> None:
+    from src.chandra.catalog import ConfigRepository
+
+    repo = ConfigRepository(tenant_id=tenant_id, session_factory=session_factory)  # type: ignore[arg-type]
+    repo.replace_permission_sets(load_catalog_seed("permission_sets.json"))  # type: ignore[arg-type]

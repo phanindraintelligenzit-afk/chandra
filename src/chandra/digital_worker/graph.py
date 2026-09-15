@@ -454,7 +454,9 @@ def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
                 ],
             }
 
-        auth_svc = TaskAuthorizationService()
+        auth_svc = TaskAuthorizationService(
+            tenant_id=state.get("tenant_id") or DEFAULT_TENANT, session_factory=session_scope
+        )
         permission_set_document = state.get("permission_set_document", {})
         if permission_set_id and permission_set_document:
             auth_svc.permissions = {

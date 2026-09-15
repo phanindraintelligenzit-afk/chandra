@@ -25,6 +25,8 @@ from src.chandra.digital_worker import graph as dw_graph
 from src.chandra.digital_worker import memory, planner
 from src.chandra.digital_worker.graph import build_digital_worker_graph
 
+from tests.conftest import seed_permission_sets
+
 THREAD = {"configurable": {"thread_id": "gov-test-thread"}}
 
 JIRA_AWS_PAYLOAD: dict[str, Any] = {
@@ -62,6 +64,7 @@ def sqlite_scope(monkeypatch: pytest.MonkeyPatch) -> Iterator[sessionmaker[Sessi
             session.close()
 
     monkeypatch.setattr(dw_graph, "session_scope", _scope)
+    seed_permission_sets(_scope)
     yield factory
 
 

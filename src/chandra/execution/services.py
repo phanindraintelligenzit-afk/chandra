@@ -7,8 +7,16 @@ import logging
 from typing import Any, ClassVar
 
 import boto3
+from sqlalchemy.exc import SQLAlchemyError
+from src.chandra.catalog import DEFAULT_TENANT, ConfigRepository
+from src.chandra.catalog.repository import SessionFactory
 
 logger = logging.getLogger(__name__)
+
+
+def _version_str(value: Any) -> str | None:
+    """Permission-set versions are surfaced as strings on the wire (Gate2ReviewPayload)."""
+    return None if value is None else str(value)
 
 
 class TaskAuthorizationService:
@@ -17,18 +25,39 @@ class TaskAuthorizationService:
     before any Terraform generation or execution occurs.
     """
 
-    def __init__(self, permissions_path: str = "aws_permissions.json"):
-        self.permissions_path = permissions_path
-        self.permissions = self._load_permissions()
+    def __init__(
+        self,
+        permission_sets: list[dict[str, Any]] | dict[str, Any] | None = None,
+        *,
+        tenant_id: str = DEFAULT_TENANT,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        """``permission_sets`` may be supplied directly (e.g. the document attached
+        to the running request). When omitted, the tenant's catalogue is read from
+        Postgres (``permission_sets`` table) on first use. Memory/caches are never
+        consulted here — this is a live policy read (PRD §26.6)."""
+        self.tenant_id = tenant_id
+        self._session_factory = session_factory
+        self._permissions: list[dict[str, Any]] | dict[str, Any] | None = permission_sets
 
-    def _load_permissions(self) -> dict[str, Any]:
+    @property
+    def permissions(self) -> list[dict[str, Any]] | dict[str, Any]:
+        if self._permissions is None:
+            self._permissions = self._load_permissions()
+        return self._permissions
+
+    @permissions.setter
+    def permissions(self, value: list[dict[str, Any]] | dict[str, Any]) -> None:
+        self._permissions = value
+
+    def _load_permissions(self) -> list[dict[str, Any]]:
         try:
-            with open(self.permissions_path, encoding="utf-8") as f:
-                data: dict[str, Any] = json.load(f)
-                return data
-        except Exception as e:
-            logger.error(f"Failed to load permissions from {self.permissions_path}: {e}")
-            return {}
+            return ConfigRepository(
+                tenant_id=self.tenant_id, session_factory=self._session_factory
+            ).list_permission_sets()
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to load permission sets for tenant {self.tenant_id}: {e}")
+            return []
 
     def is_authorized(
         self, task_name: str, permission_set_id: str, required_actions: list[str] | None = None
@@ -70,7 +99,7 @@ class TaskAuthorizationService:
                 "missing_actions": [],
                 "matched_actions": [],
                 "permission_set_id": permission_set_id,
-                "permission_set_version": target_pset.get("version"),
+                "permission_set_version": _version_str(target_pset.get("version")),
                 "reason": (
                     "No required actions could be determined, but a permission set "
                     "was explicitly attached."
@@ -104,7 +133,7 @@ class TaskAuthorizationService:
             "missing_actions": missing_actions,
             "matched_actions": matched_actions,
             "permission_set_id": permission_set_id,
-            "permission_set_version": target_pset.get("version"),
+            "permission_set_version": _version_str(target_pset.get("version")),
             "reason": "All required actions are covered by the permission set."
             if is_pass
             else f"Missing {len(missing_actions)} required actions.",
@@ -146,9 +175,13 @@ class TerraformPlanPolicyValidator:
         "local_sensitive_file",
     }
 
-    def __init__(self, permissions_path: str = "aws_permissions.json"):
-        self.permissions_path = permissions_path
-        self.auth_service = TaskAuthorizationService(permissions_path)
+    def __init__(
+        self,
+        auth_service: TaskAuthorizationService | None = None,
+        *,
+        tenant_id: str = DEFAULT_TENANT,
+    ) -> None:
+        self.auth_service = auth_service or TaskAuthorizationService(tenant_id=tenant_id)
 
     def validate_plan(  # noqa: PLR0912
         self, plan_json_path: str, permission_set_id: str, approved_task_name: str
