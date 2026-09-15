@@ -43,7 +43,7 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         resolved_model = model or settings.bedrock_model_id
         if not resolved_model:
             raise ValueError("LLM_PROVIDER=bedrock requires BEDROCK_MODEL_ID configuration")
-            
+
         return ChatBedrockConverse(
             model_id=resolved_model,
             region_name=settings.aws_default_region,
@@ -60,11 +60,11 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
         api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
         if not base_url:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_API_BASE (or OPENAI_API_BASE)")
-            
+
         resolved = model or settings.vllm_model or settings.openai_model_name
         if not resolved:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_MODEL (or OPENAI_MODEL_NAME)")
-            
+
         return ChatOpenAI(base_url=base_url, api_key=api_key, model=resolved, **kwargs)
 
     if provider == "ollama":
@@ -104,11 +104,10 @@ def build_chat_model_with_fallback(
     **kwargs: Any,
 ) -> tuple[Any, str]:
     """Build a chat model without silent fallback (removed per strict requirements).
-    
+
     Returns
     -------
     (model, provider_name)
     """
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
     return (build_chat_model(model=model, provider=provider, **kwargs), provider)
-

@@ -76,26 +76,28 @@ def receive_request(state: DigitalWorkerState) -> dict[str, Any]:
         request = normalize_request(state.get("source", "rest_api"), state.get("payload", {}))
     elif not isinstance(request, CloudRequest):
         request = CloudRequest.model_validate(request)
-        
+
     if request.source.value == "jira" and request.external_id:
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         JiraActivityRecorder.record_event(
             request.external_id,
             state.get("job_id", request.request_id),
             ChandraEvent.REQUEST_RECEIVED,
             task=request.title,
-            service="AWS Resource"
+            service="AWS Resource",
         )
-        
+
     logger.info(
         "graph.receive_request",
         request_id=request.request_id,
         source=request.source.value,
     )
-    
+
     import time
+
     start_time = state.get("execution_start_time") or time.time()
-    
+
     return {
         "request": request,
         "status": "in_progress",
@@ -256,13 +258,18 @@ def decision(state: DigitalWorkerState) -> dict[str, Any]:
     )
 
     request = state["request"]
-    if request.source.value == "jira" and request.external_id and verdict.mode == DecisionMode.AWAIT_APPROVAL:
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+    if (
+        request.source.value == "jira"
+        and request.external_id
+        and verdict.mode == DecisionMode.AWAIT_APPROVAL
+    ):
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         JiraActivityRecorder.record_event(
             request.external_id,
             state.get("job_id", request.request_id),
             ChandraEvent.APPROVAL_REQUIRED,
-            reason=verdict.reason
+            reason=verdict.reason,
         )
 
     logger.info(
@@ -305,23 +312,24 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
     record = (
         payload if isinstance(payload, ApprovalRecord) else ApprovalRecord.model_validate(payload)
     )
-    
+
     request = state["request"]
     if request.source.value == "jira" and request.external_id:
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         if record.approved:
             JiraActivityRecorder.record_event(
                 request.external_id,
                 state.get("job_id", request.request_id),
                 ChandraEvent.APPROVAL_GRANTED,
-                approver=record.approver
+                approver=record.approver,
             )
         else:
             JiraActivityRecorder.record_event(
                 request.external_id,
                 state.get("job_id", request.request_id),
                 ChandraEvent.APPROVAL_REJECTED,
-                reason=record.comment
+                reason=record.comment,
             )
 
     logger.info(
@@ -354,7 +362,7 @@ def route_approval(state: DigitalWorkerState) -> str:
             platform = classification.get("platform")
         elif classification is not None:
             platform = getattr(classification, "platform", None)
-            
+
         if platform == CloudPlatform.AWS or platform == "aws":
             return "permission_analysis"
         return "execute_automation"
@@ -369,24 +377,29 @@ def permission_analysis(state: DigitalWorkerState) -> dict[str, Any]:
     logger.info("TRANSITION: PERMISSION_ANALYSIS")
     request_dict = state["request"].model_dump(mode="json", exclude={"raw_payload"})
     plan_dict = state["plan"].model_dump(mode="json")
-    
+
     raw_perms = analyze_required_permissions(request_dict, plan_dict)
     permissions = [RequiredPermission(**p) for p in raw_perms]
-    
+
     return {
         "required_permissions": permissions,
         "audit_trail": [
-            _audit("permission_analysis", "permissions_analyzed", status="completed", count=len(permissions))
-        ]
+            _audit(
+                "permission_analysis",
+                "permissions_analyzed",
+                status="completed",
+                count=len(permissions),
+            )
+        ],
     }
 
 
 def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
     """Interrupt the graph to wait for Copilot to select the permission set."""
     logger.info("TRANSITION: AWAITING_PERMISSION_SET")
-    
+
     required_perms = [p.model_dump(mode="json") for p in state.get("required_permissions", [])]
-    
+
     payload = interrupt(
         {
             "action_required": "awaiting_permission_set",
@@ -394,37 +407,51 @@ def permission_selection_pause(state: DigitalWorkerState) -> dict[str, Any]:
             "required_permissions": required_perms,
         }
     )
-    
+
     # payload will contain the permission_set_id when resumed by Copilot
     permission_set_id = payload.get("permission_set_id") if isinstance(payload, dict) else None
-    permission_set_document = payload.get("permission_set_document", {}) if isinstance(payload, dict) else {}
+    permission_set_document = (
+        payload.get("permission_set_document", {}) if isinstance(payload, dict) else {}
+    )
     logger.info("TRANSITION: PERMISSION_SELECTED")
-    
+
     return {
         "permission_set_id": permission_set_id,
         "permission_set_document": permission_set_document,
         "audit_trail": [
-            _audit("permission_selection_pause", "permission_attached", permission_set_id=permission_set_id)
-        ]
+            _audit(
+                "permission_selection_pause",
+                "permission_attached",
+                permission_set_id=permission_set_id,
+            )
+        ],
     }
+
 
 def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
     """Gate 1: Verify the attached permission set."""
-    from src.chandra.execution.services import TaskAuthorizationService
     import traceback
-    
+
+    from src.chandra.execution.services import TaskAuthorizationService
+
     try:
         permission_set_id = state.get("permission_set_id")
         if not permission_set_id:
             logger.info("TRANSITION: GATE_1_DENIED")
             return {
                 "gate_1_passed": False,
-                "gate_1_result": {"pass": False, "missing_actions": [], "reason": "No permission set attached"},
+                "gate_1_result": {
+                    "pass": False,
+                    "missing_actions": [],
+                    "reason": "No permission set attached",
+                },
                 "audit_trail": [
-                    _audit("gate_1_verification", "gate_1_denied", reason="No permission set attached")
-                ]
+                    _audit(
+                        "gate_1_verification", "gate_1_denied", reason="No permission set attached"
+                    )
+                ],
             }
-            
+
         auth_svc = TaskAuthorizationService()
         permission_set_document = state.get("permission_set_document", {})
         if permission_set_id and permission_set_document:
@@ -432,27 +459,40 @@ def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
                 "permissionSets": [
                     {
                         "id": permission_set_id,
-                        "actions": [p["action"] for p in permission_set_document.get("permissions", [])]
+                        "actions": [
+                            p["action"] for p in permission_set_document.get("permissions", [])
+                        ],
                     }
                 ]
             }
-            
+
         task_name = state["request"].title
         required_actions = [p.action for p in state.get("required_permissions", [])]
-        
+
         # auth_svc.is_authorized now returns a dict
         auth_result = auth_svc.is_authorized(task_name, permission_set_id, required_actions)
-        
-        logger.error("DEBUG GATE 1: permission_set_id=%s, permission_set_document=%s, required=%s, auth_result=%s", permission_set_id, permission_set_document, required_actions, auth_result)
-        
+
+        logger.error(
+            "DEBUG GATE 1: permission_set_id=%s, permission_set_document=%s, required=%s, auth_result=%s",
+            permission_set_id,
+            permission_set_document,
+            required_actions,
+            auth_result,
+        )
+
         if not auth_result.get("pass", False):
             logger.info("TRANSITION: GATE_1_DENIED")
             return {
                 "gate_1_passed": False,
                 "gate_1_result": auth_result,
                 "audit_trail": [
-                    _audit("gate_1_verification", "gate_1_denied", reason="Authorization denied by TaskAuthorizationService", details=auth_result)
-                ]
+                    _audit(
+                        "gate_1_verification",
+                        "gate_1_denied",
+                        reason="Authorization denied by TaskAuthorizationService",
+                        details=auth_result,
+                    )
+                ],
             }
 
         logger.info("TRANSITION: GATE_1_PASS")
@@ -460,16 +500,22 @@ def gate_1_verification(state: DigitalWorkerState) -> dict[str, Any]:
             "gate_1_passed": True,
             "gate_1_result": auth_result,
             "audit_trail": [
-                _audit("gate_1_verification", "gate_1_passed", permission_set_id=permission_set_id, details=auth_result)
-            ]
+                _audit(
+                    "gate_1_verification",
+                    "gate_1_passed",
+                    permission_set_id=permission_set_id,
+                    details=auth_result,
+                )
+            ],
         }
     except Exception as e:
         logger.error(f"EXCEPTION in gate_1_verification: {e}\n{traceback.format_exc()}")
         return {
             "gate_1_passed": False,
             "gate_1_result": {"pass": False, "reason": f"CRASH: {e}"},
-            "audit_trail": []
+            "audit_trail": [],
         }
+
 
 def route_gate1(state: DigitalWorkerState) -> str:
     logger.info("ROUTING GATE 1: %s", state.get("gate_1_passed"))
@@ -489,23 +535,26 @@ def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
     Uses the ExecutionAgents adapter to produce HCL that implements the plan
     and falls back to deterministic template if it fails.
     """
-    from src.chandra.digital_worker.schemas import TerraformPlanEvidence
-    from digitalworker_agents.aws_execution_agent import ExecutionAgents
-    import os
     import tempfile
+
+    from digitalworker_agents.aws_execution_agent import ExecutionAgents
 
     request = state["request"]
     plan = state["plan"]
     classification = state["classification"]
     evidence = state.get("gate_1_evidence")
-    aws_permissions = evidence.matched_actions if evidence and hasattr(evidence, "matched_actions") else []
+    aws_permissions = (
+        evidence.matched_actions if evidence and hasattr(evidence, "matched_actions") else []
+    )
 
     logger.info("TRANSITION: TERRAFORM_GENERATE")
 
     action_dict = {
         "actionName": request.title or "Digital Worker Resolution",
         "actionDescription": request.description or "Automated execution for request",
-        "service": ", ".join(classification.services) if classification.services else classification.platform.value,
+        "service": ", ".join(classification.services)
+        if classification.services
+        else classification.platform.value,
         "kraCode": None,
         "priorityLevel": classification.priority.value,
         "steps": [step.action for step in plan.steps],
@@ -541,9 +590,7 @@ def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
     }
 
 
-def _generate_terraform_hcl(
-    request: CloudRequest, plan: Any, classification: Any
-) -> str:
+def _generate_terraform_hcl(request: CloudRequest, plan: Any, classification: Any) -> str:
     """Use LLM to generate Terraform HCL, with deterministic fallback."""
     try:
         from src.chandra.llm import get_llm
@@ -567,6 +614,7 @@ def _generate_terraform_hcl(
         # Extract HCL from markdown code blocks if present
         if "```" in content:
             import re
+
             match = re.search(r"```(?:hcl|terraform)?\s*\n(.*?)```", content, re.DOTALL)
             if match:
                 content = match.group(1)
@@ -583,7 +631,7 @@ def _deterministic_terraform_template(request: CloudRequest, classification: Any
 
     if "s3" in title_lower or "bucket" in title_lower or "s3" in [s.lower() for s in services]:
         return (
-            'terraform {\n  required_providers {\n    aws = {\n'
+            "terraform {\n  required_providers {\n    aws = {\n"
             '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
             '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
             'resource "aws_s3_bucket" "managed" {\n'
@@ -593,24 +641,24 @@ def _deterministic_terraform_template(request: CloudRequest, classification: Any
         )
     if "ec2" in title_lower or "instance" in title_lower or "ec2" in [s.lower() for s in services]:
         return (
-            'terraform {\n  required_providers {\n    aws = {\n'
+            "terraform {\n  required_providers {\n    aws = {\n"
             '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
             '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
             'data "aws_ami" "amazon_linux" {\n  most_recent = true\n'
             '  owners     = ["amazon"]\n  filter {\n    name   = "name"\n'
             '    values = ["amzn2-ami-hvm-*-x86_64-gp2"]\n  }\n}\n\n'
             'resource "aws_instance" "managed" {\n'
-            '  ami           = data.aws_ami.amazon_linux.id\n'
+            "  ami           = data.aws_ami.amazon_linux.id\n"
             '  instance_type = "t3.micro"\n'
             '  tags = {\n    ManagedBy = "chandra"\n  }\n}\n\n'
             'output "instance_id" {\n  value = aws_instance.managed.id\n}\n'
         )
     # Generic fallback
     return (
-        'terraform {\n  required_providers {\n    aws = {\n'
+        "terraform {\n  required_providers {\n    aws = {\n"
         '      source  = "hashicorp/aws"\n      version = "~> 5.0"\n'
         '    }\n  }\n}\n\nprovider "aws" {\n  region = "us-east-1"\n}\n\n'
-        '# Placeholder — LLM unavailable, manual HCL required\n'
+        "# Placeholder — LLM unavailable, manual HCL required\n"
         'output "status" {\n  value = "placeholder"\n}\n'
     )
 
@@ -640,6 +688,7 @@ def terraform_validate_plan(state: DigitalWorkerState) -> dict[str, Any]:
             plan_output = stage.output
             # Parse plan counts from output
             import re
+
             m = re.search(r"(\d+) to add", stage.output)
             if m:
                 add_count = int(m.group(1))
@@ -726,9 +775,7 @@ def gate_2_review(state: DigitalWorkerState) -> dict[str, Any]:
     )
 
     decision = (
-        payload
-        if isinstance(payload, Gate2Decision)
-        else Gate2Decision.model_validate(payload)
+        payload if isinstance(payload, Gate2Decision) else Gate2Decision.model_validate(payload)
     )
 
     logger.info(
@@ -811,12 +858,11 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                 dry_run=False,
                 detail="terraform binary not available",
             ),
-            "audit_trail": [
-                _audit("terraform_apply", "terraform_unavailable")
-            ],
+            "audit_trail": [_audit("terraform_apply", "terraform_unavailable")],
         }
 
     import contextlib
+
     @contextlib.contextmanager
     def _get_workdir():
         sandbox_path = state.get("sandbox_path")
@@ -829,11 +875,14 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                 yield wd
 
     with _get_workdir() as workdir:
-
         # init
         init = subprocess.run(
             ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
-            cwd=str(workdir), capture_output=True, text=True, timeout=120, check=False,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
         )
         if init.returncode != 0:
             return {
@@ -843,7 +892,8 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                     "outputs": {},
                 },
                 "execution": ExecutionOutcome(
-                    status="failed", dry_run=False,
+                    status="failed",
+                    dry_run=False,
                     detail=f"terraform init failed: {init.stderr[:500]}",
                 ),
                 "audit_trail": [_audit("terraform_apply", "init_failed")],
@@ -852,7 +902,11 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
         # apply -auto-approve
         apply = subprocess.run(
             ["terraform", "apply", "-auto-approve", "-input=false", "-no-color"],
-            cwd=str(workdir), capture_output=True, text=True, timeout=300, check=False,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
         )
 
         if apply.returncode != 0:
@@ -863,7 +917,8 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                     "outputs": {},
                 },
                 "execution": ExecutionOutcome(
-                    status="failed", dry_run=False,
+                    status="failed",
+                    dry_run=False,
                     detail=f"terraform apply failed: {apply.stderr[:500]}",
                     execution_logs=apply.stdout[:4000],
                 ),
@@ -875,9 +930,14 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
         # Capture outputs
         outputs_proc = subprocess.run(
             ["terraform", "output", "-json"],
-            cwd=str(workdir), capture_output=True, text=True, timeout=30, check=False,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         import json
+
         outputs = {}
         if outputs_proc.returncode == 0:
             try:
@@ -898,9 +958,7 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
             detail="Terraform apply succeeded",
             execution_logs=apply.stdout[:4000],
         ),
-        "audit_trail": [
-            _audit("terraform_apply", "apply_succeeded", outputs=list(outputs.keys()))
-        ],
+        "audit_trail": [_audit("terraform_apply", "apply_succeeded", outputs=list(outputs.keys()))],
     }
 
 
@@ -939,11 +997,14 @@ def verify_aws_resources(state: DigitalWorkerState) -> dict[str, Any]:
         outputs = apply_result.get("outputs", {})
         try:
             from src.chandra.execution.services import AwsResourceVerifier
+
             verifier = AwsResourceVerifier()
             status = verifier.verify_resource(request.title, outputs)
             verified_resources = []
             for k, v in outputs.items():
-                verified_resources.append({"key": k, "value": v.get("value") if isinstance(v, dict) else v})
+                verified_resources.append(
+                    {"key": k, "value": v.get("value") if isinstance(v, dict) else v}
+                )
 
             if status == "VERIFIED":
                 final = "COMPLETED"
@@ -994,18 +1055,22 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
     plan = state["plan"]
     classification = state["classification"]
     dry_run = state.get("dry_run", False)
-    
+
     import time
+
     execution_start_time = time.time()
-    
+
     if request.source.value == "jira" and request.external_id:
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         JiraActivityRecorder.record_event(
             request.external_id,
             state.get("job_id", request.request_id),
             ChandraEvent.EXECUTION_STARTED,
-            service=", ".join(classification.services) if classification.services else classification.platform.value,
-            resource=plan.steps[0].resource_type if plan.steps else "Unknown"
+            service=", ".join(classification.services)
+            if classification.services
+            else classification.platform.value,
+            resource=plan.steps[0].resource_type if plan.steps else "Unknown",
         )
 
     if dry_run:
@@ -1093,10 +1158,12 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
         )
 
         if response.statusCode == 202:
-            is_gate2 = any("terraform" in str(q).lower() or "approval" in str(q).lower() 
-                           for q in (response.questions or []))
+            is_gate2 = any(
+                "terraform" in str(q).lower() or "approval" in str(q).lower()
+                for q in (response.questions or [])
+            )
             interrupt_type = "gate2_approval" if is_gate2 else "clarification"
-            
+
             if is_gate2:
                 logger.info("TRANSITION: AWAITING_GATE_2")
 
@@ -1183,12 +1250,12 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
         state["context"],
     )
     approval = state.get("approval")
-    
+
     if approval is not None and not approval.approved:
         detail = f"Request REJECTED by {approval.approver}. Reason: {approval.comment}"
     else:
         detail = "engineer guidance produced"
-        
+
     return {
         "guidance_md": guidance,
         "execution": ExecutionOutcome(status="skipped", dry_run=True, detail=detail),
@@ -1202,29 +1269,38 @@ def generate_guidance(state: DigitalWorkerState) -> dict[str, Any]:
 
 
 def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
-    from src.chandra.digital_worker.verifier import verify_execution
     from src.chandra.digital_worker.schemas import ExecutionOutcome
+    from src.chandra.digital_worker.verifier import verify_execution
 
     execution = state.get("execution") or ExecutionOutcome(status="skipped", dry_run=True)
 
     # Governed path — verification already done in verify_aws_resources
     if state.get("final_status"):
         from src.chandra.digital_worker.schemas import ValidationCheck, ValidationResult
-        v_status = state.get("boto3_verification", {}).get("boto3_verification_status", "INDETERMINATE")
+
+        v_status = state.get("boto3_verification", {}).get(
+            "boto3_verification_status", "INDETERMINATE"
+        )
         passed = state["final_status"] == "COMPLETED"
-        
+
         # Synthesize execution outcome for the governed path so fastapi_app status is accurate
-        synthetic_status = "completed" if passed else ("failed" if state["final_status"] == "FAILED" else "dry_run")
+        synthetic_status = (
+            "completed"
+            if passed
+            else ("failed" if state["final_status"] == "FAILED" else "dry_run")
+        )
         synthetic_execution = ExecutionOutcome(
             status=synthetic_status,
             dry_run=(synthetic_status == "dry_run"),
-            detail=f"Governed path finished: {state['final_status']}"
+            detail=f"Governed path finished: {state['final_status']}",
         )
-        
+
         return {
             "validation": ValidationResult(
                 passed=passed,
-                checks=[ValidationCheck(name="governed_verification", passed=passed, detail=v_status)],
+                checks=[
+                    ValidationCheck(name="governed_verification", passed=passed, detail=v_status)
+                ],
             ),
             "execution": synthetic_execution,
             "audit_trail": [_audit("validate_result", "governed_validation", status=v_status)],
@@ -1260,12 +1336,13 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
 
     request = state["request"]
     if request.source.value == "jira" and request.external_id and execution.status != "skipped":
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         if validation.passed:
             JiraActivityRecorder.record_event(
                 request.external_id,
                 state.get("job_id", request.request_id),
-                ChandraEvent.VALIDATION_PASSED
+                ChandraEvent.VALIDATION_PASSED,
             )
         else:
             JiraActivityRecorder.record_event(
@@ -1273,7 +1350,7 @@ def validate_result(state: DigitalWorkerState) -> dict[str, Any]:
                 state.get("job_id", request.request_id),
                 ChandraEvent.VALIDATION_FAILED,
                 expected="Resource verified",
-                actual="Verification check failed"
+                actual="Verification check failed",
             )
 
     return {
@@ -1310,14 +1387,18 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
         )
         if execution and execution.execution_logs:
             from src.chandra.briefing.composer import compose_execution_summary
-            summary = compose_execution_summary(state["request"].description or "", execution.execution_logs)
+
+            summary = compose_execution_summary(
+                state["request"].description or "", execution.execution_logs
+            )
             comment += f"\n\n----\n{summary}"
-            
+
         request = state["request"]
         if request.source.value == "jira" and request.external_id:
-            from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
             import time
-            
+
+            from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
             job_id = state.get("job_id", request.request_id)
             execution_start_time = state.get("execution_start_time")
             if execution_start_time:
@@ -1326,16 +1407,16 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
                     request.external_id,
                     job_id,
                     duration_seconds,
-                    f"Chandra AWS Execution via Governed Workflow. Result: {final_status}"
+                    f"Chandra AWS Execution via Governed Workflow. Result: {final_status}",
                 )
-                
+
             if resolved:
                 JiraActivityRecorder.record_event(
                     request.external_id,
                     job_id,
                     ChandraEvent.VALIDATION_PASSED,
                     expected="SUCCESS",
-                    actual="SUCCESS"
+                    actual="SUCCESS",
                 )
             else:
                 JiraActivityRecorder.record_event(
@@ -1343,7 +1424,7 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
                     job_id,
                     ChandraEvent.EXECUTION_FAILED,
                     stage="Governed Workflow",
-                    error=final_status
+                    error=final_status,
                 )
 
         update = update_request_ticket(state["request"], comment, resolved)
@@ -1351,8 +1432,12 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
             "tracker_updates": [update],
             "status": "completed" if resolved else "completed_with_issues",
             "audit_trail": [
-                _audit("update_tracker", "governed_tracker_updated",
-                       status=update.status, final=final_status)
+                _audit(
+                    "update_tracker",
+                    "governed_tracker_updated",
+                    status=update.status,
+                    final=final_status,
+                )
             ],
         }
 
@@ -1382,40 +1467,41 @@ def update_tracker(state: DigitalWorkerState) -> dict[str, Any]:
         )
         if execution and execution.execution_logs:
             comment += f"\n\n----\n*Execution Details:*\n{{code}}\n{execution.execution_logs[-25000:]}\n{{code}}"
-            
+
     request = state["request"]
     if request.source.value == "jira" and request.external_id:
-        from src.chandra.digital_worker.tracker import JiraActivityRecorder, ChandraEvent
         import time
-        
+
+        from src.chandra.digital_worker.tracker import ChandraEvent, JiraActivityRecorder
+
         execution_start_time = state.get("execution_start_time")
         if execution_start_time:
             execution_end_time = time.time()
             duration_seconds = int(execution_end_time - execution_start_time)
-            
+
             JiraActivityRecorder.record_worklog(
                 request.external_id,
                 state.get("job_id", request.request_id),
                 duration_seconds,
-                f"Processed {request.external_id}, verified permissions, executed operations, and validated."
+                f"Processed {request.external_id}, verified permissions, executed operations, and validated.",
             )
-            
+
         if is_rejected:
-            pass # Already handled in decision/approval_gate
+            pass  # Already handled in decision/approval_gate
         elif not resolved and execution.status != "skipped":
             JiraActivityRecorder.record_event(
                 request.external_id,
                 state.get("job_id", request.request_id),
                 ChandraEvent.EXECUTION_FAILED,
-                error=execution.detail
+                error=execution.detail,
             )
         elif resolved:
             JiraActivityRecorder.record_event(
                 request.external_id,
                 state.get("job_id", request.request_id),
-                ChandraEvent.TASK_COMPLETED
+                ChandraEvent.TASK_COMPLETED,
             )
-            
+
     update = update_request_ticket(state["request"], comment, resolved)
     return {
         "tracker_updates": [update],

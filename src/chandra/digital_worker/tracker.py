@@ -10,13 +10,12 @@ missing configuration or an unreachable Jira yields a ``skipped`` /
 from __future__ import annotations
 
 import os
+from enum import Enum
 from typing import Any
 
-from enum import Enum
 from jira import JIRA
 from src.chandra.digital_worker.schemas import (
     CloudRequest,
-    RequestSource,
     TrackerUpdate,
 )
 from src.chandra.logging import get_logger
@@ -104,22 +103,27 @@ def update_request_ticket(
     try:
         if request.source.value == "jira" and request.external_id:
             issue_key = request.external_id
-            
+
             # Safely add comment (catching length limit errors)
             try:
                 client.add_comment(issue_key, comment)
             except Exception as e:
                 logger.warning("tracker.jira_comment_failed", error=str(e))
                 # Fallback to a shorter comment if the logs were too long
-                client.add_comment(issue_key, "Chandra Governed Workflow completed.\n(Terminal logs omitted due to Jira length limits. Check Chandra dashboard for full logs).")
-            
+                client.add_comment(
+                    issue_key,
+                    "Chandra Governed Workflow completed.\n(Terminal logs omitted due to Jira length limits. Check Chandra dashboard for full logs).",
+                )
+
             if resolved:
                 try:
                     _transition(client, issue_key, "Done")
-                    client.add_worklog(issue_key, timeSpent="15m", comment="Digital Worker automation completed.")
+                    client.add_worklog(
+                        issue_key, timeSpent="15m", comment="Digital Worker automation completed."
+                    )
                 except Exception as e:
                     logger.warning("tracker.jira_transition_failed", error=str(e))
-                    
+
             logger.info("tracker.jira_updated", issue_key=issue_key, resolved=resolved)
             return TrackerUpdate(issue_key=issue_key, status="updated", detail="comment added")
 
@@ -164,63 +168,56 @@ def _transition(client: Any, issue_key: str, status_name: str) -> None:
             return
     logger.warning("tracker.jira_transition_not_found", issue=issue_key, target=status_name)
 
+
 class JiraActivityRecorder:
     """Centralized service for writing execution milestones to Jira Activity."""
-    
+
     _recorded_events: set[str] = set()
 
     @classmethod
     def record_event(
-        cls,
-        issue_key: str,
-        job_id: str,
-        event_type: ChandraEvent,
-        **kwargs: Any
+        cls, issue_key: str, job_id: str, event_type: ChandraEvent, **kwargs: Any
     ) -> None:
         """Idempotently record a ChandraEvent into Jira Comments and History."""
         event_id = f"{issue_key}:{job_id}:{event_type.value}"
         if event_id in cls._recorded_events:
             logger.debug("tracker.event_already_recorded", event_id=event_id)
             return
-            
+
         cls._recorded_events.add(event_id)
-        
+
         try:
             client = _jira_client()
             if not client:
                 return
-                
+
             comment_text = cls._format_comment(event_type, job_id, **kwargs)
             if comment_text:
                 client.add_comment(issue_key, comment_text)
-                
+
             status_target = cls._get_transition_for_event(event_type)
             if status_target:
                 _transition(client, issue_key, status_target)
-                
+
         except Exception as exc:
             logger.error("tracker.record_event_failed", event_id=event_id, error=str(exc))
 
     @classmethod
     def record_worklog(
-        cls,
-        issue_key: str,
-        job_id: str,
-        duration_seconds: int,
-        summary: str
+        cls, issue_key: str, job_id: str, duration_seconds: int, summary: str
     ) -> None:
         """Record the actual execution time spent in Jira Worklog."""
         event_id = f"{issue_key}:{job_id}:WORKLOG"
         if event_id in cls._recorded_events:
             return
-            
+
         cls._recorded_events.add(event_id)
-        
+
         try:
             client = _jira_client()
             if not client:
                 return
-            
+
             client.add_worklog(issue_key, timeSpentSeconds=duration_seconds, comment=summary)
             logger.info("tracker.jira_worklog_added", issue=issue_key, duration=duration_seconds)
         except Exception as exc:
@@ -306,7 +303,7 @@ class JiraActivityRecorder:
                 "Final Status: FAILED"
             )
         return None
-        
+
     @staticmethod
     def _get_transition_for_event(event: ChandraEvent) -> str | None:
         mapping = {
@@ -315,6 +312,6 @@ class JiraActivityRecorder:
             ChandraEvent.APPROVAL_GRANTED: "Approved",
             ChandraEvent.EXECUTION_STARTED: "In Progress",
             ChandraEvent.VALIDATION_PASSED: "Done",
-            ChandraEvent.EXECUTION_FAILED: "Failed"
+            ChandraEvent.EXECUTION_FAILED: "Failed",
         }
         return mapping.get(event)

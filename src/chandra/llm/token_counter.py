@@ -69,8 +69,7 @@ def check_prompt_budget(
         "estimated_total_tokens": total_estimated,
         "max_allowed": max_allowed,
         "message": (
-            f"Prompt fits: ~{prompt_tokens} + {output_budget} = "
-            f"~{total_estimated} ≤ {max_allowed}"
+            f"Prompt fits: ~{prompt_tokens} + {output_budget} = ~{total_estimated} ≤ {max_allowed}"
         ),
     }
 

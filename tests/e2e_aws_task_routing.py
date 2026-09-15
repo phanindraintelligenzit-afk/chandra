@@ -1,14 +1,16 @@
-import requests
+import sys
 import time
 import uuid
-import sys
+
+import requests
 
 BASE_URL = "http://127.0.0.1:6001"
+
 
 def run_e2e_test():
     print("Starting E2E Test for AWS Task Routing Fix...")
     job_id = str(uuid.uuid4())
-    
+
     # 1. Simulate the /orchestrate API call made by WorkerActionExecutionCenter
     # when an AWS Task is approved.
     payload = {
@@ -18,13 +20,13 @@ def run_e2e_test():
             "service": "AWS",
             "isAwsTask": True,
             "action_type": "AWS_TASK",
-            "region": "us-east-1"
+            "region": "us-east-1",
         },
         "command_timeout": 300,
         "max_iterations": 5,
-        "aws_permissions": ["eab39a74-a48a-4f19-9803-e71e37cc4d62"]
+        "aws_permissions": ["eab39a74-a48a-4f19-9803-e71e37cc4d62"],
     }
-    
+
     print(f"Triggering orchestration for job: {job_id}")
     try:
         response = requests.post(f"{BASE_URL}/orchestrate", json=payload, params={"job_id": job_id})
@@ -48,20 +50,21 @@ def run_e2e_test():
             status = data.get("status")
             progress = data.get("progress")
             msg = data.get("message")
-            print(f"[{i+1}/{max_polls}] Status: {status}, Progress: {progress}%, Message: {msg}")
-            
+            print(f"[{i + 1}/{max_polls}] Status: {status}, Progress: {progress}%, Message: {msg}")
+
             if status in ["completed", "failed", "skipped", "blocked", "unverified"]:
                 print(f"Job finished with final status: {status}")
                 break
         except Exception as e:
             print(f"Error polling: {e}")
-            
+
     # Verify the job wasn't routed to action_executor_node which returns SKIPPED
     if status == "skipped" and "No handler registered" in str(msg):
-         print("FAILED: Job incorrectly routed to action_executor_node!")
-         sys.exit(1)
-         
+        print("FAILED: Job incorrectly routed to action_executor_node!")
+        sys.exit(1)
+
     print("\nTest completed successfully. Verify backend logs for ExecutionAgents routing.")
+
 
 if __name__ == "__main__":
     run_e2e_test()

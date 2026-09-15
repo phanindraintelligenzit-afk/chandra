@@ -26,10 +26,10 @@ def _new_id() -> str:
 
 class RequiredPermission(BaseModel):
     """Least-privilege permission required for the operation."""
+
     action: str = Field(description="The IAM action, e.g., s3:PutObject")
     resource: str = Field(default="*", description="The target resource ARN, if known")
     reason: str = Field(description="Why this permission is needed")
-
 
 
 class RequestSource(StrEnum):
@@ -256,6 +256,7 @@ class AuditEvent(BaseModel):
 
 class TerraformPlanEvidence(BaseModel):
     """Structured evidence from Terraform validate + plan."""
+
     validation_passed: bool = False
     plan_passed: bool = False
     resources_to_add: int = 0
@@ -269,6 +270,7 @@ class TerraformPlanEvidence(BaseModel):
 
 class Gate2ReviewPayload(BaseModel):
     """Structured payload presented to the human reviewer at Gate 2."""
+
     jira_issue_key: str | None = None
     original_request: str = ""
     planned_operation: str = ""
@@ -287,6 +289,7 @@ class Gate2ReviewPayload(BaseModel):
 
 class Gate2Decision(BaseModel):
     """Human decision at Gate 2."""
+
     approved: bool
     approver: str | None = None
     comment: str = ""
@@ -295,6 +298,7 @@ class Gate2Decision(BaseModel):
 
 class VerificationEvidence(BaseModel):
     """Post-apply verification evidence."""
+
     terraform_apply_success: bool = False
     boto3_verification_status: str = Field(
         default="pending",

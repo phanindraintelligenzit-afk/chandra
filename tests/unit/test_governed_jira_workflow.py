@@ -10,10 +10,9 @@ Every test uses MemorySaver (in-memory) and mocks LLM/AWS/Jira/Terraform.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, ClassVar
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -25,8 +24,6 @@ from src.chandra.db.models import Base
 from src.chandra.digital_worker import graph as dw_graph
 from src.chandra.digital_worker import memory, planner
 from src.chandra.digital_worker.graph import build_digital_worker_graph
-from src.chandra.digital_worker.schemas import CloudPlatform
-
 
 THREAD = {"configurable": {"thread_id": "gov-test-thread"}}
 
@@ -77,17 +74,24 @@ def gov_workflow(
     monkeypatch.setattr(memory, "lookup_plan", lambda fingerprint: None)
     monkeypatch.setattr(planner, "compose_request_analysis", lambda payload: None)
     for var in (
-        "JIRA_SERVER", "JIRA_EMAIL", "JIRA_API_TOKEN",
-        "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL", "SMTP_HOST",
+        "JIRA_SERVER",
+        "JIRA_EMAIL",
+        "JIRA_API_TOKEN",
+        "SLACK_WEBHOOK_URL",
+        "TEAMS_WEBHOOK_URL",
+        "SMTP_HOST",
     ):
         monkeypatch.delenv(var, raising=False)
-    
+
     # Mock ExecutionAgents.GenerateTerraformOnly to prevent slow LLM calls
     monkeypatch.setattr(
         "digitalworker_agents.aws_execution_agent.ExecutionAgents.GenerateTerraformOnly",
-        lambda *args, **kwargs: {"status": "success", "hcl": "terraform { }\noutput \"fake\" { value = \"1\" }"}
+        lambda *args, **kwargs: {
+            "status": "success",
+            "hcl": 'terraform { }\noutput "fake" { value = "1" }',
+        },
     )
-    
+
     # Disable real terraform apply
     monkeypatch.delenv("CHANDRA_TERRAFORM_APPLY_ENABLED", raising=False)
     return build_digital_worker_graph(checkpointer=MemorySaver())
@@ -157,9 +161,7 @@ class TestPhase3B_Gate1:
         # Should loop back to permission_selection_pause
         assert "permission_selection_pause" in snapshot.next
 
-    def test_regression_approved_jira_never_bypasses_permission(
-        self, gov_workflow: Any
-    ) -> None:
+    def test_regression_approved_jira_never_bypasses_permission(self, gov_workflow: Any) -> None:
         """Regression: approved Jira AWS request must ALWAYS enter permission_analysis,
         never bypass to execute_automation."""
         gov_workflow.invoke(dict(JIRA_AWS_PAYLOAD), config=THREAD)
@@ -292,18 +294,24 @@ class TestPhase3E_Execution:
         assert verification.get("boto3_verification_status") == "INDETERMINATE"
         assert final.get("final_status") == "INDETERMINATE"
 
-    def test_apply_failure_produces_failed(self, gov_workflow: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_apply_failure_produces_failed(
+        self, gov_workflow: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Terraform apply failure → FAILED status."""
         monkeypatch.setenv("CHANDRA_TERRAFORM_APPLY_ENABLED", "true")
         # Mock terraform to fail
         import subprocess
+
         original_run = subprocess.run
+
         def mock_run(args, **kwargs):
             if args and args[0] == "terraform" and "apply" in args:
                 from types import SimpleNamespace
+
                 return SimpleNamespace(returncode=1, stdout="", stderr="Error: apply failed")
             if args and args[0] == "terraform" and "init" in args:
                 from types import SimpleNamespace
+
                 return SimpleNamespace(returncode=0, stdout="Initialized", stderr="")
             return original_run(args, **kwargs)
 
@@ -340,27 +348,36 @@ class TestPhase3E_Execution:
         """Apply SUCCESS + boto3 verification FAILURE → FAILED (not COMPLETED)."""
         monkeypatch.setenv("CHANDRA_TERRAFORM_APPLY_ENABLED", "true")
         import subprocess
+
         original_run = subprocess.run
+
         def mock_run(args, **kwargs):
             if args and args[0] == "terraform":
                 from types import SimpleNamespace
+
                 if "init" in args:
                     return SimpleNamespace(returncode=0, stdout="Initialized", stderr="")
                 if "apply" in args:
-                    return SimpleNamespace(returncode=0, stdout="Apply complete! Resources: 1 added", stderr="")
+                    return SimpleNamespace(
+                        returncode=0, stdout="Apply complete! Resources: 1 added", stderr=""
+                    )
                 if "output" in args:
-                    return SimpleNamespace(returncode=0, stdout='{"bucket_name":{"value":"test-bucket"}}', stderr="")
+                    return SimpleNamespace(
+                        returncode=0, stdout='{"bucket_name":{"value":"test-bucket"}}', stderr=""
+                    )
             return original_run(args, **kwargs)
 
         def mock_verify_resource(self, task_name, outputs):
             return "FAILED"
 
-        with patch("subprocess.run", side_effect=mock_run):
-            with patch(
+        with (
+            patch("subprocess.run", side_effect=mock_run),
+            patch(
                 "src.chandra.execution.services.AwsResourceVerifier.verify_resource",
                 mock_verify_resource,
-            ):
-                final = self._advance_to_gate2_approved(gov_workflow)
+            ),
+        ):
+            final = self._advance_to_gate2_approved(gov_workflow)
 
         assert final.get("final_status") == "FAILED"
 

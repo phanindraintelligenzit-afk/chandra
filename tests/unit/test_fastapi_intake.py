@@ -67,7 +67,9 @@ class TestHealth:
 
 
 class TestWebhookAuth:
-    def test_unknown_source_rejected(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_source_rejected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("CHANDRA_WEBHOOK_TOKEN", raising=False)
         response = client.post("/webhooks/carrier_pigeon", json={})
         assert response.status_code == 400
@@ -160,7 +162,9 @@ class TestApprovalCenterDiscovery:
                 time.sleep(0.25)
         assert found, "submitted request never appeared in GET /requests"
 
-    def test_awaiting_approval_card_is_fully_populated(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_awaiting_approval_card_is_fully_populated(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A P1 security request with a registered automation path must pause
         at the gate and expose a complete approval card."""
         monkeypatch.delenv("CHANDRA_WEBHOOK_TOKEN", raising=False)
@@ -196,11 +200,16 @@ class TestApprovalCenterDiscovery:
         filtered = client.get("/requests", params={"status": "awaiting_approval"}).json()
         assert any(r["job_id"] == job_id for r in filtered["requests"])
 
-    def test_approve_resumes_to_completion(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_approve_resumes_to_completion(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("CHANDRA_WEBHOOK_TOKEN", raising=False)
         monkeypatch.setattr(
             "digitalworker_agents.aws_execution_agent.ExecutionAgents.GenerateTerraformOnly",
-            lambda *args, **kwargs: {"status": "success", "hcl": "terraform { }\noutput \"fake\" { value = \"1\" }"}
+            lambda *args, **kwargs: {
+                "status": "success",
+                "hcl": 'terraform { }\noutput "fake" { value = "1" }',
+            },
         )
         payload = {
             "dry_run": True,
@@ -222,14 +231,18 @@ class TestApprovalCenterDiscovery:
             json={"approved": True, "approver": "phani", "comment": "go"},
         )
         assert approve.status_code == 202
-        
+
         # It should now pause at awaiting_permission
         _poll_request(client, job_id, {"awaiting_permission"})
-        
+
         # Now attach permission set — should proceed through Gate 1 and pause at Gate 2
         attach = client.post(
             f"/requests/{job_id}/approve",
-            json={"approved": True, "approver": "Copilot", "permission_set_id": "eab39a74-a48a-4f19-9803-e71e37cc4d62"},
+            json={
+                "approved": True,
+                "approver": "Copilot",
+                "permission_set_id": "eab39a74-a48a-4f19-9803-e71e37cc4d62",
+            },
         )
         assert attach.status_code == 202
 

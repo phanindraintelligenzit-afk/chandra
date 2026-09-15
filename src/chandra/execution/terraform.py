@@ -65,7 +65,9 @@ def _run(args: list[str], cwd: Path) -> tuple[bool, str]:
     return proc.returncode == 0, output[:4000]
 
 
-def validate_terraform(hcl: str, *, run_plan: bool = False, workdir: str | None = None) -> TerraformValidation:
+def validate_terraform(
+    hcl: str, *, run_plan: bool = False, workdir: str | None = None
+) -> TerraformValidation:
     """Validate a block of Terraform HCL. ``run_plan`` gates the (credential-
     requiring) ``terraform plan`` stage; leave False in unit/offline runs."""
     if not terraform_available():
@@ -76,8 +78,9 @@ def validate_terraform(hcl: str, *, run_plan: bool = False, workdir: str | None 
         )
 
     stages: list[TerraformStage] = []
-    
+
     import contextlib
+
     @contextlib.contextmanager
     def _get_workdir():
         if workdir:
@@ -89,7 +92,6 @@ def validate_terraform(hcl: str, *, run_plan: bool = False, workdir: str | None 
                 yield wd
 
     with _get_workdir() as wd:
-
         plan_stages = [
             ("fmt", ["fmt", "-check", "-diff"]),
             ("init", ["init", "-backend=false", "-input=false", "-no-color"]),
