@@ -54,7 +54,7 @@ from src.chandra.governance import (
 from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
-from src.chandra.api import deps, runtime
+from src.chandra.api import deps, graphs, runtime
 from src.chandra.api.models import ActionInput
 from src.chandra.api.logbuffer import log_buffer
 from src.chandra.memory.cache import get_cache
@@ -292,25 +292,14 @@ async def _edge_middleware(request: Request, call_next):
     return response
 
 
-# Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
-# Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
-# (e.g. Bedrock unreachable, Postgres timeout, missing env var)
-try:
-    _copilot_agent = build_graph()
-    logger.info("Copilot agent initialized successfully")
-except Exception as _e:
-    logger.error("Failed to initialize copilot agent: %s", _e)
-    _copilot_agent = None
-
-# Digital Worker request workflow (omnichannel intake). Built once so the
-# in-memory checkpointer persists across requests — approval resumes are
-# keyed by thread_id == job_id.
-try:
-    _digital_worker = build_digital_worker_graph()
-    logger.info("Digital Worker graph initialized successfully")
-except Exception as _e:
-    logger.error("Failed to initialize Digital Worker graph: %s", _e)
-    _digital_worker = None
+# Both compiled graphs live in src/chandra/api/graphs.py so routers can reach
+# them without importing this module. Built once: the Digital Worker
+# checkpointer keys paused approvals by thread_id == job_id, so rebuilding
+# between a submission and its approval would orphan every in-flight interrupt.
+graphs.init_copilot_agent()
+graphs.init_digital_worker()
+_copilot_agent = graphs.copilot_agent
+_digital_worker = graphs.digital_worker
 
 
 # Scan/metrics request models moved to src/chandra/api/routers/scans.py.
@@ -333,8 +322,7 @@ def health_ready():
     """
     components: Dict[str, str] = {}
 
-    components["copilot_agent"] = "ok" if _copilot_agent is not None else "unavailable"
-    components["digital_worker"] = "ok" if _digital_worker is not None else "unavailable"
+    components.update(graphs.component_status())
 
     try:
         from sqlalchemy import text as _sql_text
