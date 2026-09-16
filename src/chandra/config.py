@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     # --- Redis cache / live log stream. Empty disables; nothing depends on it.
     redis_url: str = Field(default="", alias="REDIS_URL")
 
+    # --- Refuse to start on an in-memory checkpointer. Production should set
+    # this: the fallback silently loses every paused approval on restart.
+    require_durable_checkpointer: bool = Field(
+        default=False, alias="CHANDRA_REQUIRE_DURABLE_CHECKPOINTER"
+    )
+
+    # --- CloudWatch metric emission. Disabled in tests so the suite is hermetic.
+    metrics_enabled: bool = Field(default=True, alias="CHANDRA_METRICS_ENABLED")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     otel_endpoint: str | None = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")

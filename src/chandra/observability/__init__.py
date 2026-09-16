@@ -162,8 +162,19 @@ def _emit_metric(
     dimensions: dict[str, str] | None = None,
     **tags: Any,
 ) -> None:
-    """Emit a metric to CloudWatch in a background thread."""
+    """Emit a metric to CloudWatch in a background thread.
+
+    ``CHANDRA_METRICS_ENABLED=false`` skips the AWS call entirely and only logs.
+    The test suite sets it: emitting real CloudWatch metrics from unit tests made
+    the suite slow and network-dependent, and the failures were swallowed, so the
+    reach-out was invisible rather than absent.
+    """
     logger.info(f"metric.emit: {metric_name}={value}", extra=tags)
+
+    from src.chandra.config import settings  # lazy: avoid import cycle at module load
+
+    if not settings.metrics_enabled:
+        return
 
     def _put() -> None:
         try:

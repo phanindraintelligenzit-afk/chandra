@@ -7,7 +7,16 @@ from src.chandra.observability import traced_node
 
 
 @pytest.fixture
-def mock_cw():
+def mock_cw(monkeypatch):
+    """moto-backed CloudWatch, with metric emission explicitly re-enabled.
+
+    The suite disables emission globally so unit tests do not reach AWS; these
+    tests exist to verify emission itself, so they opt back in against moto
+    rather than against the real service.
+    """
+    from src.chandra.config import settings
+
+    monkeypatch.setattr(settings, "metrics_enabled", True, raising=False)
     with mock_aws():
         yield
 

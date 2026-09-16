@@ -29,12 +29,47 @@ from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
-SUPPORTED_PROVIDERS = ("bedrock", "openai", "openai_compatible", "vllm", "ollama")
+SUPPORTED_PROVIDERS = ("bedrock", "openai", "openai_compatible", "vllm", "ollama", "none")
+
+
+class LLMDisabledError(RuntimeError):
+    """An LLM call was attempted with ``LLM_PROVIDER=none``."""
+
+
+class DisabledChatModel:
+    """Stand-in returned by ``provider="none"``, used by the test suite.
+
+    Construction succeeds and every *call* raises. That split is deliberate:
+    components legitimately build a model at init and only invoke it on the LLM
+    path, so failing at construction would break objects that were never going
+    to make a call. Raising on invoke instead exercises exactly the branch a
+    real provider outage would — and every caller must already handle that by
+    falling back to a deterministic path, which is a design requirement here,
+    not a convenience.
+    """
+
+    def _fail(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise LLMDisabledError("LLM_PROVIDER=none: no model is configured")
+
+    invoke = _fail
+    ainvoke = _fail
+    stream = _fail
+    astream = _fail
+    batch = _fail
+
+    def bind_tools(self, *_args: Any, **_kwargs: Any) -> DisabledChatModel:
+        return self
+
+    def with_structured_output(self, *_args: Any, **_kwargs: Any) -> DisabledChatModel:
+        return self
 
 
 def build_chat_model(model: str | None = None, provider: str | None = None, **kwargs: Any) -> Any:
     """Build a chat model for the given provider."""
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
+
+    if provider == "none":
+        return DisabledChatModel()
 
     if provider == "bedrock":
         from langchain_aws import ChatBedrockConverse

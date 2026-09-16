@@ -1,3 +1,12 @@
+"""Manual check: make a real Bedrock call and report token usage and cost.
+
+Not a test. It lived at tests/test_llm_tokens.py, where pytest collected it by
+filename and executed a live Bedrock call at import time — which is why the
+suite reached the network. Run it deliberately:
+
+    uv run python scripts/check_llm_tokens.py
+"""
+
 import json
 
 from src.chandra.llm import build_chat_model

@@ -9,6 +9,12 @@ import boto3
 import pytest
 
 # Force a fake region BEFORE moto is imported so boto3 sessions resolve cleanly.
+# Hermetic by default: no CloudWatch metric emission and no Bedrock calls from a
+# unit test. Both previously happened and both failed silently, which made the
+# suite slow and network-dependent without making any test fail.
+os.environ.setdefault("CHANDRA_METRICS_ENABLED", "false")
+os.environ.setdefault("LLM_PROVIDER", "none")
+
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
