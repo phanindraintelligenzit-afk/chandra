@@ -21,6 +21,7 @@ from src.chandra.digital_worker.schemas import (
     TrackerUpdate,
     ValidationResult,
 )
+from src.chandra.governance import PolicyDecision
 
 
 class DigitalWorkerState(TypedDict, total=False):
@@ -48,6 +49,8 @@ class DigitalWorkerState(TypedDict, total=False):
     root_cause: RootCause
     plan: ResolutionPlan
     risk: RiskAssessment
+    policy_decision: PolicyDecision
+    maturity_level: str
     decision: ExecutionDecision
     approval: ApprovalRecord
     execution: ExecutionOutcome

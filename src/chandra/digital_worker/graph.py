@@ -47,6 +47,7 @@ from src.chandra.digital_worker.schemas import (
     CloudPlatform,
     CloudRequest,
     DecisionMode,
+    ExecutionDecision,
     ExecutionOutcome,
     NotificationResult,
     RequestPriority,
@@ -57,6 +58,13 @@ from src.chandra.digital_worker.schemas import (
 from src.chandra.digital_worker.state import DigitalWorkerState
 from src.chandra.digital_worker.tracker import update_request_ticket
 from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.governance import (
+    PolicyContext,
+    PolicyDecision,
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRulesUnavailableError,
+)
 from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.logging import get_logger
 from src.chandra.observability import correlation
@@ -266,9 +274,95 @@ def risk_analysis(state: DigitalWorkerState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def policy_evaluation(state: DigitalWorkerState) -> dict[str, Any]:
+    """Stage 6 policy controls: is this work permitted at all? (PRD §26.7)
+
+    Deterministic and LLM-free. Runs before risk analysis — risk grades a
+    permitted action, it does not decide permission. A DENY does not end the
+    workflow here: the run continues through risk and decision so the audit
+    record is complete, and ``decision`` converts the deny into engineer
+    guidance. Nothing downstream can execute a denied request.
+    """
+    request = state["request"]
+    classification = state["classification"]
+    plan = state["plan"]
+
+    context = PolicyContext(
+        category=classification.category.value,
+        platform=classification.platform.value,
+        responsibility_area=getattr(classification, "responsibility_area", None),
+        maturity_level=state.get("maturity_level"),
+        source=request.source.value,
+        task=request.title,
+        actions=[p.action for p in state.get("required_permissions", [])],
+    )
+
+    engine = PolicyEngine(
+        tenant_id=state.get("tenant_id") or DEFAULT_TENANT, session_factory=session_scope
+    )
+    try:
+        verdict = engine.evaluate(context)
+    except PolicyRulesUnavailableError as exc:
+        # Fail closed: an unreadable rule set is not an empty rule set.
+        logger.error("policy.unavailable_failing_closed", error=str(exc))
+        verdict = PolicyDecision(
+            effect=PolicyEffect.DENY,
+            reason="Policy rules could not be read; failing closed",
+        )
+
+    logger.info(
+        "graph.policy_evaluated",
+        request_id=request.request_id,
+        effect=verdict.effect.value,
+        rule=verdict.matched_rule_id,
+        plan_source=plan.generated_by,
+    )
+    return {
+        "policy_decision": verdict,
+        "audit_trail": [
+            _audit(
+                "policy_evaluation",
+                "policy_denied" if not verdict.allowed else "policy_allowed",
+                effect=verdict.effect.value,
+                reason=verdict.reason,
+                matched_rule_id=verdict.matched_rule_id,
+                matched_actions=verdict.matched_actions,
+                default_applied=verdict.default_applied,
+                plan_source=plan.generated_by,
+            )
+        ],
+    }
+
+
 def decision(state: DigitalWorkerState) -> dict[str, Any]:
     """Dynamically evaluate the execute-vs-guidance decision using the Decision Engine."""
     from src.chandra.digital_worker.decision_engine import evaluate_decision
+
+    policy = state.get("policy_decision")
+    if policy is not None and not policy.allowed:
+        # A policy denial is terminal for automation: no approval can override it
+        # here, and no cached plan can bypass it (PRD §26.6/§26.7).
+        logger.info(
+            "graph.decision",
+            request_id=state["request"].request_id,
+            mode=DecisionMode.ENGINEER_GUIDANCE.value,
+            reason=f"Policy denied: {policy.reason}",
+        )
+        return {
+            "decision": ExecutionDecision(
+                mode=DecisionMode.ENGINEER_GUIDANCE,
+                reason=f"Policy denied: {policy.reason}",
+            ),
+            "audit_trail": [
+                _audit(
+                    "decision",
+                    "decision_made",
+                    mode=DecisionMode.ENGINEER_GUIDANCE.value,
+                    reason=f"Policy denied: {policy.reason}",
+                    matched_rule_id=policy.matched_rule_id,
+                )
+            ],
+        }
 
     verdict = evaluate_decision(
         request=state["request"],
@@ -1727,6 +1821,7 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
         ("root_cause_analysis", root_cause_analysis),
         ("plan_resolution", plan_resolution),
         ("risk_analysis", risk_analysis),
+        ("policy_evaluation", policy_evaluation),
         ("decision", decision),
         ("approval_gate", approval_gate),
         ("permission_analysis", permission_analysis),
@@ -1754,7 +1849,8 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     graph.add_edge("identify_platform", "collect_context")
     graph.add_edge("collect_context", "root_cause_analysis")
     graph.add_edge("root_cause_analysis", "plan_resolution")
-    graph.add_edge("plan_resolution", "risk_analysis")
+    graph.add_edge("plan_resolution", "policy_evaluation")
+    graph.add_edge("policy_evaluation", "risk_analysis")
     graph.add_edge("risk_analysis", "decision")
 
     graph.add_conditional_edges(

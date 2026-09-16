@@ -231,3 +231,78 @@ class TestMemoryHitTraversesGateChain:
         assert values.get("gate_1_passed") is False
         assert values["gate_1_result"]["missing_actions"]
         assert "terraform_applied" not in _events(values)
+
+
+class TestPolicyAppliesToCachedPlans:
+    """Stage 6 policy controls bind a reused plan exactly as they bind a fresh one."""
+
+    def _deny_all_aws(self, scope: Any) -> None:
+        from src.chandra.db.models import PolicyRuleRecord
+        from src.chandra.governance import PolicyEffect, PolicyRule
+        from src.chandra.governance.policy import rule_to_criteria
+
+        rule = PolicyRule(
+            id="deny-prod-s3",
+            name="No automated S3 policy changes in production",
+            effect=PolicyEffect.DENY,
+            reason="S3 public-access changes are handled by the platform team",
+            platforms=["aws"],
+        )
+        with scope() as session:
+            session.add(
+                PolicyRuleRecord(
+                    id=rule.id,
+                    tenant_id="default",
+                    name=rule.name,
+                    effect=rule.effect.value,
+                    priority=rule.priority,
+                    enabled=rule.enabled,
+                    reason=rule.reason,
+                    criteria_jsonb=rule_to_criteria(rule),
+                )
+            )
+
+    def test_policy_denies_a_cached_plan_and_blocks_execution(
+        self, memory_hit_workflow: Any, scope: Any
+    ) -> None:
+        self._deny_all_aws(scope)
+        config = {"configurable": {"thread_id": "memory-policy-deny"}}
+        state = memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+
+        assert state["plan"].generated_by == "memory"
+        assert state["policy_decision"].allowed is False
+        assert state["decision"].mode.value == "engineer_guidance"
+        events = _events(state)
+        assert "policy_denied" in events
+        assert "terraform_applied" not in events
+        assert "automation_executed" not in events
+
+    def test_denied_run_never_pauses_for_an_approval_that_could_override(
+        self, memory_hit_workflow: Any, scope: Any
+    ) -> None:
+        """A policy denial is not an approval question. The run must not stop at
+        the human gate, because stopping there would invite someone to approve
+        past a prohibition."""
+        self._deny_all_aws(scope)
+        config = {"configurable": {"thread_id": "memory-policy-no-gate"}}
+        memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+        snapshot = memory_hit_workflow.get_state(config)
+        assert not snapshot.next
+        assert "approval_granted" not in _events(snapshot.values)
+
+    def test_policy_is_evaluated_before_risk(self, memory_hit_workflow: Any) -> None:
+        """PRD §26.7 ordering: policy controls precede risk analysis."""
+        state = memory_hit_workflow.invoke(
+            dict(JIRA_PAYLOAD), config={"configurable": {"thread_id": "memory-policy-order"}}
+        )
+        events = _events(state)
+        assert events.index("policy_allowed") < events.index("risk_assessed")
+
+    def test_allowed_run_is_unchanged_by_an_empty_rule_set(self, memory_hit_workflow: Any) -> None:
+        """No rules authored => default allow => the pre-policy behaviour of
+        halting at the human approval gate is preserved."""
+        config = {"configurable": {"thread_id": "memory-policy-default"}}
+        memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+        snapshot = memory_hit_workflow.get_state(config)
+        assert snapshot.values["policy_decision"].default_applied is True
+        assert "approval_gate" in (snapshot.next or ())
