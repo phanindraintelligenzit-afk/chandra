@@ -306,3 +306,65 @@ class TestPolicyAppliesToCachedPlans:
         snapshot = memory_hit_workflow.get_state(config)
         assert snapshot.values["policy_decision"].default_applied is True
         assert "approval_gate" in (snapshot.next or ())
+
+
+class TestRbacAtTheHumanGates:
+    """Approval is a capability, not a text field (PRD §26.7)."""
+
+    def _assign(self, scope: Any, principal: str, role: str) -> None:
+        from src.chandra.db.models import PrincipalRoleRecord
+
+        with scope() as session:
+            session.add(PrincipalRoleRecord(tenant_id="default", principal_id=principal, role=role))
+
+    def test_unauthorized_approver_cannot_release_execution(
+        self, memory_hit_workflow: Any, scope: Any
+    ) -> None:
+        """A spinner configures the worker but must not approve a run. An approval
+        from one is recorded, refused, and routed to guidance — never to
+        execution."""
+        self._assign(scope, "priya", "agent_spinner")
+        config = {"configurable": {"thread_id": "rbac-gate-deny"}}
+        memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+        memory_hit_workflow.invoke(
+            Command(resume={"approved": True, "approver": "priya", "comment": "go"}),
+            config=config,
+        )
+        values = memory_hit_workflow.get_state(config).values
+
+        assert values["approval"].approved is False
+        events = _events(values)
+        assert "rbac_denied" in events
+        assert "terraform_applied" not in events
+        assert "automation_executed" not in events
+
+    def test_authorized_approver_proceeds_normally(
+        self, memory_hit_workflow: Any, scope: Any
+    ) -> None:
+        self._assign(scope, "nagendra", "agent_user")
+        config = {"configurable": {"thread_id": "rbac-gate-allow"}}
+        memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+        memory_hit_workflow.invoke(
+            Command(resume={"approved": True, "approver": "nagendra", "comment": "go"}),
+            config=config,
+        )
+        snapshot = memory_hit_workflow.get_state(config)
+
+        assert snapshot.values["approval"].approved is True
+        assert "rbac_denied" not in _events(snapshot.values)
+        assert "permission_selection_pause" in (snapshot.next or ())
+
+    def test_rejection_is_not_subjected_to_an_approval_check(
+        self, memory_hit_workflow: Any, scope: Any
+    ) -> None:
+        """Anyone may decline. Only granting approval is a privileged act — making
+        rejection privileged would let an unauthorized 'no' be silently upgraded."""
+        config = {"configurable": {"thread_id": "rbac-gate-reject"}}
+        memory_hit_workflow.invoke(dict(JIRA_PAYLOAD), config=config)
+        memory_hit_workflow.invoke(
+            Command(resume={"approved": False, "approver": "stranger", "comment": "no"}),
+            config=config,
+        )
+        values = memory_hit_workflow.get_state(config).values
+        assert values["approval"].approved is False
+        assert "rbac_denied" not in _events(values)

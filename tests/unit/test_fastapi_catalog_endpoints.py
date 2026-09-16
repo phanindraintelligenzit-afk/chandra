@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from src.chandra.catalog import ConfigRepository
 from src.chandra.db.models import Base
+from src.chandra.governance import RbacEngine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_FILES = [
@@ -50,6 +51,13 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
     monkeypatch.setattr(
         fastapi_app, "_config_repo", lambda tenant_id="default": ConfigRepository(tenant_id, _scope)
+    )
+    # RBAC reads its assignments from the same SQLite scope. None are granted, so
+    # the tenant is unconfigured and every caller retains the pre-RBAC capabilities.
+    monkeypatch.setattr(
+        fastapi_app,
+        "_rbac_engine",
+        lambda tenant_id="default": RbacEngine(tenant_id=tenant_id, session_factory=_scope),
     )
     # No lifespan context on purpose: these endpoints need no startup, and running
     # a second startup/shutdown cycle would tear down the shared job executor that

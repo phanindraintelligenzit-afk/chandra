@@ -361,3 +361,24 @@ class PolicyRuleRecord(Base):
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PrincipalRoleRecord(Base):
+    """Role assignment for a principal (PRD §26.7 RBAC).
+
+    ``principal_id`` is caller-supplied until Phase 3 authenticates it; the
+    column is the same either way, so binding it to a verified JWT subject later
+    requires no schema change.
+    """
+
+    __tablename__ = "principal_roles"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    principal_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    granted_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )

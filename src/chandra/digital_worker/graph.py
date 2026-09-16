@@ -59,11 +59,15 @@ from src.chandra.digital_worker.state import DigitalWorkerState
 from src.chandra.digital_worker.tracker import update_request_ticket
 from src.chandra.escalation.schemas import EscalationPayload
 from src.chandra.governance import (
+    AuthorizationError,
+    Capability,
     PolicyContext,
     PolicyDecision,
     PolicyEffect,
     PolicyEngine,
     PolicyRulesUnavailableError,
+    RbacEngine,
+    RolesUnavailableError,
 )
 from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.logging import get_logger
@@ -410,6 +414,46 @@ def route_decision(state: DigitalWorkerState) -> str:
     return "generate_guidance"
 
 
+def _authorize_actor(
+    state: DigitalWorkerState, actor: str | None, capability: Capability, node: str
+) -> tuple[bool, AuditEvent | None]:
+    """Check an approving/attaching human against the tenant's role assignments.
+
+    Returns ``(authorized, denial_audit_event)``. A refusal is never fatal to the
+    graph — it is recorded and the run is treated as *not approved*, which routes
+    to engineer guidance. Treating it as an error would make an unauthorized
+    click indistinguishable from a system fault.
+    """
+    engine = RbacEngine(
+        tenant_id=state.get("tenant_id") or DEFAULT_TENANT, session_factory=session_scope
+    )
+    try:
+        engine.authorize(actor, capability)
+    except AuthorizationError as exc:
+        logger.warning(
+            "rbac.denied", node=node, actor=actor, capability=capability.value, error=str(exc)
+        )
+        return False, _audit(
+            node,
+            "rbac_denied",
+            actor=actor or "anonymous",
+            capability=capability.value,
+            reason=str(exc),
+        )
+    except RolesUnavailableError as exc:
+        # Fail closed, as with policy rules: unreadable assignments are not
+        # "no assignments".
+        logger.error("rbac.unavailable_failing_closed", node=node, error=str(exc))
+        return False, _audit(
+            node,
+            "rbac_denied",
+            actor=actor or "anonymous",
+            capability=capability.value,
+            reason="Role assignments could not be read; failing closed",
+        )
+    return True, None
+
+
 def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
     """Human-in-the-loop gate. The graph is compiled with
     ``interrupt_before=["approval_gate"]``; on resume the ``interrupt``
@@ -427,6 +471,20 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
     record = (
         payload if isinstance(payload, ApprovalRecord) else ApprovalRecord.model_validate(payload)
     )
+
+    rbac_events: list[AuditEvent] = []
+    if record.approved:
+        authorized, denial = _authorize_actor(
+            state, record.approver, Capability.APPROVE_REQUEST, "approval_gate"
+        )
+        if not authorized and denial is not None:
+            record = record.model_copy(
+                update={
+                    "approved": False,
+                    "comment": f"Approval rejected: {denial.data.get('reason', 'not authorized')}",
+                }
+            )
+            rbac_events.append(denial)
 
     request = state["request"]
     if request.source.value == "jira" and request.external_id:
@@ -457,13 +515,14 @@ def approval_gate(state: DigitalWorkerState) -> dict[str, Any]:
     return {
         "approval": record,
         "audit_trail": [
+            *rbac_events,
             _audit(
                 "approval_gate",
                 "approval_decided",
                 approved=record.approved,
                 approver=record.approver,
                 comment=record.comment,
-            )
+            ),
         ],
     }
 
@@ -901,6 +960,20 @@ def gate_2_review(state: DigitalWorkerState) -> dict[str, Any]:
         payload if isinstance(payload, Gate2Decision) else Gate2Decision.model_validate(payload)
     )
 
+    gate2_rbac_events: list[AuditEvent] = []
+    if decision.approved:
+        authorized, denial = _authorize_actor(
+            state, decision.approver, Capability.APPROVE_REQUEST, "gate_2_review"
+        )
+        if not authorized and denial is not None:
+            decision = decision.model_copy(
+                update={
+                    "approved": False,
+                    "comment": f"Approval rejected: {denial.data.get('reason', 'not authorized')}",
+                }
+            )
+            gate2_rbac_events.append(denial)
+
     logger.info(
         "TRANSITION: GATE_2_%s",
         "APPROVED" if decision.approved else "REJECTED",
@@ -914,12 +987,13 @@ def gate_2_review(state: DigitalWorkerState) -> dict[str, Any]:
             "comment": decision.comment,
         },
         "audit_trail": [
+            *gate2_rbac_events,
             _audit(
                 "gate_2_review",
                 "gate_2_decided",
                 approved=decision.approved,
                 approver=decision.approver,
-            )
+            ),
         ],
     }
 
