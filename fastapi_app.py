@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,7 +40,18 @@ from tools.aws_cloud_tools.tool_findings import run_all_detectors, run_predefine
 from copilot_agents.graph import build_graph, chat as copilot_chat
 from src.chandra.digital_worker.graph import build_digital_worker_graph
 from src.chandra.digital_worker.intake import SUPPORTED_SOURCES
+from src.chandra.governance import (
+    AuthorizationError,
+    Capability,
+    Principal,
+    RbacEngine,
+    RolesUnavailableError,
+)
 from src.chandra.observability import correlation
+from src.chandra import security
+from src.chandra.api import WebSocketManager
+from src.chandra.config import settings
+from src.chandra.security.ratelimit import RateLimiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +115,25 @@ _bg_loop_thread = threading.Thread(
     target=_start_bg_loop, args=(_bg_loop,), daemon=True, name="bg-async-loop"
 )
 _bg_loop_thread.start()
+
+# Live job state fan-out (PRD L2 stage 2). Bound to the background loop so
+# worker threads can publish without touching asyncio.
+ws_manager = WebSocketManager()
+ws_manager.bind_loop(_bg_loop)
+
+
+def _publish_job_state(job_id: str) -> None:
+    """Announce a job's current state to WebSocket subscribers.
+
+    Best-effort by design: the job store remains the source of truth and
+    /jobs/status/{job_id} still answers, so a dropped broadcast costs a client
+    nothing but latency.
+    """
+    with _job_store_lock:
+        job = dict(_job_store.get(job_id, {}))
+    if job:
+        job.pop("result", None)  # the summary feed stays small; full result via HTTP
+        ws_manager.publish_threadsafe(job_id, job)
 
 
 def _run_async(coro) -> Any:
@@ -174,6 +204,7 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    security.validate_auth_configuration()
     from src.chandra.config import settings
     provider = (settings.llm_provider or "bedrock").strip().lower()
     
@@ -230,23 +261,82 @@ app.add_middleware(
 )
 
 
+# Paths reachable without a token: liveness/readiness must answer before auth is
+# configured, and the docs are how an operator discovers the auth requirement.
+_PUBLIC_PATHS = frozenset(
+    {"/health/live", "/health/ready", "/docs", "/redoc", "/openapi.json", "/"}
+)
+
+
+def _identity_from_request(request: Request) -> tuple[str | None, str]:
+    """Resolve (principal_id, tenant_id) for this request.
+
+    With auth enabled both come from verified JWT claims and the headers are
+    ignored entirely — otherwise a caller could authenticate as themselves and
+    then assert someone else's principal in a header.
+    """
+    if security.auth_enabled():
+        identity = security.decode_token(security.bearer_token(request.headers.get("Authorization")) or "")
+        return identity.principal_id, identity.tenant_id
+    return (
+        request.headers.get(PRINCIPAL_HEADER),
+        correlation.sanitize(
+            request.headers.get(correlation.TENANT_HEADER), fallback=correlation.DEFAULT_TENANT
+        ),
+    )
+
+
 @app.middleware("http")
-async def _correlation_middleware(request: Request, call_next):
-    """PRD 26.11: bind a correlation id (+ tenant) for every request and echo it back."""
+async def _edge_middleware(request: Request, call_next):
+    """PRD L2 stage 2 + 26.11: authenticate, rate limit, and bind correlation.
+
+    Order matters. Correlation is bound first so an auth failure is still
+    traceable; rate limiting runs before authentication so an unauthenticated
+    flood is cheap to shed.
+    """
     cid = correlation.sanitize(
         request.headers.get(correlation.CORRELATION_HEADER),
         fallback=correlation.new_correlation_id(),
     )
-    tid = correlation.sanitize(
-        request.headers.get(correlation.TENANT_HEADER), fallback=correlation.DEFAULT_TENANT
-    )
-    correlation.bind(cid, tid)
+    path = request.url.path
+    public = path in _PUBLIC_PATHS
+
     try:
+        if not public:
+            allowed, retry_after = rate_limiter.check(_rate_limit_key(request))
+            if not allowed:
+                correlation.bind(cid, correlation.DEFAULT_TENANT)
+                logger.warning("edge.rate_limited path=%s", path)
+                response = JSONResponse(
+                    status_code=429,
+                    content={"status": "error", "detail": "Rate limit exceeded"},
+                )
+                response.headers["Retry-After"] = str(retry_after)
+                response.headers[correlation.CORRELATION_HEADER] = cid
+                return response
+
+        try:
+            principal_id, tenant_id = (None, correlation.DEFAULT_TENANT) if public else _identity_from_request(request)
+        except security.AuthError as exc:
+            correlation.bind(cid, correlation.DEFAULT_TENANT)
+            logger.warning("edge.unauthenticated path=%s reason=%s", path, exc)
+            response = JSONResponse(
+                status_code=401,
+                content={"status": "error", "detail": str(exc)},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            response.headers[correlation.CORRELATION_HEADER] = cid
+            return response
+
+        correlation.bind(cid, tenant_id)
+        _thread_local.principal_id = principal_id
         response = await call_next(request)
     finally:
         correlation.clear()
+        _thread_local.principal_id = None
     response.headers[correlation.CORRELATION_HEADER] = cid
     return response
+
 
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
 # Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
@@ -326,6 +416,47 @@ def health_ready():
 from src.chandra.catalog import DEFAULT_TENANT, DIGITAL_WORKER_SETTINGS_KEY, ConfigRepository
 
 
+
+PRINCIPAL_HEADER = "X-Principal-ID"
+
+rate_limiter = RateLimiter(settings.rate_limit_per_minute)
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Per-principal when we know who is calling, per-source-IP otherwise."""
+    principal = request.headers.get(PRINCIPAL_HEADER)
+    if principal:
+        return f"principal:{principal}"
+    client = request.client
+    return f"ip:{client.host if client else 'unknown'}"
+
+
+def _rbac_engine(tenant_id: str = DEFAULT_TENANT) -> RbacEngine:
+    return RbacEngine(tenant_id=tenant_id)
+
+
+def _require_capability(request: Request, capability: Capability) -> Principal:
+    """Enforce RBAC for a configuration change (PRD §26.7).
+
+    The principal comes from a header because there is no authentication layer
+    until Phase 3 — this is defence in depth over an unverified subject, not an
+    identity control. Phase 3 replaces the header read with a verified JWT claim;
+    nothing else here changes.
+    """
+    engine = _rbac_engine(correlation.get_tenant_id())
+    try:
+        principal_id = getattr(_thread_local, "principal_id", None) or request.headers.get(
+            PRINCIPAL_HEADER
+        )
+        return engine.authorize(principal_id, capability)
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RolesUnavailableError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Role assignments unavailable: {exc}"
+        ) from exc
+
+
 def _config_repo(tenant_id: str = DEFAULT_TENANT) -> ConfigRepository:
     return ConfigRepository(tenant_id=tenant_id)
 
@@ -357,8 +488,9 @@ class CustomKrasPayload(BaseModel):
 
 
 @app.put("/customKras")
-def put_custom_kras(payload: CustomKrasPayload):
+def put_custom_kras(payload: CustomKrasPayload, request: Request):
     """Replace the tenant's custom KRAs with the supplied list."""
+    _require_capability(request, Capability.CONFIGURE_WORKER)
     try:
         written = _save_custom_kras_to_disk(payload.kras)
         return JSONResponse(
@@ -504,6 +636,28 @@ def get_job_status_generic(job_id: str):
             })
         job = dict(_job_store[job_id])
     return JSONResponse(status_code=200, content={"job_id": job_id, **job})
+
+
+@app.websocket("/ws/jobs/{job_id}")
+async def job_state_socket(websocket: WebSocket, job_id: str):
+    """Live job state. Read-only: this is a status feed, not a command channel —
+    accepting commands here would route around the authenticated, rate-limited,
+    RBAC-checked HTTP edge."""
+    with _job_store_lock:
+        snapshot = dict(_job_store.get(job_id, {}))
+    await ws_manager.subscribe(job_id, websocket)
+    try:
+        if snapshot:
+            snapshot.pop("result", None)
+            await websocket.send_json({"job_id": job_id, **snapshot})
+        else:
+            await websocket.send_json({"job_id": job_id, "status": "not_found"})
+        while True:
+            await websocket.receive_text()
+    except Exception:
+        pass
+    finally:
+        await ws_manager.unsubscribe(job_id, websocket)
 
 
 # ── Background task functions ─────────────────────────────────────────────────
@@ -1617,6 +1771,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
 
+        _publish_job_state(job_id)
         final_state = _digital_worker.invoke(
             {
                 "source": submission.source,
@@ -1663,6 +1818,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                         "resume_url": f"/requests/{job_id}/approve",
                     },
                 }
+            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting approval", job_id)
             return
             
@@ -1675,6 +1831,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["progress"] = 75
                 _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
                 _job_store[job_id]["result"] = interrupt_val
+            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
@@ -1694,6 +1851,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                     "thread_id": job_id,
                     "review": interrupt_val.get("review", {}),
                 }
+            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting Gate 2 execution review", job_id)
             return
 
@@ -1721,6 +1879,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                     "questions": questions,
                     "summary": summary,
                 }
+            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
@@ -1735,6 +1894,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             if _job_store[job_id].get("status") != "stopped":
                 _job_store[job_id]["status"] = "stopped"
                 _job_store[job_id]["completed_at"] = time.time()
+        _publish_job_state(job_id)
     except BaseException as exc:
         logger.exception("DIGITAL WORKER JOB [%s] failed with exception", job_id)
         with _job_store_lock:
@@ -1743,6 +1903,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["error"] = str(exc)
                 _job_store[job_id]["completed_at"] = time.time()
                 _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+        _publish_job_state(job_id)
     finally:
         _thread_local.job_id = None
 
@@ -2141,8 +2302,9 @@ def get_digital_worker_settings():
     return DigitalWorkerSettings()
 
 @app.post("/settings/digital-worker")
-def update_digital_worker_settings(settings: DigitalWorkerSettings):
+def update_digital_worker_settings(settings: DigitalWorkerSettings, request: Request):
     """Update the tenant's digital worker settings."""
+    _require_capability(request, Capability.CONFIGURE_WORKER)
     try:
         _config_repo().put_setting(DIGITAL_WORKER_SETTINGS_KEY, settings.model_dump())
         return {"status": "success"}
@@ -2241,7 +2403,8 @@ def get_aws_tasks():
 
 @app.put("/api/aws-tasks")
 @app.put("/aws-tasks")
-def put_aws_tasks(payload: AwsTasksPayload):
+def put_aws_tasks(payload: AwsTasksPayload, request: Request):
+    _require_capability(request, Capability.CONFIGURE_WORKER)
     try:
         written = _save_aws_tasks_to_disk(payload.tasks)
         return JSONResponse(
@@ -2301,7 +2464,8 @@ def get_permission_sets():
     )
 
 @app.put("/api/permission-sets")
-def put_permission_sets(payload: PermissionSetsPayload):
+def put_permission_sets(payload: PermissionSetsPayload, request: Request):
+    _require_capability(request, Capability.CONFIGURE_WORKER)
     try:
         written = _save_aws_permissions_to_disk(payload.permissions)
         return JSONResponse(

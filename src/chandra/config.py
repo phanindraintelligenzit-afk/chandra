@@ -84,6 +84,16 @@ class Settings(BaseSettings):
         alias="POSTGRES_URL",
     )
 
+    # --- Edge authentication (PRD L2 stage 2). Verification only: this process
+    # never holds a signing key.
+    auth_required: bool = Field(default=False, alias="CHANDRA_AUTH_REQUIRED")
+    jwt_public_key: str = Field(default="", alias="JWT_PUBLIC_KEY")
+    jwt_issuer: str = Field(default="", alias="JWT_ISSUER")
+    jwt_audience: str = Field(default="", alias="JWT_AUDIENCE")
+
+    # --- Edge rate limiting. 0 disables.
+    rate_limit_per_minute: int = Field(default=0, alias="CHANDRA_RATE_LIMIT_PER_MINUTE")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     otel_endpoint: str | None = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")
