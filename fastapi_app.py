@@ -55,7 +55,7 @@ from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
 from src.chandra.api import deps
-from src.chandra.api.routers import governance_router
+from src.chandra.api.routers import catalog_router, governance_router
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
 
@@ -452,48 +452,12 @@ def _config_repo(tenant_id: str | None = None) -> ConfigRepository:
     return deps.config_repo(tenant_id)
 
 
-def _load_custom_kras_from_disk() -> list:
-    """Compatibility name kept for callers; reads Postgres."""
-    return _config_repo().list_custom_kras()
+# Catalogue and settings endpoints live in src/chandra/api/routers/catalog.py.
 
 
-def _save_custom_kras_to_disk(entries: list) -> int:
-    """Compatibility name kept for callers; writes Postgres (full replace)."""
-    return _config_repo().replace_custom_kras(entries)
-
-
-@app.get("/customKras")
-def get_custom_kras():
-    """Read all custom KRAs for the tenant (Postgres)."""
-    entries = _load_custom_kras_from_disk()
-    return JSONResponse(
-        status_code=200,
-        content={"status": "success", "count": len(entries), "kras": entries},
-    )
-
-
-class CustomKrasPayload(BaseModel):
-    kras: List[Dict[str, Any]] = Field(
-        description="Full list of custom KRAs to persist. Replaces the tenant's set."
-    )
-
-
-@app.put("/customKras")
-def put_custom_kras(payload: CustomKrasPayload, request: Request):
-    """Replace the tenant's custom KRAs with the supplied list."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        written = _save_custom_kras_to_disk(payload.kras)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "count": written, "message": f"Saved {written} custom KRAs"},
-        )
-    except Exception as exc:
-        logger.exception("Failed to write custom KRAs: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-# Governance administration lives in src/chandra/api/routers/governance.py.
+# Routers extracted from this module (PRD L2 stage 2 decomposition).
 app.include_router(governance_router)
+app.include_router(catalog_router)
 
 
 @app.get("/logs")
@@ -2281,32 +2245,6 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
     })
 
 
-class DigitalWorkerSettings(BaseModel):
-    max_iterations: int = Field(default=5, description="Maximum agent loop iterations.")
-    command_timeout: int = Field(default=300, description="Timeout for shell commands.")
-
-@app.get("/settings/digital-worker", response_model=DigitalWorkerSettings)
-def get_digital_worker_settings():
-    """Get the tenant's digital worker settings (Postgres tenant_settings)."""
-    try:
-        data = _config_repo().get_setting(DIGITAL_WORKER_SETTINGS_KEY)
-        if data:
-            return DigitalWorkerSettings(**data)
-    except Exception as e:
-        logger.warning("Failed to load digital worker settings: %s", e)
-    return DigitalWorkerSettings()
-
-@app.post("/settings/digital-worker")
-def update_digital_worker_settings(settings: DigitalWorkerSettings, request: Request):
-    """Update the tenant's digital worker settings."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        _config_repo().put_setting(DIGITAL_WORKER_SETTINGS_KEY, settings.model_dump())
-        return {"status": "success"}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
 @app.get("/requests")
 async def list_cloud_requests(status: Optional[str] = Query(default=None)):
     """List Digital Worker requests for the Human Approval Center.
@@ -2362,220 +2300,6 @@ def get_cloud_request(job_id: str):
 # =====================================================================
 # AWS Tasks and AWS Permissions Implementation
 # =====================================================================
-from pathlib import Path
-import threading
-import json
-
-def _load_aws_tasks_from_disk() -> list:
-    """Compatibility name kept for callers; reads Postgres (aws_tasks)."""
-    return _config_repo().list_aws_tasks()
-
-
-def _save_aws_tasks_to_disk(entries: list) -> int:
-    return _config_repo().replace_aws_tasks(entries)
-
-
-def _load_aws_permissions_from_disk() -> list:
-    """Compatibility name kept for callers; reads Postgres (permission_sets)."""
-    return _config_repo().list_permission_sets()
-
-
-def _save_aws_permissions_to_disk(entries: list) -> int:
-    return _config_repo().replace_permission_sets(entries)
-
-
-class AwsTasksPayload(BaseModel):
-    tasks: List[Dict[str, Any]] = Field(description="List of AWS Tasks to persist.")
-
-@app.get("/api/aws-tasks")
-@app.get("/aws-tasks")
-def get_aws_tasks():
-    tasks = _load_aws_tasks_from_disk()
-    return JSONResponse(
-        status_code=200,
-        content={"status": "success", "count": len(tasks), "tasks": tasks}
-    )
-
-@app.put("/api/aws-tasks")
-@app.put("/aws-tasks")
-def put_aws_tasks(payload: AwsTasksPayload, request: Request):
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        written = _save_aws_tasks_to_disk(payload.tasks)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "count": written, "message": f"Saved {written} AWS tasks"}
-        )
-    except Exception as exc:
-        logger.exception("Failed to write AWS tasks: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-class PermissionSetsPayload(BaseModel):
-    permissions: List[Dict[str, Any]] = Field(description="List of permission sets to persist.")
-
-class RecommendPermissionSetsPayload(BaseModel):
-    required_permissions: List[Dict[str, Any]]
-
-@app.post("/api/permission-sets/recommend")
-def recommend_permission_sets(payload: RecommendPermissionSetsPayload):
-    try:
-        from src.chandra.llm import get_llm
-        import json
-        import json_repair
-        
-        perms = _load_aws_permissions_from_disk()
-        llm = get_llm()
-        
-        prompt = (
-            "You are an AWS IAM expert. Given a list of required permissions and a list of existing permission sets, "
-            "recommend the BEST existing permission set that covers all required permissions using wildcard matching. "
-            "If no existing permission set is adequate, suggest creating a new one. "
-            "Return a JSON object with: "
-            "1. 'recommendation_type': 'existing' or 'new' "
-            "2. 'permission_set_id': The ID of the existing set if 'existing', else null "
-            "3. 'reason': Why this set is recommended, or why a new one is needed "
-            "4. 'suggested_new_set': If 'new', provide a suggested name and actions array."
-        )
-        response = llm.invoke([
-            ("system", prompt),
-            ("user", json.dumps({"required_permissions": payload.required_permissions, "existing_sets": perms}))
-        ])
-        
-        text = response.content if isinstance(response.content, str) else str(response.content)
-        parsed = json_repair.loads(text)
-        
-        return JSONResponse(status_code=200, content={"status": "success", "recommendation": parsed})
-    except Exception as exc:
-        logger.exception("Failed to recommend permission sets: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-
-@app.get("/api/permission-sets")
-def get_permission_sets():
-    perms = _load_aws_permissions_from_disk()
-    return JSONResponse(
-        status_code=200,
-        content={"status": "success", "count": len(perms), "permissions": perms}
-    )
-
-@app.put("/api/permission-sets")
-def put_permission_sets(payload: PermissionSetsPayload, request: Request):
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        written = _save_aws_permissions_to_disk(payload.permissions)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "count": written, "message": f"Saved {written} permission sets"}
-        )
-    except Exception as exc:
-        logger.exception("Failed to write permission sets: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-AWS_ACTION_CATALOG = {
-    "ec2": [
-        "ec2:RunInstances", "ec2:StopInstances", "ec2:StartInstances", "ec2:TerminateInstances",
-        "ec2:DescribeInstances", "ec2:DescribeSecurityGroups", "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:CreateTags", "ec2:CreateVolume", "ec2:AttachVolume"
-    ],
-    "s3": [
-        "s3:CreateBucket", "s3:DeleteBucket", "s3:PutObject", "s3:GetObject",
-        "s3:DeleteObject", "s3:ListBucket", "s3:PutBucketPolicy", "s3:PutEncryptionConfiguration"
-    ],
-    "iam": [
-        "iam:CreateUser", "iam:CreateRole", "iam:AttachUserPolicy", "iam:AttachRolePolicy",
-        "iam:PutUserPolicy", "iam:GetUser", "iam:ListAttachedUserPolicies", "iam:PassRole"
-    ],
-    "lambda": [
-        "lambda:CreateFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration",
-        "lambda:DeleteFunction", "lambda:GetFunction", "lambda:InvokeFunction",
-        "lambda:CreateEventSourceMapping", "lambda:DeleteEventSourceMapping"
-    ],
-    "dynamodb": [
-        "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
-        "dynamodb:Scan", "dynamodb:Query", "dynamodb:CreateTable"
-    ],
-    "cloudwatch": [
-        "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "cloudwatch:PutMetricData"
-    ],
-    "vpc": [
-        "ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateRouteTable", "ec2:CreateInternetGateway",
-        "ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DeleteVpc", "ec2:DeleteSubnet"
-    ],
-    "rds": [
-        "rds:CreateDBInstance", "rds:DeleteDBInstance", "rds:ModifyDBInstance", 
-        "rds:DescribeDBInstances", "rds:CreateDBCluster", "rds:CreateDBSnapshot"
-    ],
-    "sqs": [
-        "sqs:CreateQueue", "sqs:DeleteQueue", "sqs:SendMessage", "sqs:ReceiveMessage",
-        "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ListQueues"
-    ],
-    "sns": [
-        "sns:CreateTopic", "sns:DeleteTopic", "sns:Publish", "sns:Subscribe",
-        "sns:Unsubscribe", "sns:ListTopics", "sns:ListSubscriptions"
-    ],
-    "ecs": [
-        "ecs:CreateCluster", "ecs:DeleteCluster", "ecs:RegisterTaskDefinition", 
-        "ecs:RunTask", "ecs:StartTask", "ecs:StopTask", "ecs:DescribeClusters"
-    ],
-    "elb": [
-        "elasticloadbalancing:CreateLoadBalancer", "elasticloadbalancing:DeleteLoadBalancer",
-        "elasticloadbalancing:RegisterTargets", "elasticloadbalancing:DescribeLoadBalancers"
-    ],
-    "cloudfront": [
-        "cloudfront:CreateDistribution", "cloudfront:UpdateDistribution",
-        "cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:CreateInvalidation"
-    ],
-    "elasticache": [
-        "elasticache:CreateCacheCluster", "elasticache:DeleteCacheCluster",
-        "elasticache:DescribeCacheClusters", "elasticache:CreateReplicationGroup"
-    ],
-    "apigateway": [
-        "apigateway:POST", "apigateway:GET", "apigateway:PUT", "apigateway:DELETE", "apigateway:PATCH"
-    ],
-    "kms": [
-        "kms:CreateKey", "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", 
-        "kms:DescribeKey", "kms:ScheduleKeyDeletion"
-    ],
-    "secretsmanager": [
-        "secretsmanager:CreateSecret", "secretsmanager:GetSecretValue", 
-        "secretsmanager:PutSecretValue", "secretsmanager:DeleteSecret"
-    ],
-    "route53": [
-        "route53:CreateHostedZone", "route53:ChangeResourceRecordSets",
-        "route53:ListHostedZones", "route53:ListResourceRecordSets"
-    ],
-    "stepfunctions": [
-        "states:CreateStateMachine", "states:UpdateStateMachine", "states:DeleteStateMachine",
-        "states:StartExecution", "states:DescribeExecution"
-    ],
-    "athena": [
-        "athena:StartQueryExecution", "athena:GetQueryExecution", 
-        "athena:GetQueryResults", "athena:CreateWorkGroup"
-    ]
-}
-
-@app.get("/api/permission-sets/actions")
-def get_permission_actions(aws_service: Optional[str] = Query(default=None)):
-    if aws_service:
-        service_key = aws_service.lower().strip()
-        actions = AWS_ACTION_CATALOG.get(service_key, [])
-        return JSONResponse(status_code=200, content={"service": service_key, "actions": actions})
-    all_actions = [act for service_actions in AWS_ACTION_CATALOG.values() for act in service_actions]
-    return JSONResponse(status_code=200, content={"actions": all_actions})
-
-COMMON_RESOURCE_ARNS = [
-    "arn:aws:s3:::*",
-    "arn:aws:ec2:*:*:instance/*",
-    "arn:aws:ec2:*:*:security-group/*",
-    "arn:aws:iam::*:user/*",
-    "arn:aws:iam::*:role/*"
-]
-
-@app.get("/api/permission-sets/resource-arns")
-def get_resource_arns():
-    return JSONResponse(status_code=200, content={"resource_arns": COMMON_RESOURCE_ARNS})
-
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6001)
