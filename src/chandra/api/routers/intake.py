@@ -57,11 +57,11 @@ class ApprovalSubmission(BaseModel):
     )
 
 
-def _dw_thread_config(job_id: str) -> dict[str, Any]:
+def dw_thread_config(job_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": job_id}}
 
 
-def _dw_finalize_job(job_id: str, final_state: dict[str, Any], start_time: float) -> None:
+def dw_finalize_job(job_id: str, final_state: dict[str, Any], start_time: float) -> None:
     """Translate terminal graph state into the shared job-store shape."""
     with runtime.job_store_lock:
         if runtime.job_store[job_id].get("status") == "stopped":
@@ -137,12 +137,12 @@ def _run_digital_worker_task(  # noqa: PLR0915 - linear workflow driver
                 "correlation_id": cid,
                 "tenant_id": tid,
             },
-            config=_dw_thread_config(job_id),
+            config=dw_thread_config(job_id),
         )
 
         # interrupt_before=["approval_gate"] pauses the run when human
         # approval is required. Surface that state instead of completing.
-        snapshot = graphs.digital_worker.get_state(_dw_thread_config(job_id))
+        snapshot = graphs.digital_worker.get_state(dw_thread_config(job_id))
         if snapshot.next and "approval_gate" in snapshot.next:
             values = snapshot.values
             request = values["request"]
@@ -237,7 +237,7 @@ def _run_digital_worker_task(  # noqa: PLR0915 - linear workflow driver
             logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
-        _dw_finalize_job(job_id, final_state, start_time)
+        dw_finalize_job(job_id, final_state, start_time)
 
         logger.info("DIGITAL WORKER JOB [%s] completed in %.1fs", job_id, time.time() - start_time)
 
@@ -305,10 +305,10 @@ def _resume_digital_worker_task(  # noqa: PLR0915 - linear resume driver
 
         final_state = graphs.digital_worker.invoke(
             Command(resume=resume_payload),
-            config=_dw_thread_config(job_id),
+            config=dw_thread_config(job_id),
         )
 
-        snapshot = graphs.digital_worker.get_state(_dw_thread_config(job_id))
+        snapshot = graphs.digital_worker.get_state(dw_thread_config(job_id))
 
         # Handle permission selection pause
         if snapshot.next and "permission_selection_pause" in snapshot.next:
@@ -370,7 +370,7 @@ def _resume_digital_worker_task(  # noqa: PLR0915 - linear resume driver
             logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
-        _dw_finalize_job(job_id, final_state, start_time)
+        dw_finalize_job(job_id, final_state, start_time)
         logger.info(
             "DIGITAL WORKER JOB [%s] resumed (approved=%s) and completed",
             job_id,

@@ -89,6 +89,7 @@ ignore = ["PLR0913", "PLR2004", "PLC0415"]
 # camelCase field names are the console's existing wire contract, not new style.
 "src/chandra/api/routers/scans.py" = ["N815"]
 "src/chandra/api/models.py" = ["N815"]
+"src/chandra/api/routers/orchestration.py" = ["N815"]
 # E402/PLC0415 in tests: runnable node scripts and fixtures set AWS env vars
 # (and activate moto) before importing the modules under test.
 "tests/**" = ["PLR2004", "S101", "E402", "PLC0415"]

@@ -1,13 +1,18 @@
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from fastapi_app import OrchestrateRequest, _job_store, _run_orchestration_task, app
+from fastapi_app import app
 from src.chandra.api.models import ActionInput
+from src.chandra.api.routers.orchestration import (
+    OrchestrateRequest,
+    _run_orchestration_task,
+)
+from src.chandra.api.runtime import job_store as _job_store
 
 client = TestClient(app)
 
 
-@patch("fastapi_app.ExecutionAgents")
+@patch("src.chandra.api.routers.orchestration.ExecutionAgents")
 @patch("src.chandra.graphs.action_nodes.action_executor.action_executor_node")
 def test_aws_task_never_routes_to_detector_path(mock_action_executor, mock_execution_agents):
     """Test that an AWS Task with a detectorId does NOT route to action_executor_node."""
@@ -28,7 +33,7 @@ def test_aws_task_never_routes_to_detector_path(mock_action_executor, mock_execu
     mock_execution_agents.assert_called_once()
 
 
-@patch("fastapi_app.ExecutionAgents")
+@patch("src.chandra.api.routers.orchestration.ExecutionAgents")
 @patch("src.chandra.graphs.action_nodes.action_executor.action_executor_node")
 def test_kra_detector_still_routes_correctly(mock_action_executor, mock_execution_agents):
     """KRA remediation (isAwsTask=False) with detectorId routes to action_executor_node."""
@@ -53,7 +58,7 @@ def test_kra_detector_still_routes_correctly(mock_action_executor, mock_executio
     mock_execution_agents.assert_not_called()
 
 
-@patch("fastapi_app.ExecutionAgents")
+@patch("src.chandra.api.routers.orchestration.ExecutionAgents")
 @patch("src.chandra.graphs.action_nodes.action_executor.action_executor_node")
 def test_aws_task_without_detector_id_routes_to_execution_agents(
     mock_action_executor, mock_execution_agents
@@ -75,7 +80,7 @@ def test_aws_task_without_detector_id_routes_to_execution_agents(
     mock_execution_agents.assert_called_once()
 
 
-@patch("fastapi_app.ExecutionAgents")
+@patch("src.chandra.api.routers.orchestration.ExecutionAgents")
 @patch("src.chandra.graphs.action_nodes.action_executor.action_executor_node")
 def test_aws_task_status_skipped_never_becomes_completed(
     mock_action_executor, mock_execution_agents

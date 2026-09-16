@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
-from fastapi_app import _job_store, app
+from fastapi_app import app
+from src.chandra.api.runtime import job_store as _job_store
 
 client = TestClient(app)
 

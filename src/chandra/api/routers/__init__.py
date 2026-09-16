@@ -4,6 +4,7 @@ from src.chandra.api.routers.catalog import router as catalog_router
 from src.chandra.api.routers.governance import router as governance_router
 from src.chandra.api.routers.intake import router as intake_router
 from src.chandra.api.routers.jobs import router as jobs_router
+from src.chandra.api.routers.orchestration import router as orchestration_router
 from src.chandra.api.routers.scans import router as scans_router
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "governance_router",
     "intake_router",
     "jobs_router",
+    "orchestration_router",
     "scans_router",
 ]
