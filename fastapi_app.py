@@ -55,7 +55,8 @@ from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
 from src.chandra.api import deps, runtime
-from src.chandra.api.routers import catalog_router, governance_router
+from src.chandra.api.logbuffer import log_buffer
+from src.chandra.api.routers import catalog_router, governance_router, jobs_router
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
 
@@ -65,9 +66,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fastapi_app")
 
-# In-memory log buffer (keep last 2000 logs for better tracking)
-_log_buffer: List[Dict[str, Any]] = []
-_max_logs = 2000
+# The in-memory log buffer lives in src/chandra/api/logbuffer.py so the /logs
+# endpoint can be served from a router while this handler keeps filling it.
 
 # Job tracking, the worker pool, the background loop and live fan-out now live
 # in src/chandra/api/runtime.py, so routers can reach them without importing
@@ -102,10 +102,7 @@ class LogCapture(logging.Handler):
             "job_id": getattr(_thread_local, "job_id", None),
             "correlation_id": correlation.get_correlation_id(),
         }
-        _log_buffer.append(log_entry)
-        # Keep only last 500 logs
-        if len(_log_buffer) > _max_logs:
-            _log_buffer.pop(0)
+        log_buffer.append(log_entry)
 
 # Add custom handler to root logger
 log_capture = LogCapture()
@@ -401,14 +398,8 @@ def _config_repo(tenant_id: str | None = None) -> ConfigRepository:
 # Routers extracted from this module (PRD L2 stage 2 decomposition).
 app.include_router(governance_router)
 app.include_router(catalog_router)
+app.include_router(jobs_router)
 
-
-@app.get("/logs")
-async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
-    """Get recent backend logs (last 2000 stored in memory)"""
-    start = max(0, len(_log_buffer) - limit - offset)
-    end = max(0, len(_log_buffer) - offset)
-    return JSONResponse(status_code=200, content={"logs": _log_buffer[start:end]})
 
 @app.get("/getDetectorIssues")
 def get_detector_issues():
@@ -527,41 +518,6 @@ def run_pipeline(request: PipelineRequest):
 
 
 # ── Generic job status endpoint (shared by all async jobs) ────────────────────
-@app.get("/jobs/status/{job_id}")
-def get_job_status_generic(job_id: str):
-    """Poll the status of any submitted async job."""
-    with _job_store_lock:
-        if job_id not in _job_store:
-            return JSONResponse(status_code=404, content={
-                "job_id": job_id, "status": "not_found",
-                "message": "No job with this ID exists"
-            })
-        job = dict(_job_store[job_id])
-    return JSONResponse(status_code=200, content={"job_id": job_id, **job})
-
-
-@app.websocket("/ws/jobs/{job_id}")
-async def job_state_socket(websocket: WebSocket, job_id: str):
-    """Live job state. Read-only: this is a status feed, not a command channel —
-    accepting commands here would route around the authenticated, rate-limited,
-    RBAC-checked HTTP edge."""
-    with _job_store_lock:
-        snapshot = dict(_job_store.get(job_id, {}))
-    await ws_manager.subscribe(job_id, websocket)
-    try:
-        if snapshot:
-            snapshot.pop("result", None)
-            await websocket.send_json({"job_id": job_id, **snapshot})
-        else:
-            await websocket.send_json({"job_id": job_id, "status": "not_found"})
-        while True:
-            await websocket.receive_text()
-    except Exception:
-        pass
-    finally:
-        await ws_manager.unsubscribe(job_id, websocket)
-
-
 # ── Background task functions ─────────────────────────────────────────────────
 
 def _run_observations_task(job_id: str, request: PipelineRequest):

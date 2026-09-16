@@ -299,3 +299,52 @@ class TestWebSocketManager:
         """A status broadcast failing must never fail the job it reports on."""
         manager = WebSocketManager()
         manager.publish_threadsafe("job-1", {"status": "running"})  # must not raise
+
+
+class TestLogBuffer:
+    """The /logs ring buffer is an operator convenience, not the audit trail."""
+
+    def test_bounded_and_drops_oldest(self) -> None:
+        from src.chandra.api.logbuffer import LogBuffer
+
+        buffer = LogBuffer(max_entries=3)
+        for i in range(5):
+            buffer.append({"message": str(i)})
+        assert len(buffer) == 3
+        assert [e["message"] for e in buffer.read()] == ["2", "3", "4"]
+
+    def test_limit_and_offset_window(self) -> None:
+        from src.chandra.api.logbuffer import LogBuffer
+
+        buffer = LogBuffer()
+        for i in range(10):
+            buffer.append({"message": str(i)})
+        assert [e["message"] for e in buffer.read(limit=3)] == ["7", "8", "9"]
+        assert [e["message"] for e in buffer.read(limit=3, offset=3)] == ["4", "5", "6"]
+
+    def test_reads_do_not_alias_the_buffer(self) -> None:
+        from src.chandra.api.logbuffer import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.append({"message": "a"})
+        snapshot = buffer.read()
+        buffer.append({"message": "b"})
+        assert len(snapshot) == 1
+
+    def test_concurrent_appends_lose_nothing(self) -> None:
+        import threading
+
+        from src.chandra.api.logbuffer import LogBuffer
+
+        buffer = LogBuffer(max_entries=1000)
+
+        def writer(start: int) -> None:
+            for i in range(100):
+                buffer.append({"message": f"{start}-{i}"})
+
+        threads = [threading.Thread(target=writer, args=(t,)) for t in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(buffer) == 500
