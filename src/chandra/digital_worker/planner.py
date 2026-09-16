@@ -88,6 +88,15 @@ def build_plan(
         cached = _apply_automation(cached, request, classification)
         return root_cause, cached
 
+    # Tier 2: semantic match (§26.6). Only after an exact miss, and still just a
+    # candidate — the plan traverses every governance control regardless.
+    semantic = memory.lookup_plan_semantic(request, classification)
+    if semantic is not None and semantic.steps:
+        root_cause = derive_root_cause(request, classification, context)
+        root_cause.summary += " (similar to a previously resolved request)"
+        semantic = _apply_automation(semantic, request, classification)
+        return root_cause, semantic
+
     analysis = compose_request_analysis(
         {
             "request": request.model_dump(mode="json", exclude={"raw_payload"}),

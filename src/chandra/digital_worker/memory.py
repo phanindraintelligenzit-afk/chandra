@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from src.chandra.config import settings
 from src.chandra.db.models import ResolutionMemoryRecord
 from src.chandra.db.session import session_scope
 from src.chandra.digital_worker.schemas import (
@@ -27,6 +28,7 @@ from src.chandra.digital_worker.schemas import (
     ResolutionPlan,
 )
 from src.chandra.logging import get_logger
+from src.chandra.memory import SemanticMemoryIndex
 
 logger = get_logger(__name__)
 
@@ -105,6 +107,93 @@ def lookup_plan(fingerprint: str) -> ResolutionPlan | None:
     except Exception as exc:  # DB down → treat as miss, workflow continues
         logger.warning("memory.lookup_unavailable", fingerprint=fingerprint, error=str(exc))
         return None
+
+
+def _memory_text(request: CloudRequest, classification: RequestClassification) -> str:
+    """The text a semantic lookup matches on: what the request is about, in the
+    classified form, so phrasing varies but meaning does not."""
+    services = " ".join(getattr(classification, "services", []) or [])
+    return " ".join(
+        part
+        for part in (
+            request.title,
+            (request.description or "")[:400],
+            classification.category.value,
+            classification.platform.value,
+            services,
+        )
+        if part
+    )
+
+
+def lookup_plan_semantic(
+    request: CloudRequest,
+    classification: RequestClassification,
+    index: SemanticMemoryIndex | None = None,
+) -> ResolutionPlan | None:
+    """Second memory tier: a prior request that *means* the same thing (§26.6).
+
+    Runs only after an exact fingerprint miss. The returned plan is marked
+    ``generated_by="memory_semantic"`` so its provenance is visible in the audit
+    trail and distinguishable from an exact hit — a reviewer should be able to
+    tell that a plan was matched by similarity rather than identity.
+
+    Like every memory tier this is an accelerator, never an authorisation: the
+    plan still traverses policy, risk, Gate 1 and Gate 2.
+    """
+    if not settings.semantic_memory_enabled:
+        return None
+    try:
+        index = index if index is not None else build_semantic_index()
+        if len(index) == 0:
+            return None
+        hit = index.best_match(_memory_text(request, classification))
+        if hit is None:
+            return None
+        with session_scope() as session:
+            record = session.execute(
+                select(ResolutionMemoryRecord).where(
+                    ResolutionMemoryRecord.fingerprint == hit.fingerprint
+                )
+            ).scalar_one_or_none()
+            if record is None:
+                return None
+            plan = ResolutionPlan.model_validate(record.plan_jsonb)
+            plan.generated_by = "memory_semantic"
+            plan.fingerprint = hit.fingerprint
+        logger.info(
+            "memory.semantic_hit",
+            fingerprint=hit.fingerprint,
+            score=round(hit.score, 4),
+            backend=index.backend,
+        )
+        return plan
+    except Exception as exc:  # any failure is a cache miss, never a request failure
+        logger.warning("memory.semantic_unavailable", error=str(exc))
+        return None
+
+
+def build_semantic_index(limit: int = 2000) -> SemanticMemoryIndex:
+    """Build the vector index from resolution memory.
+
+    Rebuilt rather than persisted: a stale index that disagrees with Postgres is
+    a worse failure than recomputing cheap vectors.
+    """
+    index = SemanticMemoryIndex()
+    with session_scope() as session:
+        rows = session.scalars(
+            select(ResolutionMemoryRecord)
+            .order_by(ResolutionMemoryRecord.hit_count.desc())
+            .limit(limit)
+        ).all()
+        for row in rows:
+            index.add(
+                row.fingerprint,
+                " ".join(str(p) for p in (row.title, row.category, row.platform) if p),
+                title=row.title,
+            )
+    index.build()
+    return index
 
 
 def persist_plan(

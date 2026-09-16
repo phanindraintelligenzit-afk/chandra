@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     # --- Edge rate limiting. 0 disables.
     rate_limit_per_minute: int = Field(default=0, alias="CHANDRA_RATE_LIMIT_PER_MINUTE")
 
+    # --- Semantic memory (PRD §26.6). "local" needs no external service.
+    embeddings_provider: str = Field(default="local", alias="CHANDRA_EMBEDDINGS_PROVIDER")
+    embeddings_model_id: str = Field(
+        default="amazon.titan-embed-text-v2:0", alias="CHANDRA_EMBEDDINGS_MODEL_ID"
+    )
+    semantic_memory_enabled: bool = Field(default=True, alias="CHANDRA_SEMANTIC_MEMORY")
+
+    # --- Redis cache / live log stream. Empty disables; nothing depends on it.
+    redis_url: str = Field(default="", alias="REDIS_URL")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     otel_endpoint: str | None = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")

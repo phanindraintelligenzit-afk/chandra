@@ -42,6 +42,8 @@ dependencies = [
     "jira>=3.10.5",
     "psycopg2>=2.9.12",
     "pyjwt[crypto]>=2.13.0",
+    "faiss-cpu>=1.15.0",
+    "redis>=8.1.0",
     "langchain-community>=0.4.2",
     "opentelemetry-api>=1.42.1",
     "opentelemetry-sdk>=1.42.1",
@@ -127,6 +129,7 @@ warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 module = [
+    "faiss.*",
     "boto3.*",
     "botocore.*",
     "moto.*",
