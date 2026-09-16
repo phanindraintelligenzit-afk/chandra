@@ -337,3 +337,27 @@ class TenantSettingRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
     )
+
+
+class PolicyRuleRecord(Base):
+    """Allow/deny policy rule (PRD L2 stage 6). Configuration, not workflow state:
+    written by administrators, only ever read by the policy engine."""
+
+    __tablename__ = "policy_rules"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default="default", server_default="default"
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    effect: Mapped[str] = mapped_column(String(8), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    criteria_jsonb: Mapped[dict[str, Any]] = mapped_column(
+        "criteria_jsonb", nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
