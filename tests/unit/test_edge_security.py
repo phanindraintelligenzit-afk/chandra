@@ -348,3 +348,38 @@ class TestLogBuffer:
         for t in threads:
             t.join()
         assert len(buffer) == 500
+
+
+class TestReadinessProbe:
+    """Readiness distinguishes faults from deliberate configuration."""
+
+    @pytest.fixture
+    def client(self) -> Any:
+        import fastapi_app
+        from fastapi.testclient import TestClient
+
+        return TestClient(fastapi_app.app)
+
+    def test_disabled_redis_does_not_make_the_service_unready(self, client: Any) -> None:
+        """Redis is optional; a deployment running without it is healthy, not
+        degraded."""
+        body = client.get("/health/ready").json()
+        assert body["components"]["redis"] == "disabled"
+        assert "redis" not in [
+            name for name, state in body["components"].items() if state == "degraded"
+        ]
+
+    def test_posture_is_reported_but_never_graded(self, client: Any) -> None:
+        """A deployment intentionally running without auth must not fail its own
+        readiness probe — the posture is shown so an operator can see it."""
+        response = client.get("/health/ready")
+        posture = response.json()["posture"]
+        assert posture["authentication"] in ("enforced", "disabled")
+        assert posture["rate_limiting"] == "disabled"
+        assert "durable_checkpointer_required" in posture
+        # auth being off is not a readiness failure
+        assert posture["authentication"] == "disabled"
+        assert response.json()["status"] in ("ok", "degraded")
+
+    def test_liveness_needs_no_dependencies(self, client: Any) -> None:
+        assert client.get("/health").json()["status"] == "ok"

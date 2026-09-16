@@ -99,7 +99,12 @@ class TestHealth:
         response = client.get("/health/ready")
         body = response.json()
         assert response.status_code in (200, 503)
-        assert set(body["components"]) == {"copilot_agent", "digital_worker", "postgres"}
+        assert set(body["components"]) == {
+            "copilot_agent",
+            "digital_worker",
+            "postgres",
+            "redis",
+        }
         assert body["status"] in ("ok", "degraded")
         # The Digital Worker graph must initialize without external deps.
         assert body["components"]["digital_worker"] == "ok"

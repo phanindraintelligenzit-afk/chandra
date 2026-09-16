@@ -56,6 +56,7 @@ from src.chandra import security
 from src.chandra.api import WebSocketManager
 from src.chandra.api import deps, runtime
 from src.chandra.api.logbuffer import log_buffer
+from src.chandra.memory.cache import get_cache
 from src.chandra.api.routers import catalog_router, governance_router, jobs_router
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
@@ -347,11 +348,37 @@ def health_ready():
     except Exception as exc:
         components["postgres"] = f"unavailable: {str(exc)[:120]}"
 
-    degraded = [name for name, state in components.items() if state != "ok"]
+    # Redis is optional by design: "disabled" is a healthy state, not a degraded
+    # one. Only a configured-but-unreachable cache counts against readiness.
+    redis_state = get_cache().health()
+    components["redis"] = "ok" if redis_state in ("ok", "disabled") else redis_state
+    if redis_state == "disabled":
+        components["redis"] = "disabled"
+
+    # Reported, never graded: these are configuration postures an operator should
+    # be able to see at a glance, not faults. A deployment intentionally running
+    # without auth must not fail its own readiness probe.
+    posture = {
+        "authentication": "enforced" if security.auth_enabled() else "disabled",
+        "rate_limiting": (
+            f"{settings.rate_limit_per_minute}/min"
+            if settings.rate_limit_per_minute
+            else "disabled"
+        ),
+        "durable_checkpointer_required": settings.require_durable_checkpointer,
+        "semantic_memory": "on" if settings.semantic_memory_enabled else "off",
+    }
+
+    degraded = [
+        name
+        for name, state in components.items()
+        if state not in ("ok", "disabled")
+    ]
     status_code = 200 if not degraded else 503
     return JSONResponse(status_code=status_code, content={
         "status": "ok" if not degraded else "degraded",
         "components": components,
+        "posture": posture,
     })
 
 
