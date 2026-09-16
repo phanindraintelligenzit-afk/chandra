@@ -33,6 +33,7 @@ SEEDS_DIR = REPO_ROOT / "src" / "chandra" / "catalog" / "seeds"
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     import fastapi_app
+    from src.chandra.api import deps
 
     engine = create_engine(
         "sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False}
@@ -50,14 +51,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
             session.close()
 
     monkeypatch.setattr(
-        fastapi_app, "_config_repo", lambda tenant_id="default": ConfigRepository(tenant_id, _scope)
+        deps, "config_repo", lambda tenant_id=None: ConfigRepository("default", _scope)
     )
     # RBAC reads its assignments from the same SQLite scope. None are granted, so
     # the tenant is unconfigured and every caller retains the pre-RBAC capabilities.
     monkeypatch.setattr(
-        fastapi_app,
-        "_rbac_engine",
-        lambda tenant_id="default": RbacEngine(tenant_id=tenant_id, session_factory=_scope),
+        deps,
+        "rbac_engine",
+        lambda tenant_id=None: RbacEngine(tenant_id="default", session_factory=_scope),
     )
     # No lifespan context on purpose: these endpoints need no startup, and running
     # a second startup/shutdown cycle would tear down the shared job executor that

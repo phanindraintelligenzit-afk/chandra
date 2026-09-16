@@ -166,19 +166,20 @@ class TestApiEnforcement:
     def client(self, scope: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
         import fastapi_app
         from fastapi.testclient import TestClient
+        from src.chandra.api import deps
         from src.chandra.catalog import ConfigRepository
 
         _grant(scope, "priya", Role.AGENT_SPINNER)
         _grant(scope, "nagendra", Role.AGENT_USER)
         monkeypatch.setattr(
-            fastapi_app,
-            "_config_repo",
-            lambda tenant_id="default": ConfigRepository(tenant_id, scope),
+            deps,
+            "config_repo",
+            lambda tenant_id=None: ConfigRepository("default", scope),
         )
         monkeypatch.setattr(
-            fastapi_app,
-            "_rbac_engine",
-            lambda tenant_id="default": RbacEngine(tenant_id=tenant_id, session_factory=scope),
+            deps,
+            "rbac_engine",
+            lambda tenant_id=None: RbacEngine(tenant_id="default", session_factory=scope),
         )
         yield TestClient(fastapi_app.app)
 
@@ -231,24 +232,25 @@ class TestGovernanceAdminEndpoints:
     def client(self, scope: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
         import fastapi_app
         from fastapi.testclient import TestClient
+        from src.chandra.api import deps
         from src.chandra.governance import PolicyRuleStore, RoleAssignmentStore
 
         _grant(scope, "priya", Role.AGENT_SPINNER)
         _grant(scope, "nagendra", Role.AGENT_USER)
         monkeypatch.setattr(
-            fastapi_app,
-            "_rbac_engine",
-            lambda tenant_id="default": RbacEngine(tenant_id=tenant_id, session_factory=scope),
+            deps,
+            "rbac_engine",
+            lambda tenant_id=None: RbacEngine(tenant_id="default", session_factory=scope),
         )
         monkeypatch.setattr(
-            fastapi_app,
-            "_policy_store",
-            lambda tenant_id="default": PolicyRuleStore(tenant_id, scope),
+            deps,
+            "policy_store",
+            lambda tenant_id=None: PolicyRuleStore("default", scope),
         )
         monkeypatch.setattr(
-            fastapi_app,
-            "_role_store",
-            lambda tenant_id="default": RoleAssignmentStore(tenant_id, scope),
+            deps,
+            "role_store",
+            lambda tenant_id=None: RoleAssignmentStore("default", scope),
         )
         yield TestClient(fastapi_app.app)
 

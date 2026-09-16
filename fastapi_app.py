@@ -54,6 +54,8 @@ from src.chandra.governance import (
 from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
+from src.chandra.api import deps
+from src.chandra.api.routers import governance_router
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
 
@@ -334,6 +336,7 @@ async def _edge_middleware(request: Request, call_next):
 
         correlation.bind(cid, tenant_id)
         _thread_local.principal_id = principal_id
+        request.state.principal_id = principal_id
         response = await call_next(request)
     finally:
         correlation.clear()
@@ -435,34 +438,18 @@ def _rate_limit_key(request: Request) -> str:
     return f"ip:{client.host if client else 'unknown'}"
 
 
-def _rbac_engine(tenant_id: str = DEFAULT_TENANT) -> RbacEngine:
-    return RbacEngine(tenant_id=tenant_id)
+# RBAC and configuration access live in src/chandra/api/deps.py, shared with the
+# extracted routers. These wrappers exist so the remaining endpoints in this
+# module keep working during the incremental split; they delegate rather than
+# duplicate, so there is exactly one seam for tests to redirect.
 
 
 def _require_capability(request: Request, capability: Capability) -> Principal:
-    """Enforce RBAC for a configuration change (PRD §26.7).
-
-    The principal comes from a header because there is no authentication layer
-    until Phase 3 — this is defence in depth over an unverified subject, not an
-    identity control. Phase 3 replaces the header read with a verified JWT claim;
-    nothing else here changes.
-    """
-    engine = _rbac_engine(correlation.get_tenant_id())
-    try:
-        principal_id = getattr(_thread_local, "principal_id", None) or request.headers.get(
-            PRINCIPAL_HEADER
-        )
-        return engine.authorize(principal_id, capability)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except RolesUnavailableError as exc:
-        raise HTTPException(
-            status_code=503, detail=f"Role assignments unavailable: {exc}"
-        ) from exc
+    return deps.require_capability(request, capability)
 
 
-def _config_repo(tenant_id: str = DEFAULT_TENANT) -> ConfigRepository:
-    return ConfigRepository(tenant_id=tenant_id)
+def _config_repo(tenant_id: str | None = None) -> ConfigRepository:
+    return deps.config_repo(tenant_id)
 
 
 def _load_custom_kras_from_disk() -> list:
@@ -505,138 +492,8 @@ def put_custom_kras(payload: CustomKrasPayload, request: Request):
         logger.exception("Failed to write custom KRAs: %s", exc)
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
-# ── Governance administration (PRD L2 stage 6) ───────────────────────────────
-# Policy rules and role assignments are configuration; every route here requires
-# CONFIGURE_WORKER. Nothing in the workflow writes these tables, so a run can
-# never widen the policy or the roles it is judged by.
-
-
-class PolicyRulePayload(BaseModel):
-    id: str
-    name: str
-    effect: str = Field(description="allow or deny")
-    priority: int = 100
-    enabled: bool = True
-    reason: str = ""
-    categories: List[str] = Field(default_factory=list)
-    platforms: List[str] = Field(default_factory=list)
-    responsibility_areas: List[str] = Field(default_factory=list)
-    maturity_levels: List[str] = Field(default_factory=list)
-    sources: List[str] = Field(default_factory=list)
-    risk_levels: List[str] = Field(default_factory=list)
-    tasks: List[str] = Field(default_factory=list)
-    actions: List[str] = Field(default_factory=list)
-
-
-class RoleGrantPayload(BaseModel):
-    principal_id: str
-    role: str
-
-
-def _policy_store(tenant_id: str = DEFAULT_TENANT) -> PolicyRuleStore:
-    return PolicyRuleStore(tenant_id=tenant_id)
-
-
-def _role_store(tenant_id: str = DEFAULT_TENANT) -> RoleAssignmentStore:
-    return RoleAssignmentStore(tenant_id=tenant_id)
-
-
-@app.get("/api/policy-rules")
-def list_policy_rules(request: Request):
-    """List the tenant's policy rules, highest priority first."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    rules = _policy_store(correlation.get_tenant_id()).list_rules()
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "success",
-            "count": len(rules),
-            "rules": [r.model_dump(mode="json") for r in rules],
-        },
-    )
-
-
-@app.put("/api/policy-rules/{rule_id}")
-def upsert_policy_rule(rule_id: str, payload: PolicyRulePayload, request: Request):
-    """Create or replace one policy rule."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        rule = PolicyRule(**{**payload.model_dump(), "id": rule_id})
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid rule: {exc}") from exc
-    _policy_store(correlation.get_tenant_id()).upsert(rule)
-    return JSONResponse(
-        status_code=200, content={"status": "success", "rule": rule.model_dump(mode="json")}
-    )
-
-
-@app.delete("/api/policy-rules/{rule_id}")
-def delete_policy_rule(rule_id: str, request: Request):
-    """Remove one policy rule."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    if not _policy_store(correlation.get_tenant_id()).delete(rule_id):
-        raise HTTPException(status_code=404, detail=f"No policy rule '{rule_id}'")
-    return JSONResponse(status_code=200, content={"status": "success", "deleted": rule_id})
-
-
-@app.get("/api/role-assignments")
-def list_role_assignments(request: Request):
-    """List role assignments for the tenant."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    assignments = _role_store(correlation.get_tenant_id()).list_assignments()
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "success",
-            "count": len(assignments),
-            "assignments": assignments,
-            "known_roles": [r.value for r in Role],
-        },
-    )
-
-
-@app.post("/api/role-assignments")
-def grant_role(payload: RoleGrantPayload, request: Request):
-    """Grant a role to a principal.
-
-    Note the consequence: the first grant in a tenant switches RBAC from
-    unconfigured to configured, so unassigned principals immediately drop to
-    agent_user. The response says so rather than leaving it to be discovered.
-    """
-    principal = _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        role = Role(payload.role)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown role '{payload.role}'. Known roles: "
-            + ", ".join(r.value for r in Role),
-        ) from exc
-    store = _role_store(correlation.get_tenant_id())
-    was_unconfigured = not store.list_assignments()
-    store.grant(payload.principal_id, role, granted_by=principal.id)
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "success",
-            "principal_id": payload.principal_id,
-            "role": role.value,
-            "rbac_activated": was_unconfigured,
-        },
-    )
-
-
-@app.delete("/api/role-assignments/{principal_id}/{role}")
-def revoke_role(principal_id: str, role: str, request: Request):
-    """Revoke one role from a principal."""
-    _require_capability(request, Capability.CONFIGURE_WORKER)
-    try:
-        parsed = Role(role)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Unknown role '{role}'") from exc
-    if not _role_store(correlation.get_tenant_id()).revoke(principal_id, parsed):
-        raise HTTPException(status_code=404, detail="No such assignment")
-    return JSONResponse(status_code=200, content={"status": "success"})
+# Governance administration lives in src/chandra/api/routers/governance.py.
+app.include_router(governance_router)
 
 
 @app.get("/logs")
