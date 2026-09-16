@@ -58,6 +58,7 @@ from src.chandra.digital_worker.schemas import (
 from src.chandra.digital_worker.state import DigitalWorkerState
 from src.chandra.digital_worker.tracker import update_request_ticket
 from src.chandra.escalation.schemas import EscalationPayload
+from src.chandra.execution.recovery import plan_recovery, snapshot_state, verify_idempotency
 from src.chandra.governance import (
     AuthorizationError,
     Capability,
@@ -1095,6 +1096,11 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                 "audit_trail": [_audit("terraform_apply", "init_failed")],
             }
 
+        # PRD §26.9: capture state before mutating, so a partial failure has
+        # something to recover from. Snapshot failure never blocks an apply that
+        # already cleared both gates.
+        snapshot = snapshot_state(workdir)
+
         # apply -auto-approve
         apply = subprocess.run(
             ["terraform", "apply", "-auto-approve", "-input=false", "-no-color"],
@@ -1106,11 +1112,23 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
         )
 
         if apply.returncode != 0:
+            # A failed apply may still have landed changes. Decide retry-safety
+            # from a fresh read of AWS, never from the exit code (§26.9).
+            verdict = verify_idempotency(workdir)
+            recovery = plan_recovery(snapshot, verdict, apply_succeeded=False)
+            logger.warning(
+                "terraform.apply_failed",
+                already_applied=verdict.already_applied,
+                recommended_action=recovery["action"],
+            )
             return {
                 "terraform_apply_result": {
                     "success": False,
                     "detail": f"terraform apply failed: {apply.stderr[:1000]}",
                     "outputs": {},
+                    "idempotency": verdict.as_dict(),
+                    "recovery": recovery,
+                    "state_snapshot": snapshot.as_dict(),
                 },
                 "execution": ExecutionOutcome(
                     status="failed",
@@ -1119,7 +1137,16 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                     execution_logs=apply.stdout[:4000],
                 ),
                 "audit_trail": [
-                    _audit("terraform_apply", "apply_failed", stderr=apply.stderr[:500])
+                    _audit("terraform_apply", "apply_failed", stderr=apply.stderr[:500]),
+                    _audit(
+                        "terraform_apply",
+                        "recovery_assessed",
+                        recommended_action=recovery["action"],
+                        already_applied=verdict.already_applied,
+                        safe_to_retry=verdict.safe_to_retry,
+                        reason=verdict.reason,
+                        snapshot_available=snapshot.available,
+                    ),
                 ],
             }
 
