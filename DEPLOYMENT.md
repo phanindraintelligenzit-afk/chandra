@@ -196,6 +196,57 @@ The full set of environment variables is documented in `.env.example`. Below are
 | `LANGFUSE_SECRET_KEY` | LangFuse secret key |
 | `AGENTOPS_API_KEY` | AgentOps monitoring key |
 
+### Edge security (PRD L2 stage 2)
+
+| Variable | Description |
+|----------|-------------|
+| `CHANDRA_AUTH_REQUIRED` | `true` enables JWT RS256 verification at the API edge. **Until this is set, `X-Principal-ID` is caller-asserted** — the authorization model is enforced, the identity is not. |
+| `JWT_PUBLIC_KEY` | Verification public key (PEM). Literal `\n` escapes are accepted, which is how a PEM survives most secret managers. Chandra never holds a signing key, so a compromised API cannot mint tokens. |
+| `JWT_ISSUER` | Expected `iss`. Verified when set. |
+| `JWT_AUDIENCE` | Expected `aud`. Verified when set. |
+| `CHANDRA_RATE_LIMIT_PER_MINUTE` | Token-bucket limit per principal (or per source IP when unauthenticated). `0` disables. In-process, so the effective limit is this value multiplied by the replica count. |
+
+`CHANDRA_AUTH_REQUIRED=true` with an empty `JWT_PUBLIC_KEY` is a **startup
+failure**, not a fallback. "Auth is on" must never quietly mean "auth is off".
+
+Tokens must carry `exp`; `alg: none` and HS256-signed tokens are rejected by
+construction. Roles inside a token are recorded as hints only — capability
+grants come from the `principal_roles` table, so an identity provider cannot
+grant itself Chandra rights by adding a claim.
+
+### Governance (PRD L2 stage 6)
+
+Policy rules and role assignments are rows, not configuration files, managed via
+`/api/policy-rules` and `/api/role-assignments` (both require the
+`configure_worker` capability).
+
+Two activation behaviours worth knowing before you go live:
+
+* **RBAC activates by being used.** A tenant with *no* role assignments keeps
+  pre-RBAC capabilities for everyone, so upgrading locks nobody out. The first
+  granted role configures the tenant and unassigned principals immediately drop
+  to `agent_user`. The grant response returns `rbac_activated` to say so.
+* **The policy engine defaults to allow.** With no rules authored nothing is
+  denied. Once a rule set exists, switching a tenant to default-deny is the
+  stronger posture and is a deliberate decision to make, not a default to drift
+  into.
+
+### Memory and cache
+
+| Variable | Description |
+|----------|-------------|
+| `CHANDRA_SEMANTIC_MEMORY` | Enables the semantic memory tier (default `true`). |
+| `CHANDRA_EMBEDDINGS_PROVIDER` | `local` (default, no external dependency) or `bedrock`. Bedrock failures fall back to local rather than failing a request. |
+| `CHANDRA_EMBEDDINGS_MODEL_ID` | Titan model id when the provider is `bedrock`. |
+| `REDIS_URL` | Optional cache and live log stream. **Unset is fully supported** — every cache call becomes a no-op and Chandra behaves identically. Nothing authoritative is ever read from Redis. |
+
+### Reliability and metrics
+
+| Variable | Description |
+|----------|-------------|
+| `CHANDRA_REQUIRE_DURABLE_CHECKPOINTER` | `true` refuses to start unless Postgres checkpointing is available. **Production should set this.** The in-memory fallback discards every interrupted run on restart, so a request paused at the human approval gate can never be resumed — it disappears silently. |
+| `CHANDRA_METRICS_ENABLED` | CloudWatch metric emission (default `true`). The test suite sets `false` to stay hermetic. |
+
 ---
 
 ## Database Migrations
@@ -227,6 +278,32 @@ uv run alembic revision --autogenerate -m "description_of_change"
 ```
 
 Review the generated file in `src/chandra/db/migrations/versions/` before applying.
+
+### Upgrading an existing deployment to v2
+
+Order matters. Run both steps **before** the new code serves traffic: v2 reads
+its approved tasks and permission sets from Postgres, so starting with an empty
+catalogue means Gate 1 denies everything.
+
+```bash
+# 1. Schema (chain ends at d5b1f8c62a90)
+uv run alembic upgrade head
+
+# 2. Load the catalogue. Fresh install:
+uv run chandra catalog seed
+# Migrating a pre-v2 checkout that still has the root JSON files:
+uv run chandra catalog seed --from /path/to/old/checkout
+```
+
+`catalog seed` is idempotent: a table that already has rows is skipped unless
+`--overwrite` is passed. It accepts both the packaged seed names and the legacy
+root names (`aws_permissions.json`, `customKras.json`, `agent_memory.json`).
+
+The v2 migrations add the configuration tables (`aws_tasks`, `permission_sets`,
+`custom_kras`, `tenant_settings`, `agent_run_memory`), the governance tables
+(`policy_rules`, `principal_roles`), and `tenant_id` / `correlation_id` on
+`cloud_requests`.
+
 
 ### Rollback
 
