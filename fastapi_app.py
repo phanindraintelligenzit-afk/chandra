@@ -433,13 +433,7 @@ def get_detector_issues():
     """Submit detector scan as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
     logger.info("GET /getDetectorIssues -> async job_id=%s", job_id)
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending", "progress": 0,
-            "message": "Queued: detector scan",
-            "result": None, "error": None,
-            "started_at": None, "completed_at": None,
-        }
+    runtime.register_job(job_id, "Queued: detector scan")
     _submit_with_context(_run_detector_task, job_id)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -455,13 +449,7 @@ def get_predefined_kra_issues(request: PredefinedKraRequest):
     """Submit detector scan as an async job for selected KRAs."""
     job_id = str(uuid.uuid4())
     logger.info("POST /getPredefinedKraIssues -> async job_id=%s, kras=%s", job_id, request.selected_kras)
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending", "progress": 0,
-            "message": f"Queued: detector scan for {request.selected_kras}",
-            "result": None, "error": None,
-            "started_at": None, "completed_at": None,
-        }
+    runtime.register_job(job_id, f"Queued: detector scan for {request.selected_kras}")
     _submit_with_context(_run_predefined_kra_task, job_id, request.selected_kras)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -506,13 +494,7 @@ def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
     """Submit CloudWatch metrics fetch as an async job. Poll /jobs/status/{job_id} for result."""
     job_id = str(uuid.uuid4())
     logger.info("POST /getCloudWatchMetrics -> async job_id=%s region=%s", job_id, request.region)
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending", "progress": 0,
-            "message": "Queued: CloudWatch metrics fetch",
-            "result": None, "error": None,
-            "started_at": None, "completed_at": None,
-        }
+    runtime.register_job(job_id, "Queued: CloudWatch metrics fetch")
     _submit_with_context(_run_cloudwatch_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -529,13 +511,7 @@ def run_pipeline(request: PipelineRequest):
         "POST /getAgentObservations -> async job_id=%s region=%s kras=%s",
         job_id, request.region, [k.code for k in request.kras],
     )
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending", "progress": 0,
-            "message": "Queued: AWS observability pipeline",
-            "result": None, "error": None,
-            "started_at": None, "completed_at": None,
-        }
+    runtime.register_job(job_id, "Queued: AWS observability pipeline")
     _submit_with_context(_run_observations_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -768,13 +744,7 @@ def analyze_actions(request: AnalyzerRequest):
         "POST /analyzeActions -> async job_id=%s actions=%d projectKey=%s",
         job_id, len(request.actions), request.projectKey,
     )
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending", "progress": 0,
-            "message": f"Queued: analyzing {len(request.actions)} actions",
-            "result": None, "error": None,
-            "started_at": None, "completed_at": None,
-        }
+    runtime.register_job(job_id, f"Queued: analyzing {len(request.actions)} actions")
     _submit_with_context(_run_analyzer_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -1068,18 +1038,9 @@ def orchestrate_action(request: OrchestrateRequest):
         request.jiraUrl or "None",
     )
     
-    # Initialize job record
-    with _job_store_lock:
-        _job_store[job_id] = {
-            "status": "pending",
-            "progress": 0,
-            "message": "Waiting to start",
-            "result": None,
-            "error": None,
-            "started_at": None,
-            "completed_at": None,
-            "sandbox_path": request.sandbox_path or None,
-        }
+    runtime.register_job(
+        job_id, "Waiting to start", sandbox_path=request.sandbox_path or None
+    )
     
     # Submit to thread pool
     _submit_with_context(
@@ -1656,7 +1617,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
 
-        _publish_job_state(job_id)
         final_state = _digital_worker.invoke(
             {
                 "source": submission.source,
@@ -1703,7 +1663,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                         "resume_url": f"/requests/{job_id}/approve",
                     },
                 }
-            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting approval", job_id)
             return
             
@@ -1716,7 +1675,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["progress"] = 75
                 _job_store[job_id]["message"] = "Awaiting Copilot permission attachment"
                 _job_store[job_id]["result"] = interrupt_val
-            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting permission attachment", job_id)
             return
 
@@ -1736,7 +1694,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                     "thread_id": job_id,
                     "review": interrupt_val.get("review", {}),
                 }
-            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] awaiting Gate 2 execution review", job_id)
             return
 
@@ -1764,7 +1721,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                     "questions": questions,
                     "summary": summary,
                 }
-            _publish_job_state(job_id)
             logger.info("DIGITAL WORKER JOB [%s] paused for HITL (%s)", job_id, interrupt_type)
             return
 
@@ -1779,7 +1735,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             if _job_store[job_id].get("status") != "stopped":
                 _job_store[job_id]["status"] = "stopped"
                 _job_store[job_id]["completed_at"] = time.time()
-        _publish_job_state(job_id)
     except BaseException as exc:
         logger.exception("DIGITAL WORKER JOB [%s] failed with exception", job_id)
         with _job_store_lock:
@@ -1788,7 +1743,6 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["error"] = str(exc)
                 _job_store[job_id]["completed_at"] = time.time()
                 _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-        _publish_job_state(job_id)
     finally:
         _thread_local.job_id = None
 

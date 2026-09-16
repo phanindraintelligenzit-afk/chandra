@@ -18,6 +18,7 @@ import asyncio
 import contextvars
 import logging
 import threading
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
@@ -26,8 +27,23 @@ from src.chandra.api.websockets import WebSocketManager
 logger = logging.getLogger("fastapi_app")
 
 
+# Mutations that are worth telling a watching client about.
+_BROADCAST_KEYS = frozenset({"status", "message", "progress", "error"})
+
+
 class JobStoreDict(dict[str, Any]):
-    """A job record that logs its own status and message transitions."""
+    """A job record that logs and broadcasts its own transitions.
+
+    Fan-out lives here rather than at each call site: every job type mutates this
+    dict, so publishing from ``__setitem__`` means live updates work for detector
+    scans, CloudWatch fetches and orchestration runs, not only the Digital Worker
+    jobs that happened to have explicit publish calls.
+
+    The snapshot is taken from ``self`` without touching ``job_store_lock``. The
+    caller is almost always already holding that lock, and re-reading the store
+    from the event-loop thread would make the publisher wait on a lock held by a
+    worker for the length of its critical section.
+    """
 
     def __init__(self, job_id: str, *args: Any, **kwargs: Any) -> None:
         self.job_id = job_id
@@ -47,6 +63,12 @@ class JobStoreDict(dict[str, Any]):
             )
         elif key == "status":
             logger.info(f"Job {self.job_id} | Status changed to: {value}")
+        if key in _BROADCAST_KEYS:
+            self._broadcast()
+
+    def _broadcast(self) -> None:
+        snapshot = {k: v for k, v in self.items() if k != "result"}
+        ws_manager.publish_threadsafe(self.job_id, snapshot)
 
 
 class JobStoreManager(dict[str, Any]):
@@ -103,9 +125,11 @@ ws_manager.bind_loop(bg_loop)
 
 
 def publish_job_state(job_id: str) -> None:
-    """Announce a job's current state to WebSocket subscribers.
+    """Explicitly announce a job's current state.
 
-    Best-effort: the job store remains the source of truth and
+    Rarely needed now that ``JobStoreDict`` broadcasts its own transitions; kept
+    for the cases that mutate a job through something other than ``__setitem__``.
+    Best-effort either way: the job store is the source of truth and
     ``/jobs/status/{job_id}`` still answers, so a dropped broadcast costs a
     client latency and nothing else.
     """
@@ -114,3 +138,27 @@ def publish_job_state(job_id: str) -> None:
     if job:
         job.pop("result", None)  # the live feed stays small; full result via HTTP
         ws_manager.publish_threadsafe(job_id, job)
+
+
+def new_job_id() -> str:
+    return str(uuid.uuid4())
+
+
+def register_job(job_id: str, message: str, **extra: Any) -> str:
+    """Register a queued job under ``job_id``.
+
+    Every async endpoint opened with the same eight-line dict literal; the
+    duplication meant a field added to one job shape quietly missed the others.
+    """
+    with job_store_lock:
+        job_store[job_id] = {
+            "status": "pending",
+            "progress": 0,
+            "message": message,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "completed_at": None,
+            **extra,
+        }
+    return job_id
