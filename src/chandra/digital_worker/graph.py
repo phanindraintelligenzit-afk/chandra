@@ -17,7 +17,8 @@ router in this module are deterministic, mirroring the core graph's
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import functools
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -58,11 +59,16 @@ from src.chandra.digital_worker.tracker import update_request_ticket
 from src.chandra.escalation.schemas import EscalationPayload
 from src.chandra.graphs.checkpointer import build_checkpointer
 from src.chandra.logging import get_logger
+from src.chandra.observability import correlation
 
 logger = get_logger(__name__)
 
 
 def _audit(node: str, event: str, **data: Any) -> AuditEvent:
+    """Every audit event carries the run's correlation_id (PRD §26.11)."""
+    cid = correlation.get_correlation_id()
+    if cid and "correlation_id" not in data:
+        data["correlation_id"] = cid
     return AuditEvent(node=node, event=event, data=data)
 
 
@@ -100,9 +106,22 @@ def receive_request(state: DigitalWorkerState) -> dict[str, Any]:
 
     start_time = state.get("execution_start_time") or time.time()
 
+    # Correlation + tenant: honour what the API set; otherwise the job/request id
+    # becomes the correlation id so a standalone invocation is still traceable.
+    correlation_id = (
+        state.get("correlation_id")
+        or correlation.get_correlation_id()
+        or state.get("job_id")
+        or request.request_id
+    )
+    tenant_id = state.get("tenant_id") or correlation.get_tenant_id()
+    correlation.bind(correlation_id, tenant_id)
+
     return {
         "request": request,
         "status": "in_progress",
+        "correlation_id": correlation_id,
+        "tenant_id": tenant_id,
         "execution_start_time": start_time,
         "audit_trail": [
             _audit(
@@ -566,7 +585,12 @@ def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
     }
 
     job_id = state.get("job_id") or request.request_id
-    orchestrator = ExecutionAgents(max_iterations=1, job_id=job_id)
+    orchestrator = ExecutionAgents(
+        max_iterations=1,
+        job_id=job_id,
+        tenant_id=state.get("tenant_id") or DEFAULT_TENANT,
+        correlation_id=state.get("correlation_id"),
+    )
     sandbox_path = tempfile.mkdtemp(prefix=f"chandra-tf-{job_id}-")
 
     result = orchestrator.GenerateTerraformOnly(
@@ -1117,7 +1141,12 @@ def execute_automation(state: DigitalWorkerState) -> dict[str, Any]:  # noqa: PL
             max_iters = int(worker_settings.get("max_iterations", max_iters))
             cmd_timeout = int(worker_settings.get("command_timeout", cmd_timeout))
 
-        orchestrator = ExecutionAgents(max_iterations=max_iters, job_id=dw_job_id)
+        orchestrator = ExecutionAgents(
+            max_iterations=max_iters,
+            job_id=dw_job_id,
+            tenant_id=state.get("tenant_id") or DEFAULT_TENANT,
+            correlation_id=state.get("correlation_id"),
+        )
         exec_thread_id = f"exec-{dw_job_id}"
 
         # Register the actual LangGraph worker thread ID into the backend job store
@@ -1610,6 +1639,8 @@ def persist(state: DigitalWorkerState) -> dict[str, Any]:
             session.add(
                 CloudRequestRecord(
                     request_id=request.request_id,
+                    tenant_id=state.get("tenant_id") or DEFAULT_TENANT,
+                    correlation_id=state.get("correlation_id"),
                     source=request.source.value,
                     external_id=request.external_id,
                     title=request.title,
@@ -1647,7 +1678,34 @@ def persist(state: DigitalWorkerState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:  # noqa: PLR0915
+def _with_correlation(name: str, fn: Callable[[DigitalWorkerState], dict[str, Any]]) -> Any:
+    # Returns Any: StateGraph.add_node's overloads don't accept a bare
+    # Callable alias, though they accept the identical undecorated functions.
+    """Bind the run's correlation/tenant ids for the duration of a node.
+
+    LangGraph executes nodes on its own worker threads, so the context bound by
+    the API request (or by ``receive_request``) does not reach them implicitly.
+    The ids live in the graph state, which every node receives — binding here
+    means every log line and every ``_audit`` event inside the node carries them
+    without each node having to remember (PRD §26.11).
+    """
+
+    @functools.wraps(fn)
+    def _node(state: DigitalWorkerState) -> dict[str, Any]:
+        cid = (
+            state.get("correlation_id")
+            or correlation.get_correlation_id()
+            or state.get("job_id")
+            or None
+        )
+        with correlation.correlation_scope(cid, state.get("tenant_id")):
+            return fn(state)
+
+    _node.__name__ = name
+    return _node
+
+
+def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:
     """Compile the Digital Worker request workflow.
 
     Pass an explicit checkpointer in tests (e.g. a ``MemorySaver``);
@@ -1658,31 +1716,36 @@ def build_digital_worker_graph(checkpointer: Any | None = None) -> Any:  # noqa:
     """
     graph: StateGraph[DigitalWorkerState] = StateGraph(DigitalWorkerState)
 
-    graph.add_node("receive_request", receive_request)
-    graph.add_node("understand_request", understand_request)
-    graph.add_node("classify_request", classify_request_node)
-    graph.add_node("identify_platform", identify_platform_node)
-    graph.add_node("collect_context", collect_context)
-    graph.add_node("root_cause_analysis", root_cause_analysis)
-    graph.add_node("plan_resolution", plan_resolution)
-    graph.add_node("risk_analysis", risk_analysis)
-    graph.add_node("decision", decision)
-    graph.add_node("approval_gate", approval_gate)
-    graph.add_node("permission_analysis", permission_analysis)
-    graph.add_node("permission_selection_pause", permission_selection_pause)
-    graph.add_node("gate_1_verification", gate_1_verification)
-    graph.add_node("terraform_generate", terraform_generate)
-    graph.add_node("terraform_validate_plan", terraform_validate_plan)
-    graph.add_node("gate_2_review", gate_2_review)
-    graph.add_node("terraform_apply", terraform_apply)
-    graph.add_node("verify_aws_resources", verify_aws_resources)
-    graph.add_node("execute_automation", execute_automation)
-    graph.add_node("generate_guidance", generate_guidance)
-    graph.add_node("validate_result", validate_result)
-    graph.add_node("update_tracker", update_tracker)
-    graph.add_node("notify", notify)
-    graph.add_node("audit", audit)
-    graph.add_node("persist", persist)
+    # Every node is wrapped so the run's correlation/tenant ids are bound on
+    # whichever worker thread LangGraph runs it on (PRD §26.11).
+    for _name, _fn in (
+        ("receive_request", receive_request),
+        ("understand_request", understand_request),
+        ("classify_request", classify_request_node),
+        ("identify_platform", identify_platform_node),
+        ("collect_context", collect_context),
+        ("root_cause_analysis", root_cause_analysis),
+        ("plan_resolution", plan_resolution),
+        ("risk_analysis", risk_analysis),
+        ("decision", decision),
+        ("approval_gate", approval_gate),
+        ("permission_analysis", permission_analysis),
+        ("permission_selection_pause", permission_selection_pause),
+        ("gate_1_verification", gate_1_verification),
+        ("terraform_generate", terraform_generate),
+        ("terraform_validate_plan", terraform_validate_plan),
+        ("gate_2_review", gate_2_review),
+        ("terraform_apply", terraform_apply),
+        ("verify_aws_resources", verify_aws_resources),
+        ("execute_automation", execute_automation),
+        ("generate_guidance", generate_guidance),
+        ("validate_result", validate_result),
+        ("update_tracker", update_tracker),
+        ("notify", notify),
+        ("audit", audit),
+        ("persist", persist),
+    ):
+        graph.add_node(_name, _with_correlation(_name, _fn))
 
     graph.add_edge(START, "receive_request")
     graph.add_edge("receive_request", "understand_request")

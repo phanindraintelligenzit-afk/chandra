@@ -5,6 +5,7 @@ FastAPI application for the AWS Observability Agent.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import threading
@@ -12,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Header, Query, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +40,7 @@ from tools.aws_cloud_tools.tool_findings import run_all_detectors, run_predefine
 from copilot_agents.graph import build_graph, chat as copilot_chat
 from src.chandra.digital_worker.graph import build_digital_worker_graph
 from src.chandra.digital_worker.intake import SUPPORTED_SOURCES
+from src.chandra.observability import correlation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,6 +80,13 @@ _job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
 _job_store_lock = threading.RLock()
 _thread_pool = ThreadPoolExecutor(max_workers=8)
 
+
+def _submit_with_context(fn, *args, **kwargs):
+    """Submit to the pool while propagating contextvars (correlation_id, tenant_id,
+    structlog context) into the worker thread."""
+    ctx = contextvars.copy_context()
+    return _thread_pool.submit(ctx.run, fn, *args, **kwargs)
+
 _thread_local = threading.local()
 
 # ── Shared background event loop ──────────────────────────────────────────────
@@ -111,7 +120,8 @@ class LogCapture(logging.Handler):
             "level": record.levelname,
             "logger": record.name,
             "message": self.format(record),
-            "job_id": getattr(_thread_local, "job_id", None)
+            "job_id": getattr(_thread_local, "job_id", None),
+            "correlation_id": correlation.get_correlation_id(),
         }
         _log_buffer.append(log_entry)
         # Keep only last 500 logs
@@ -218,6 +228,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _correlation_middleware(request: Request, call_next):
+    """PRD 26.11: bind a correlation id (+ tenant) for every request and echo it back."""
+    cid = correlation.sanitize(
+        request.headers.get(correlation.CORRELATION_HEADER),
+        fallback=correlation.new_correlation_id(),
+    )
+    tid = correlation.sanitize(
+        request.headers.get(correlation.TENANT_HEADER), fallback=correlation.DEFAULT_TENANT
+    )
+    correlation.bind(cid, tid)
+    try:
+        response = await call_next(request)
+    finally:
+        correlation.clear()
+    response.headers[correlation.CORRELATION_HEADER] = cid
+    return response
 
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
 # Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
@@ -359,7 +388,7 @@ def get_detector_issues():
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_detector_task, job_id)
+    _submit_with_context(_run_detector_task, job_id)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
@@ -381,7 +410,7 @@ def get_predefined_kra_issues(request: PredefinedKraRequest):
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_predefined_kra_task, job_id, request.selected_kras)
+    _submit_with_context(_run_predefined_kra_task, job_id, request.selected_kras)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
@@ -432,7 +461,7 @@ def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_cloudwatch_task, job_id, request)
+    _submit_with_context(_run_cloudwatch_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"CloudWatch fetch submitted. Poll /jobs/status/{job_id}",
@@ -455,7 +484,7 @@ def run_pipeline(request: PipelineRequest):
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_observations_task, job_id, request)
+    _submit_with_context(_run_observations_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Pipeline submitted. Poll /jobs/status/{job_id}",
@@ -707,7 +736,7 @@ def analyze_actions(request: AnalyzerRequest):
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_analyzer_task, job_id, request)
+    _submit_with_context(_run_analyzer_task, job_id, request)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Analysis submitted. Poll /jobs/status/{job_id}",
@@ -966,7 +995,7 @@ def stop_orchestration(job_id: str):
             logger.warning("Failed to auto-delete sandbox %s: %s", path, e)
 
     if sandbox_path:
-        _thread_pool.submit(_delete_sandbox, sandbox_path)
+        _submit_with_context(_delete_sandbox, sandbox_path)
 
     return JSONResponse(status_code=200, content={"status": "success"})
 
@@ -1014,7 +1043,7 @@ def orchestrate_action(request: OrchestrateRequest):
         }
     
     # Submit to thread pool
-    _thread_pool.submit(
+    _submit_with_context(
         _run_orchestration_task,
         job_id,
         request
@@ -1175,13 +1204,21 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         """Resume a direct Execution Agent job (AWS Task or KRA)."""
         import time
         start_time = time.time()
+        with _job_store_lock:
+            _stored = _job_store.get(job_id, {})
+        correlation.bind(_stored.get("correlation_id") or job_id, _stored.get("tenant_id"))
         exec_thread_id = f"exec-{job_id}"
         try:
             with _job_store_lock:
                 _job_store[job_id]["thread_id"] = threading.get_ident()
                 aws_permissions = _job_store[job_id].get("aws_permissions", [])
 
-            orchestrator = ExecutionAgents(max_iterations=5, job_id=job_id)
+            orchestrator = ExecutionAgents(
+                max_iterations=5,
+                job_id=job_id,
+                tenant_id=correlation.get_tenant_id(),
+                correlation_id=correlation.get_correlation_id() or job_id,
+            )
             response = orchestrator.RunPipeline(
                 action=stored_action,
                 sandbox_path=sandbox_path,
@@ -1233,9 +1270,9 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
 
     if job_type == "dw":
-        _thread_pool.submit(_run_dw_resume)
+        _submit_with_context(_run_dw_resume)
     else:
-        _thread_pool.submit(_run_execution_resume)
+        _submit_with_context(_run_execution_resume)
 
     return OrchestrateJobResponse(
         job_id=job_id,
@@ -1278,6 +1315,11 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
     import time
     start_time = time.time()
     _thread_local.job_id = job_id
+    correlation.bind(correlation.get_correlation_id() or job_id, correlation.get_tenant_id())
+    with _job_store_lock:
+        if job_id in _job_store:
+            _job_store[job_id]["correlation_id"] = correlation.get_correlation_id()
+            _job_store[job_id]["tenant_id"] = correlation.get_tenant_id()
 
     try:
         with _job_store_lock:
@@ -1359,7 +1401,12 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                 return
 
         # Run the standard LLM orchestration
-        orchestrator = ExecutionAgents(max_iterations=request.max_iterations, job_id=job_id)
+        orchestrator = ExecutionAgents(
+            max_iterations=request.max_iterations,
+            job_id=job_id,
+            tenant_id=correlation.get_tenant_id(),
+            correlation_id=correlation.get_correlation_id() or job_id,
+        )
 
         action_dict = request.action.model_dump()
         if request.jiraUrl:
@@ -1554,12 +1601,17 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
     import threading
     start_time = time.time()
     _thread_local.job_id = job_id
+    cid = correlation.get_correlation_id() or job_id
+    tid = correlation.get_tenant_id()
+    correlation.bind(cid, tid)
     try:
         if _digital_worker is None:
             raise RuntimeError("Digital Worker graph is not initialized")
         with _job_store_lock:
             _job_store[job_id]["status"] = "running"
             _job_store[job_id]["job_type"] = "dw"
+            _job_store[job_id]["correlation_id"] = cid
+            _job_store[job_id]["tenant_id"] = tid
             _job_store[job_id]["started_at"] = start_time
             _job_store[job_id]["progress"] = 10
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
@@ -1571,6 +1623,8 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 "payload": submission.payload,
                 "dry_run": submission.dry_run,
                 "job_id": job_id,
+                "correlation_id": cid,
+                "tenant_id": tid,
             },
             config=_dw_thread_config(job_id),
         )
@@ -1697,6 +1751,9 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
     """Background worker for /requests/{job_id}/approve — resumes the interrupt."""
     import time
     import threading
+    with _job_store_lock:
+        _stored = _job_store.get(job_id, {})
+        correlation.bind(_stored.get("correlation_id") or job_id, _stored.get("tenant_id"))
     from langgraph.types import Command
 
     start_time = time.time()
@@ -1960,7 +2017,7 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "result": None, "error": None,
             "started_at": None, "completed_at": None,
         }
-    _thread_pool.submit(_run_digital_worker_task, job_id, submission)
+    _submit_with_context(_run_digital_worker_task, job_id, submission)
     
     if submission.source == "teams":
         # Teams requires a specific Bot Framework JSON schema to avoid showing an error in the channel
@@ -2060,7 +2117,7 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
             return JSONResponse(status_code=409, content={
                 "error": f"Job is '{job.get('status')}', not awaiting_approval/awaiting_permission/awaiting_gate2",
             })
-    _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
+    _submit_with_context(_resume_digital_worker_task, job_id, approval)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
         "message": f"Approval decision submitted. Poll /jobs/status/{job_id}",
