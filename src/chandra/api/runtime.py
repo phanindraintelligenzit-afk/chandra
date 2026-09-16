@@ -140,6 +140,17 @@ def publish_job_state(job_id: str) -> None:
         ws_manager.publish_threadsafe(job_id, job)
 
 
+def run_async(coro: Any) -> Any:
+    """Run a coroutine on the shared background loop, blocking the caller.
+
+    Used by worker threads that need to await async library code. They must not
+    call ``asyncio.run`` themselves: a second loop per thread is what crashed
+    uvicorn before the shared loop existed.
+    """
+    future = asyncio.run_coroutine_threadsafe(coro, bg_loop)
+    return future.result()
+
+
 def new_job_id() -> str:
     return str(uuid.uuid4())
 

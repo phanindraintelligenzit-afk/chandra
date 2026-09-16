@@ -55,9 +55,15 @@ from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
 from src.chandra.api import deps, runtime
+from src.chandra.api.models import ActionInput
 from src.chandra.api.logbuffer import log_buffer
 from src.chandra.memory.cache import get_cache
-from src.chandra.api.routers import catalog_router, governance_router, jobs_router
+from src.chandra.api.routers import (
+    catalog_router,
+    governance_router,
+    jobs_router,
+    scans_router,
+)
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
 
@@ -307,15 +313,7 @@ except Exception as _e:
     _digital_worker = None
 
 
-class KRAInput(BaseModel):
-    code: Optional[str] = Field(default=None, description="Optional KRA identifier (e.g. KRA-01). Auto-labelled if omitted.")
-    name: Optional[str] = Field(default=None, description="Optional short name/title for the KRA (e.g. 'Disaster Recovery Drills'). For custom KRAs this is the user-provided kraName.")
-    description: str = Field(description="Free-form goal or objective. Can be an observability target (e.g. 'IAM drift monitoring') or any operational task (e.g. 'Deploy code from github.com/org/repo to EC2 in us-east-1').")
-
-
-class PipelineRequest(BaseModel):
-    region: str = Field(default=DEFAULT_REGION, description="AWS region to run the pipeline against")
-    kras: List[KRAInput] = Field(description="List of KRAs to evaluate during the observability run")
+# Scan/metrics request models moved to src/chandra/api/routers/scans.py.
 
 
 @app.get("/health")
@@ -426,382 +424,22 @@ def _config_repo(tenant_id: str | None = None) -> ConfigRepository:
 app.include_router(governance_router)
 app.include_router(catalog_router)
 app.include_router(jobs_router)
+app.include_router(scans_router)
 
 
-@app.get("/getDetectorIssues")
-def get_detector_issues():
-    """Submit detector scan as an async job. Poll /jobs/status/{job_id} for result."""
-    job_id = str(uuid.uuid4())
-    logger.info("GET /getDetectorIssues -> async job_id=%s", job_id)
-    runtime.register_job(job_id, "Queued: detector scan")
-    _submit_with_context(_run_detector_task, job_id)
-    return JSONResponse(status_code=202, content={
-        "job_id": job_id, "status": "accepted",
-        "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
-        "poll_url": f"/jobs/status/{job_id}"
-    })
-
-class PredefinedKraRequest(BaseModel):
-    selected_kras: List[str] = Field(default_factory=list, description="List of KRA codes/names to run detectors for")
-
-@app.post("/getPredefinedKraIssues")
-def get_predefined_kra_issues(request: PredefinedKraRequest):
-    """Submit detector scan as an async job for selected KRAs."""
-    job_id = str(uuid.uuid4())
-    logger.info("POST /getPredefinedKraIssues -> async job_id=%s, kras=%s", job_id, request.selected_kras)
-    runtime.register_job(job_id, f"Queued: detector scan for {request.selected_kras}")
-    _submit_with_context(_run_predefined_kra_task, job_id, request.selected_kras)
-    return JSONResponse(status_code=202, content={
-        "job_id": job_id, "status": "accepted",
-        "message": f"Detector scan submitted. Poll /jobs/status/{job_id}",
-        "poll_url": f"/jobs/status/{job_id}"
-    })
-
-class CostMetricsRequest(BaseModel):
-    days_lookback: int = Field(default=7, ge=1, le=365, description="Number of days to look back")
-    granularity: str = Field(default="DAILY", description="Cost granularity: DAILY or MONTHLY")
-
-@app.post("/getCostMetrics")
-async def get_cost_metrics(request: CostMetricsRequest) -> JSONResponse:
-    logger.info("POST /getCostMetrics called with days_lookback=%d, granularity=%s", request.days_lookback, request.granularity)
-    try:
-        fetcher = AWSCostExplorerFetcher()
-        summary: Dict[str, Any] = await fetcher.fetch_costs_summary(days_lookback=request.days_lookback)
-        return JSONResponse(status_code=200, content={"status": "success", "output": summary})
-    except Exception as exc:
-        logger.exception("Cost metrics fetch failed: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
-
-class CloudWatchMetricsRequest(BaseModel):
-    region: str = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="AWS region to fetch metrics from")
-    last_hours: int = Field(default=12, description="Hours to look back")
-    period: int = Field(default=1200, description="Period in seconds")
-    timezone_str: str = Field(default="Asia/Kolkata", description="Timezone for timestamps (e.g. 'Asia/Kolkata', 'US/Eastern')")
-
-@app.get("/aws/regions")
-def get_aws_regions() -> JSONResponse:
-    """Fetch all available AWS regions dynamically."""
-    try:
-        session = boto3.Session()
-        regions = session.get_available_regions('cloudwatch')
-        return JSONResponse(status_code=200, content={"regions": sorted(regions)})
-    except Exception as exc:
-        logger.exception("Failed to fetch regions: %s", exc)
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
-
-@app.post("/getCloudWatchMetrics")
-def get_cloudwatch_metrics(request: CloudWatchMetricsRequest) -> JSONResponse:
-    """Submit CloudWatch metrics fetch as an async job. Poll /jobs/status/{job_id} for result."""
-    job_id = str(uuid.uuid4())
-    logger.info("POST /getCloudWatchMetrics -> async job_id=%s region=%s", job_id, request.region)
-    runtime.register_job(job_id, "Queued: CloudWatch metrics fetch")
-    _submit_with_context(_run_cloudwatch_task, job_id, request)
-    return JSONResponse(status_code=202, content={
-        "job_id": job_id, "status": "accepted",
-        "message": f"CloudWatch fetch submitted. Poll /jobs/status/{job_id}",
-        "poll_url": f"/jobs/status/{job_id}"
-    })
-
-
-@app.post("/getAgentObservations")
-def run_pipeline(request: PipelineRequest):
-    """Submit observability pipeline as an async job. Poll /jobs/status/{job_id} for result."""
-    job_id = str(uuid.uuid4())
-    logger.info(
-        "POST /getAgentObservations -> async job_id=%s region=%s kras=%s",
-        job_id, request.region, [k.code for k in request.kras],
-    )
-    runtime.register_job(job_id, "Queued: AWS observability pipeline")
-    _submit_with_context(_run_observations_task, job_id, request)
-    return JSONResponse(status_code=202, content={
-        "job_id": job_id, "status": "accepted",
-        "message": f"Pipeline submitted. Poll /jobs/status/{job_id}",
-        "poll_url": f"/jobs/status/{job_id}"
-    })
-
-
-# ── Generic job status endpoint (shared by all async jobs) ────────────────────
-# ── Background task functions ─────────────────────────────────────────────────
-
-def _run_observations_task(job_id: str, request: PipelineRequest):
-    """Background worker for /getAgentObservations."""
-    import time
-    start_time = time.time()
-    _thread_local.job_id = job_id
-    try:
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "running"
-            _job_store[job_id]["started_at"] = start_time
-            _job_store[job_id]["progress"] = 10
-            _job_store[job_id]["message"] = "Initializing AWS agent..."
-            _job_store[job_id]["thread_id"] = threading.get_ident()
-
-        agent = AwsObservabilityAgent(region=request.region, kras=request.kras)
-
-        with _job_store_lock:
-            _job_store[job_id]["progress"] = 25
-            _job_store[job_id]["message"] = "Running 11 AWS tools in parallel..."
-
-        response = agent.RunPipeline()
-        elapsed = time.time() - start_time
-
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "completed"
-            _job_store[job_id]["progress"] = 100
-            _job_store[job_id]["result"] = response.model_dump()
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Completed in {elapsed:.1f}s"
-
-        logger.info("OBSERVATIONS JOB [%s] completed in %.1fs", job_id, elapsed)
-
-    except (InterruptedError, SystemExit):
-        logger.info("OBSERVATIONS JOB [%s] was stopped by the user", job_id)
-        with _job_store_lock:
-            if _job_store[job_id].get("status") != "stopped":
-                _job_store[job_id]["status"] = "stopped"
-                _job_store[job_id]["completed_at"] = time.time()
-    except Exception as exc:
-        logger.exception("OBSERVATIONS JOB [%s] failed", job_id)
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-    finally:
-        _thread_local.job_id = None
-
-
-def _run_detector_task(job_id: str):
-    """Background worker for /getDetectorIssues."""
-    import time
-    start_time = time.time()
-    _thread_local.job_id = job_id
-    try:
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "running"
-            _job_store[job_id]["started_at"] = start_time
-            _job_store[job_id]["progress"] = 10
-            _job_store[job_id]["message"] = "Running compliance/security detectors..."
-            _job_store[job_id]["thread_id"] = threading.get_ident()
-
-        # Use shared bg loop — avoids competing event loops crashing uvicorn
-        selected = [k["name"].lower() for k in _load_custom_kras_from_disk() if k.get("selected")]
-        valid_modules = [m for m in ["compliance", "security", "reliability", "performance", "cost"] if m in selected]
-        
-        if valid_modules:
-            findings = _run_async(run_predefined_kra_detectors(valid_modules))
-        else:
-            findings = {}
-            
-        if isinstance(findings, dict):
-            total_issues = sum(len(g) for g in findings.values())
-            output = findings
-        else:
-            total_issues = len(findings)
-            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
-
-        elapsed = time.time() - start_time
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "completed"
-            _job_store[job_id]["progress"] = 100
-            _job_store[job_id]["result"] = {"status": "success", "output": output}
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Found {total_issues} issues in {elapsed:.1f}s"
-
-        logger.info("DETECTOR JOB [%s] found %d issues in %.1fs", job_id, total_issues, elapsed)
-
-    except (InterruptedError, SystemExit):
-        logger.info("DETECTOR JOB [%s] was stopped by the user", job_id)
-        with _job_store_lock:
-            if _job_store[job_id].get("status") != "stopped":
-                _job_store[job_id]["status"] = "stopped"
-                _job_store[job_id]["completed_at"] = time.time()
-    except Exception as exc:
-        logger.exception("DETECTOR JOB [%s] failed", job_id)
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-    finally:
-        _thread_local.job_id = None
-
-
-def _run_predefined_kra_task(job_id: str, selected_kras: List[str]):
-    """Background worker for /getPredefinedKraIssues."""
-    import time
-    start_time = time.time()
-    _thread_local.job_id = job_id
-    try:
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "running"
-            _job_store[job_id]["started_at"] = start_time
-            _job_store[job_id]["progress"] = 10
-            _job_store[job_id]["message"] = f"Running detectors for {selected_kras}..."
-            _job_store[job_id]["thread_id"] = threading.get_ident()
-
-        findings = _run_async(run_predefined_kra_detectors(selected_kras))
-        if isinstance(findings, dict):
-            total_issues = sum(len(g) for g in findings.values())
-            output = findings
-        else:
-            total_issues = len(findings)
-            output = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
-
-        elapsed = time.time() - start_time
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "completed"
-            _job_store[job_id]["progress"] = 100
-            _job_store[job_id]["result"] = {"status": "success", "output": output}
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Found {total_issues} issues in {elapsed:.1f}s"
-
-        logger.info("PREDEFINED KRA JOB [%s] found %d issues in %.1fs", job_id, total_issues, elapsed)
-
-    except (InterruptedError, SystemExit):
-        logger.info("PREDEFINED KRA JOB [%s] was stopped by the user", job_id)
-        with _job_store_lock:
-            if _job_store[job_id].get("status") != "stopped":
-                _job_store[job_id]["status"] = "stopped"
-                _job_store[job_id]["completed_at"] = time.time()
-    except Exception as exc:
-        logger.exception("PREDEFINED KRA JOB [%s] failed", job_id)
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-    finally:
-        _thread_local.job_id = None
-
-
-def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
-    """Background worker for /getCloudWatchMetrics."""
-    import time
-    start_time = time.time()
-    _thread_local.job_id = job_id
-    try:
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "running"
-            _job_store[job_id]["started_at"] = start_time
-            _job_store[job_id]["progress"] = 10
-            _job_store[job_id]["message"] = "Discovering CloudWatch metrics..."
-
-        fetcher = CloudWatchMetricsFetcher()
-        # Use shared bg loop — avoids competing event loops crashing uvicorn
-        summary = _run_async(fetcher.fetch_all_metrics(
-            region=request.region,
-            last_hours=request.last_hours,
-            period=request.period,
-            timezone_str=request.timezone_str,
-        ))
-        elapsed = time.time() - start_time
-        total = summary.get("metadata", {}).get("total_metrics_found", 0)
-
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "completed"
-            _job_store[job_id]["progress"] = 100
-            _job_store[job_id]["result"] = {"status": "success", "output": summary}
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Fetched {total} metrics in {elapsed:.1f}s"
-
-        logger.info("CLOUDWATCH JOB [%s] found %d metrics in %.1fs", job_id, total, elapsed)
-
-    except Exception as exc:
-        logger.exception("CLOUDWATCH JOB [%s] failed", job_id)
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-    finally:
-        _thread_local.job_id = None
-
-class ActionInput(BaseModel):
-    actionName: str = Field(description="Short name of the action")
-    actionDescription: str = Field(description="Detailed description of what needs to be done")
-    service: Optional[str] = Field(default="AWS", description="AWS service this action applies to")
-    kraCode: Optional[str] = Field(default=None, description="KRA identifier (e.g. KRA-01)")
-    priorityLevel: Optional[str] = Field(default=None, description="Priority level (e.g. P1)")
-    steps: Optional[List[str]] = Field(default=None, description="Implementation steps to add as a Jira comment")
-    detectorId: Optional[str] = Field(default=None, description="Detector ID for predefined KRA actions")
-    resourceArn: Optional[str] = Field(default=None, description="Target resource ARN for predefined KRA actions")
-    region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
-    action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
-    permission_set_id: Optional[str] = Field(default=None, description="AWS permission set selected during onboarding")
-
-
-class AnalyzerRequest(BaseModel):
-    actions: List[ActionInput] = Field(description="List of remediation actions to analyze")
-    projectKey: str = Field(default="DEV", description="Jira project key for ticket creation")
-
-
-@app.post("/analyzeActions")
-def analyze_actions(request: AnalyzerRequest):
-    """Submit action analysis as an async job. Poll /jobs/status/{job_id} for result."""
-    job_id = str(uuid.uuid4())
-    logger.info(
-        "POST /analyzeActions -> async job_id=%s actions=%d projectKey=%s",
-        job_id, len(request.actions), request.projectKey,
-    )
-    runtime.register_job(job_id, f"Queued: analyzing {len(request.actions)} actions")
-    _submit_with_context(_run_analyzer_task, job_id, request)
-    return JSONResponse(status_code=202, content={
-        "job_id": job_id, "status": "accepted",
-        "message": f"Analysis submitted. Poll /jobs/status/{job_id}",
-        "poll_url": f"/jobs/status/{job_id}"
-    })
-
-
-def _run_analyzer_task(job_id: str, request: AnalyzerRequest):
-    """Background worker for /analyzeActions."""
-    import time
-    start_time = time.time()
-    _thread_local.job_id = job_id
-    try:
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "running"
-            _job_store[job_id]["started_at"] = start_time
-            _job_store[job_id]["progress"] = 10
-            _job_store[job_id]["message"] = "Analyzing actions with LLM..."
-
-        agent = AnalyzerAgent()
-
-        with _job_store_lock:
-            _job_store[job_id]["progress"] = 40
-            _job_store[job_id]["message"] = "Creating Jira tickets..."
-
-        response = agent.RunPipeline(request.model_dump())
-        elapsed = time.time() - start_time
-
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "completed"
-            _job_store[job_id]["progress"] = 100
-            _job_store[job_id]["result"] = response.model_dump()
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Completed in {elapsed:.1f}s"
-
-        logger.info("ANALYZER JOB [%s] completed in %.1fs", job_id, elapsed)
-
-    except Exception as exc:
-        logger.exception("ANALYZER JOB [%s] failed", job_id)
-        with _job_store_lock:
-            _job_store[job_id]["status"] = "failed"
-            _job_store[job_id]["error"] = str(exc)
-            _job_store[job_id]["completed_at"] = time.time()
-            _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
-    finally:
-        _thread_local.job_id = None
-
+# Detector scans, cloud metrics and action analysis live in
+# src/chandra/api/routers/scans.py.
 
 
 class CopilotRequest(BaseModel):
-    sessionId: str = Field(description="Conversation thread ID — reuse to retain memory across turns")
+    sessionId: str = Field(  # noqa: N815 - existing console wire contract
+        description="Conversation thread ID - reuse to retain memory across turns"
+    )
     message: str = Field(description="User message to the copilot agent")
 
 
 class CopilotResponse(BaseModel):
-    sessionId: str
+    sessionId: str  # noqa: N815 - existing console wire contract
     reply: str
 
 

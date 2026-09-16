@@ -1,7 +1,8 @@
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from fastapi_app import ActionInput, OrchestrateRequest, _job_store, _run_orchestration_task, app
+from fastapi_app import OrchestrateRequest, _job_store, _run_orchestration_task, app
+from src.chandra.api.models import ActionInput
 
 client = TestClient(app)
 
