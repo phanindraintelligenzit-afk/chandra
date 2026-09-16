@@ -54,7 +54,7 @@ from src.chandra.governance import (
 from src.chandra.observability import correlation
 from src.chandra import security
 from src.chandra.api import WebSocketManager
-from src.chandra.api import deps
+from src.chandra.api import deps, runtime
 from src.chandra.api.routers import catalog_router, governance_router
 from src.chandra.config import settings
 from src.chandra.security.ratelimit import RateLimiter
@@ -69,77 +69,20 @@ logger = logging.getLogger("fastapi_app")
 _log_buffer: List[Dict[str, Any]] = []
 _max_logs = 2000
 
-# Job tracking for long-running orchestrations
-class JobStoreDict(dict):
-    def __init__(self, job_id, *args, **kwargs):
-        self.job_id = job_id
-        super().__init__(*args, **kwargs)
-        if "message" in self:
-            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {self['message']}")
+# Job tracking, the worker pool, the background loop and live fan-out now live
+# in src/chandra/api/runtime.py, so routers can reach them without importing
+# this module. Aliased here for the endpoints still defined below.
+_job_store = runtime.job_store
+_job_store_lock = runtime.job_store_lock
+_thread_pool = runtime.thread_pool
+_thread_local = runtime.thread_local
+_bg_loop = runtime.bg_loop
+ws_manager = runtime.ws_manager
+_submit_with_context = runtime.submit_with_context
+_publish_job_state = runtime.publish_job_state
+JobStoreDict = runtime.JobStoreDict
+JobStoreManager = runtime.JobStoreManager
 
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        if key == "message":
-            logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {value}")
-        elif key == "status":
-            logger.info(f"Job {self.job_id} | Status changed to: {value}")
-
-class JobStoreManager(dict):
-    def __setitem__(self, key, value):
-        if isinstance(value, dict) and not isinstance(value, JobStoreDict):
-            value = JobStoreDict(key, value)
-        super().__setitem__(key, value)
-
-_job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
-# Use RLock (reentrant) so background worker threads that already hold the
-# lock can re-enter it without deadlocking the FastAPI HTTP threads that
-# serve GET /requests and GET /jobs/status while a job is running.
-_job_store_lock = threading.RLock()
-_thread_pool = ThreadPoolExecutor(max_workers=8)
-
-
-def _submit_with_context(fn, *args, **kwargs):
-    """Submit to the pool while propagating contextvars (correlation_id, tenant_id,
-    structlog context) into the worker thread."""
-    ctx = contextvars.copy_context()
-    return _thread_pool.submit(ctx.run, fn, *args, **kwargs)
-
-_thread_local = threading.local()
-
-# ── Shared background event loop ──────────────────────────────────────────────
-# Using asyncio.run() in multiple background threads simultaneously creates
-# competing event loops that crash uvicorn. Instead, we keep ONE persistent
-# event loop running in a dedicated daemon thread and submit all async work
-# to it via asyncio.run_coroutine_threadsafe().
-_bg_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-
-def _start_bg_loop(loop: asyncio.AbstractEventLoop) -> None:
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-_bg_loop_thread = threading.Thread(
-    target=_start_bg_loop, args=(_bg_loop,), daemon=True, name="bg-async-loop"
-)
-_bg_loop_thread.start()
-
-# Live job state fan-out (PRD L2 stage 2). Bound to the background loop so
-# worker threads can publish without touching asyncio.
-ws_manager = WebSocketManager()
-ws_manager.bind_loop(_bg_loop)
-
-
-def _publish_job_state(job_id: str) -> None:
-    """Announce a job's current state to WebSocket subscribers.
-
-    Best-effort by design: the job store remains the source of truth and
-    /jobs/status/{job_id} still answers, so a dropped broadcast costs a client
-    nothing but latency.
-    """
-    with _job_store_lock:
-        job = dict(_job_store.get(job_id, {}))
-    if job:
-        job.pop("result", None)  # the summary feed stays small; full result via HTTP
-        ws_manager.publish_threadsafe(job_id, job)
 
 
 def _run_async(coro) -> Any:
@@ -239,7 +182,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down background async loop...")
     try:
         _bg_loop.call_soon_threadsafe(_bg_loop.stop)
-        _bg_loop_thread.join(timeout=5.0)
+        runtime.bg_loop_thread.join(timeout=5.0)
     except Exception as e:
         logger.error(f"Error shutting down background loop: {e}")
 
