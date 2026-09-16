@@ -209,3 +209,48 @@ class RbacEngine:
         principal = self.resolve(principal_id)
         principal.require(capability)
         return principal
+
+
+class RoleAssignmentStore:
+    """CRUD over ``principal_roles``. The only writer of that table."""
+
+    def __init__(
+        self, tenant_id: str = DEFAULT_TENANT, session_factory: SessionFactory | None = None
+    ) -> None:
+        self.tenant_id = tenant_id
+        self._scope: SessionFactory = session_factory or _default_session_scope
+
+    def list_assignments(self) -> dict[str, list[str]]:
+        with self._scope() as session:
+            rows = session.scalars(
+                select(PrincipalRoleRecord)
+                .where(PrincipalRoleRecord.tenant_id == self.tenant_id)
+                .order_by(PrincipalRoleRecord.principal_id, PrincipalRoleRecord.role)
+            ).all()
+            out: dict[str, list[str]] = {}
+            for row in rows:
+                out.setdefault(row.principal_id, []).append(row.role)
+            return out
+
+    def grant(self, principal_id: str, role: Role, granted_by: str = "") -> None:
+        with self._scope() as session:
+            existing = session.get(PrincipalRoleRecord, (self.tenant_id, principal_id, role.value))
+            if existing is None:
+                session.add(
+                    PrincipalRoleRecord(
+                        tenant_id=self.tenant_id,
+                        principal_id=principal_id,
+                        role=role.value,
+                        granted_by=granted_by,
+                    )
+                )
+        logger.info("rbac.granted", tenant=self.tenant_id, principal=principal_id, role=role.value)
+
+    def revoke(self, principal_id: str, role: Role) -> bool:
+        with self._scope() as session:
+            row = session.get(PrincipalRoleRecord, (self.tenant_id, principal_id, role.value))
+            if row is None:
+                return False
+            session.delete(row)
+        logger.info("rbac.revoked", tenant=self.tenant_id, principal=principal_id, role=role.value)
+        return True

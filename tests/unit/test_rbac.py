@@ -221,3 +221,113 @@ class TestApiEnforcement:
         assert (
             client.get("/api/aws-tasks", headers={"X-Principal-ID": "nagendra"}).status_code == 200
         )
+
+
+class TestGovernanceAdminEndpoints:
+    """Policy rules and role assignments are manageable over the API, gated by
+    CONFIGURE_WORKER (PRD L2 stage 6)."""
+
+    @pytest.fixture
+    def client(self, scope: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+        import fastapi_app
+        from fastapi.testclient import TestClient
+        from src.chandra.governance import PolicyRuleStore, RoleAssignmentStore
+
+        _grant(scope, "priya", Role.AGENT_SPINNER)
+        _grant(scope, "nagendra", Role.AGENT_USER)
+        monkeypatch.setattr(
+            fastapi_app,
+            "_rbac_engine",
+            lambda tenant_id="default": RbacEngine(tenant_id=tenant_id, session_factory=scope),
+        )
+        monkeypatch.setattr(
+            fastapi_app,
+            "_policy_store",
+            lambda tenant_id="default": PolicyRuleStore(tenant_id, scope),
+        )
+        monkeypatch.setattr(
+            fastapi_app,
+            "_role_store",
+            lambda tenant_id="default": RoleAssignmentStore(tenant_id, scope),
+        )
+        yield TestClient(fastapi_app.app)
+
+    def _spinner(self) -> dict[str, str]:
+        return {"X-Principal-ID": "priya"}
+
+    def test_policy_rule_crud_round_trip(self, client: Any) -> None:
+        body = {
+            "id": "deny-iam",
+            "name": "No automated IAM changes",
+            "effect": "deny",
+            "reason": "IAM is change-managed",
+            "actions": ["iam:*"],
+        }
+        assert (
+            client.put("/api/policy-rules/deny-iam", json=body, headers=self._spinner()).status_code
+            == 200
+        )
+        listed = client.get("/api/policy-rules", headers=self._spinner()).json()
+        assert listed["count"] == 1
+        assert listed["rules"][0]["actions"] == ["iam:*"]
+
+        body["priority"] = 500
+        client.put("/api/policy-rules/deny-iam", json=body, headers=self._spinner())
+        assert (
+            client.get("/api/policy-rules", headers=self._spinner()).json()["rules"][0]["priority"]
+            == 500
+        )  # upsert, not duplicate
+
+        assert (
+            client.delete("/api/policy-rules/deny-iam", headers=self._spinner()).status_code == 200
+        )
+        assert client.get("/api/policy-rules", headers=self._spinner()).json()["count"] == 0
+        assert (
+            client.delete("/api/policy-rules/deny-iam", headers=self._spinner()).status_code == 404
+        )
+
+    def test_invalid_effect_is_rejected(self, client: Any) -> None:
+        bad = {"id": "x", "name": "x", "effect": "maybe"}
+        r = client.put("/api/policy-rules/x", json=bad, headers=self._spinner())
+        assert r.status_code == 422
+
+    def test_agent_user_cannot_read_or_write_policy(self, client: Any) -> None:
+        headers = {"X-Principal-ID": "nagendra"}
+        assert client.get("/api/policy-rules", headers=headers).status_code == 403
+        assert client.get("/api/role-assignments", headers=headers).status_code == 403
+
+    def test_role_grant_and_revoke(self, client: Any) -> None:
+        r = client.post(
+            "/api/role-assignments",
+            json={"principal_id": "deeksha", "role": "agent_user"},
+            headers=self._spinner(),
+        )
+        assert r.status_code == 200
+        # the tenant already had assignments, so this grant did not activate RBAC
+        assert r.json()["rbac_activated"] is False
+
+        listed = client.get("/api/role-assignments", headers=self._spinner()).json()
+        assert "deeksha" in listed["assignments"]
+        assert "agent_spinner" in listed["known_roles"]
+
+        assert (
+            client.delete(
+                "/api/role-assignments/deeksha/agent_user", headers=self._spinner()
+            ).status_code
+            == 200
+        )
+        assert (
+            client.delete(
+                "/api/role-assignments/deeksha/agent_user", headers=self._spinner()
+            ).status_code
+            == 404
+        )
+
+    def test_unknown_role_is_rejected_with_the_known_set(self, client: Any) -> None:
+        r = client.post(
+            "/api/role-assignments",
+            json={"principal_id": "x", "role": "superadmin"},
+            headers=self._spinner(),
+        )
+        assert r.status_code == 422
+        assert "agent_spinner" in r.json()["detail"]

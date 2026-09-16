@@ -25,6 +25,7 @@ Rules live in Postgres (``policy_rules``), tenant-scoped, and are configuration
 from __future__ import annotations
 
 import fnmatch
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -243,6 +244,65 @@ class PolicyEngine:
             evaluated_rule_count=len(rules),
             default_applied=True,
         )
+
+
+class PolicyRuleStore:
+    """CRUD over ``policy_rules``. The only writer of that table.
+
+    Rule changes are configuration, not workflow output: nothing in the graph
+    writes here, so a run can never widen the policy it is being judged by.
+    """
+
+    def __init__(
+        self, tenant_id: str = DEFAULT_TENANT, session_factory: SessionFactory | None = None
+    ) -> None:
+        self.tenant_id = tenant_id
+        self._scope: SessionFactory = session_factory or _default_session_scope
+
+    def list_rules(self) -> list[PolicyRule]:
+        with self._scope() as session:
+            rows = session.scalars(
+                select(PolicyRuleRecord)
+                .where(PolicyRuleRecord.tenant_id == self.tenant_id)
+                .order_by(PolicyRuleRecord.priority.desc(), PolicyRuleRecord.id)
+            ).all()
+            return [_row_to_rule(r) for r in rows]
+
+    def upsert(self, rule: PolicyRule) -> PolicyRule:
+        with self._scope() as session:
+            row = session.get(PolicyRuleRecord, (rule.id, self.tenant_id))
+            if row is None:
+                session.add(
+                    PolicyRuleRecord(
+                        id=rule.id,
+                        tenant_id=self.tenant_id,
+                        name=rule.name,
+                        effect=rule.effect.value,
+                        priority=rule.priority,
+                        enabled=rule.enabled,
+                        reason=rule.reason,
+                        criteria_jsonb=rule_to_criteria(rule),
+                    )
+                )
+            else:
+                row.name = rule.name
+                row.effect = rule.effect.value
+                row.priority = rule.priority
+                row.enabled = rule.enabled
+                row.reason = rule.reason
+                row.criteria_jsonb = rule_to_criteria(rule)
+                row.updated_at = datetime.now(UTC)
+        logger.info("policy.rule_upserted", tenant=self.tenant_id, rule=rule.id)
+        return rule
+
+    def delete(self, rule_id: str) -> bool:
+        with self._scope() as session:
+            row = session.get(PolicyRuleRecord, (rule_id, self.tenant_id))
+            if row is None:
+                return False
+            session.delete(row)
+        logger.info("policy.rule_deleted", tenant=self.tenant_id, rule=rule_id)
+        return True
 
 
 class PolicyRulesUnavailableError(RuntimeError):

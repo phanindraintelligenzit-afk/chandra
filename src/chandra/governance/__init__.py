@@ -10,6 +10,7 @@ from src.chandra.governance.policy import (
     PolicyEffect,
     PolicyEngine,
     PolicyRule,
+    PolicyRuleStore,
     PolicyRulesUnavailableError,
 )
 from src.chandra.governance.rbac import (
@@ -19,6 +20,7 @@ from src.chandra.governance.rbac import (
     Principal,
     RbacEngine,
     Role,
+    RoleAssignmentStore,
     RolesUnavailableError,
 )
 
@@ -31,9 +33,11 @@ __all__ = [
     "PolicyEffect",
     "PolicyEngine",
     "PolicyRule",
+    "PolicyRuleStore",
     "PolicyRulesUnavailableError",
     "Principal",
     "RbacEngine",
     "Role",
+    "RoleAssignmentStore",
     "RolesUnavailableError",
 ]
