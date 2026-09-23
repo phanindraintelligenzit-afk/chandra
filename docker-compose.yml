@@ -30,7 +30,7 @@ services:
     command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001", "--workers", "4"]
     ports:
       - "6001:6001"
-    env_file: .env
+    env_file: /opt/chandra/.env
     environment:
       - FRONTEND_URL=${FRONTEND_URL:-http://54.160.31.20:3000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
@@ -84,7 +84,7 @@ services:
     command: ["uv", "run", "app.py"]
     ports:
       - "7861:7861"
-    env_file: .env
+    env_file: /opt/chandra/.env
     depends_on:
       - backend
     restart: unless-stopped
