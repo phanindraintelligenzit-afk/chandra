@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _utcnow() -> datetime:
@@ -244,7 +244,14 @@ class ApprovalRecord(BaseModel):
     approved: bool
     approver: str | None = None
     comment: str = ""
+    permission_set_id: str | None = None
+    permission_set_document: dict[str, Any] | None = Field(default_factory=dict)
     decided_at: datetime = Field(default_factory=_utcnow)
+
+    @field_validator("permission_set_document", mode="before")
+    @classmethod
+    def _ensure_dict(cls, v: Any) -> dict[str, Any]:
+        return v if isinstance(v, dict) else {}
 
 
 class AuditEvent(BaseModel):

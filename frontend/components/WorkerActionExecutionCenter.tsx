@@ -95,7 +95,7 @@ function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; 
 
 export type WorkerActionExecutionCenterHandle = {
   execute: (action: any) => void;
-  submitActionAnswers: (actionId: string, answers: string[]) => Promise<void>;
+  submitActionAnswers: (actionId: string, answers: string[], permissionSetId?: string) => Promise<void>;
 };
 
 export const WorkerActionExecutionCenter = forwardRef<
@@ -123,6 +123,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const logsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cachedLogsRef = useRef<BackendLog[]>([]);
+  const notFoundRetriesRef = useRef<Record<string, number>>({});
 
   // ── Stable refs so setInterval callbacks always read current values ──────────
   // setInterval closes over values from the render it was created in; using refs
@@ -179,8 +180,8 @@ export const WorkerActionExecutionCenter = forwardRef<
 
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction,
-    submitActionAnswers: async (actionId, answers) => {
-      await submitAnswers(actionId, answers);
+    submitActionAnswers: async (actionId, answers, permissionSetId) => {
+      await submitAnswers(actionId, answers, permissionSetId);
     }
   }));
 
@@ -295,18 +296,28 @@ export const WorkerActionExecutionCenter = forwardRef<
                 newActions.forEach(a => {
                    if (a.status === "running") {
                      startPolling(a.id, a.jobId, a.startedAt, a.jiraKey);
-                   } else if (a.status === "completed") {
-                     // Verify if the job was actually exhausted or failed
-                     getJobStatus(a.jobId).then(jobStatus => {
-                        const result = jobStatus.result as any;
-                        const statusCode = result?.statusCode ?? 0;
-                        let finalStatus = "completed";
-                        if (statusCode === 207) finalStatus = "exhausted";
-                        else if (statusCode !== 200 && statusCode !== 0) finalStatus = "failed";
-                        if (finalStatus !== "completed") {
-                           setExecutingActions(curr => curr.map(currAction => currAction.id === a.id ? { ...currAction, status: finalStatus as any } : currAction));
-                        }
-                     }).catch(e => console.error("Failed to verify completed job status", e));
+                   } else {
+                     // Automatically fetch logs for completed/failed jobs from disk
+                     if (a.jobId) {
+                       fetchBackendLogs(1000, 0, a.jobId).then(jobLogs => {
+                         if (jobLogs && jobLogs.length > 0) {
+                           setExecutingActions(curr => curr.map(currAction => currAction.id === a.id ? { ...currAction, logs: jobLogs } : currAction));
+                         }
+                       }).catch(() => {});
+                     }
+                     if (a.status === "completed") {
+                       // Verify if the job was actually exhausted or failed
+                       getJobStatus(a.jobId).then(jobStatus => {
+                          const result = jobStatus.result as any;
+                          const statusCode = result?.statusCode ?? 0;
+                          let finalStatus = "completed";
+                          if (statusCode === 207) finalStatus = "exhausted";
+                          else if (statusCode !== 200 && statusCode !== 0) finalStatus = "failed";
+                          if (finalStatus !== "completed") {
+                             setExecutingActions(curr => curr.map(currAction => currAction.id === a.id ? { ...currAction, status: finalStatus as any } : currAction));
+                          }
+                       }).catch(e => console.warn("Failed to verify completed job status", e));
+                     }
                    }
                 });
               }, 100);
@@ -317,9 +328,20 @@ export const WorkerActionExecutionCenter = forwardRef<
         }
       } catch (e: any) {
         // AbortError = 8 s poll timed out (backend busy with a running job).
+        // HttpError / 500 / ECONNRESET = backend reloading during edits.
         // Swallow silently — next poll cycle (5 s) will retry automatically.
-        if (e?.name === "AbortError") return;
-        console.error("Failed to fetch background digital worker jobs:", e);
+        if (
+          e?.name === "AbortError" ||
+          e?.name === "HttpError" ||
+          e?.status === 500 ||
+          e?.status === 502 ||
+          e?.status === 503 ||
+          e?.message?.includes("Internal Server Error") ||
+          e?.message?.includes("ECONNRESET")
+        ) {
+          return;
+        }
+        console.warn("Transient issue fetching background digital worker jobs (retrying):", e?.message || e);
       }
     };
     
@@ -367,9 +389,12 @@ export const WorkerActionExecutionCenter = forwardRef<
     
     const runLogsPoll = async () => {
       try {
-        cachedLogsRef.current = await fetchBackendLogs(1000, 0);
+        const fresh = await fetchBackendLogs(1000, 0);
+        if (fresh && fresh.length > 0) {
+          cachedLogsRef.current = fresh;
+        }
       } catch (error) {
-        console.error("Failed to fetch logs:", error);
+        console.warn("Failed to fetch logs:", error);
       } finally {
         if (logsIntervalRef.current !== null) {
           logsIntervalRef.current = setTimeout(runLogsPoll, 1000);
@@ -388,10 +413,37 @@ export const WorkerActionExecutionCenter = forwardRef<
 
         const jobIdLower = jobId ? jobId.toLowerCase().trim() : "";
 
-        // Match only by exact job_id (case-insensitive, trimmed).
+        // Match by job_id, logger name, or message content
         let actionLogs = allLogs.filter((log) =>
-          log.job_id?.toLowerCase().trim() === jobIdLower
+          log.job_id?.toLowerCase().trim() === jobIdLower ||
+          log.logger?.toLowerCase().includes(jobIdLower) ||
+          log.message?.toLowerCase().includes(jobIdLower)
         );
+
+        // If memory cache doesn't have logs for this job yet, fetch directly for this job_id (disk backed)
+        if (actionLogs.length === 0 && jobId) {
+          try {
+            const specificLogs = await fetchBackendLogs(1000, 0, jobId);
+            if (specificLogs && specificLogs.length > 0) {
+              actionLogs = specificLogs;
+            }
+          } catch (e) {
+            // ignore transient error
+          }
+        }
+
+        if (jobStatus.status === "not_found") {
+          const retries = (notFoundRetriesRef.current[actionId] || 0) + 1;
+          notFoundRetriesRef.current[actionId] = retries;
+          if (retries <= 3) {
+            if (pollIntervalsRef.current.has(actionId)) {
+              pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 4000));
+            }
+            return;
+          }
+        } else {
+          notFoundRetriesRef.current[actionId] = 0;
+        }
 
         const jobDone =
           jobStatus.status === "completed" ||
@@ -408,14 +460,21 @@ export const WorkerActionExecutionCenter = forwardRef<
 
           // Force a final log fetch to catch any burst of logs (like tracebacks) just before the job died
           try {
-            const finalLogs = await fetchBackendLogs(2000, 0);
-            cachedLogsRef.current = finalLogs;
-            // Same exact job_id match for the final log burst.
-            actionLogs = finalLogs.filter((log: any) =>
-              log.job_id?.toLowerCase().trim() === jobIdLower
-            );
+            const finalLogs = await fetchBackendLogs(2000, 0, jobId);
+            if (finalLogs && finalLogs.length > 0) {
+              const matched = finalLogs.filter((log: any) =>
+                log.job_id?.toLowerCase().trim() === jobIdLower ||
+                log.logger?.toLowerCase().includes(jobIdLower) ||
+                log.message?.toLowerCase().includes(jobIdLower)
+              );
+              if (matched.length > 0) {
+                actionLogs = matched;
+              } else {
+                actionLogs = finalLogs;
+              }
+            }
           } catch (e) {
-            console.error("Failed to fetch final logs", e);
+            console.warn("Failed to fetch final logs", e);
           }
 
           const result = jobStatus.result as any;
@@ -475,7 +534,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                     status: finalStatus,
                     threadId: result?.thread_id || "",
                     completedAt: Date.now(),
-                    logs: actionLogs.length > 0 ? actionLogs : a.logs,
+                    logs: actionLogs.length >= a.logs.length ? actionLogs : (actionLogs.length > 0 ? actionLogs : a.logs),
                     errorMessage: errorMsg,
                     progress: 100,
                     jobMessage: jobStatus.message,
@@ -505,7 +564,7 @@ export const WorkerActionExecutionCenter = forwardRef<
               a.id === actionId
                 ? {
                     ...a,
-                    logs: actionLogs.length > 0 ? actionLogs : a.logs,
+                    logs: actionLogs.length >= a.logs.length ? actionLogs : (actionLogs.length > 0 ? actionLogs : a.logs),
                     progress: jobStatus.progress ?? a.progress,
                     jobMessage: jobStatus.message
                   }
@@ -520,7 +579,7 @@ export const WorkerActionExecutionCenter = forwardRef<
         }
       } catch (error: any) {
         if (error?.name !== "AbortError") {
-          console.error(`Failed to poll job ${jobId}:`, error);
+          console.warn(`Transient issue polling job ${jobId} (will retry in 5s):`, error?.message || error);
         }
         if (pollIntervalsRef.current.has(actionId)) {
           pollIntervalsRef.current.set(actionId, setTimeout(runJobPoll, 5000));
@@ -948,21 +1007,27 @@ export const WorkerActionExecutionCenter = forwardRef<
                         )}
 
                         {/* Action Buttons — only for terminal states that have buttons */}
-                        {(action.sandboxPath || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
+                        {(action.status === "completed" || action.sandboxPath || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
-                            {action.sandboxPath && action.status === "completed" && (
-                              <>
+                            {action.status === "completed" && (
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
-                                  window.open(`${apiUrl}/download_sandbox?path=${encodeURIComponent(action.sandboxPath!)}`, '_blank');
+                                  const params = new URLSearchParams();
+                                  if (action.sandboxPath) params.set("path", action.sandboxPath);
+                                  if (action.jobId) params.set("job_id", action.jobId);
+                                  window.open(`${apiUrl}/download_sandbox?${params.toString()}`, '_blank');
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >
                                 <Download size={12} />
                                 Download Execution Artifacts
                               </button>
+                            )}
+
+                            {action.sandboxPath && action.status === "completed" && (
+                              <>
                               {confirmDestroyId === action.id ? (
                                 <div className="flex items-center gap-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[0.65rem] tracking-[0.1em] text-red-400">
                                   <span className="mr-2 uppercase">Are you sure?</span>
@@ -1062,12 +1127,13 @@ export const WorkerActionExecutionCenter = forwardRef<
                               </button>
                             )}
                             
-                            {action.jobId && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
+                            {(action.jobId || action.id) && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  const targetId = action.jobId || action.id;
                                   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
-                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(action.jobId)}`, '_blank');
+                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(targetId)}`, '_blank');
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >

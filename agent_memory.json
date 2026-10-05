@@ -335,20 +335,149 @@
         "Terraform initialization and planning succeeded, identifying creation of a `t2",
         "The supervised automation successfully created a t2"
       ],
-      "lesson": "Always verify the IAM instance profile has the necessary permissions attached before launching the instance to avoid authorization failures."
+      "lesson": "For standard EC2 instances, do not attach an IAM instance profile unless specifically requested, as pre-existing profiles like EC2Default do not exist in target accounts. Use data.aws_ami and default VPC/subnets."
     },
     {
-      "timestamp": "2026-08-14T13:02:12",
-      "action_name": "Deploy Data Processor Lambda",
+      "timestamp": "2026-10-01T07:32:09",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The CREATE EC2 INSTANCE action for a t2",
+        "The automation successfully created a t2"
+      ],
+      "lesson": "Since the action was successful with no errors encountered, the key lesson is: Always verify the IAM role has sufficient permissions for EC2, VPC, and networking resources before running the automation."
+    },
+    {
+      "timestamp": "2026-10-01T07:40:46",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform successfully initialized, planned, and applied the configuration to create a t2"
+      ],
+      "lesson": "When creating EC2 instances, always specify a subnet ID in the VPC-specific region to avoid ambiguous placement errors."
+    },
+    {
+      "timestamp": "2026-10-01T07:49:51",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The CREATE EC2 INSTANCE action failed during pre-flight validation",
+        "Terraform successfully initialized, planned, and applied the configuration to create a t2"
+      ],
+      "lesson": "Since no errors were encountered, the action succeeded: Ensure IAM permissions for ec2:RunInstances and proper VPC/subnet configuration are in place before attempting instance creation."
+    },
+    {
+      "timestamp": "2026-10-01T07:58:24",
+      "action_name": "create s3 bucket",
+      "iterations_used": 2,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation failed during pre-flight validation when `terraform init` encountered initialization errors due to invalid Terraform configuration",
+        "Terraform initialized successfully and created an S3 bucket with public access blocking and versioning enabled"
+      ],
+      "lesson": "The operation succeeded with no errors, indicating that the S3 bucket creation approach used (likely incorporating proper bucket naming conventions, unique identifiers, and correct region configuration) was effective."
+    },
+    {
+      "timestamp": "2026-10-01T08:02:14",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "A supervisor-approved t2"
+      ],
+      "lesson": "Always verify IAM permissions include ec2:RunInstances and ec2:CreateTags before deployment — missing permissions cause silent failures during resource creation."
+    },
+    {
+      "timestamp": "2026-10-01T08:12:23",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 4,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform initialization and planning completed successfully, identifying a t2",
+        "The Terraform initialization and plan phases completed successfully, identifying the creation of a t2",
+        "The Terraform initialization and planning phases completed successfully, but the overall action failed before applying changes",
+        "Terraform successfully initialized, planned, and applied to create a new t2"
+      ],
+      "lesson": "Since the run was successful with no errors, the key practice to maintain is: Ensure IAM permissions are properly configured with EC2 full access before attempting instance creation to avoid authorization failures."
+    },
+    {
+      "timestamp": "2026-10-01T08:26:57",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The automation successfully created a t2"
+      ],
+      "lesson": "Since the run succeeded with no errors, the approach used was effective—always verify that the specified AMI ID is available in the target region and instance type is supported by your subnet's availability zone to prevent launch failures."
+    },
+    {
+      "timestamp": "2026-10-01T08:34:04",
+      "action_name": "CREATE EC2 INSTANCE",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform successfully initialized, planned, and applied the configuration to create an EC2 instance with no errors"
+      ],
+      "lesson": "Since the action completed successfully with no errors, the approach used was effective—likely ensuring proper IAM permissions, VPC/subnet configuration, and using dynamic AMI selection rather than hardcoded values to maintain portability across regions."
+    },
+    {
+      "timestamp": "2026-10-01T16:13:49",
+      "action_name": "create s3 bucket",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The S3 bucket creation automation completed successfully using Terraform"
+      ],
+      "lesson": "Always verify S3 bucket names are globally unique and follow naming conventions (lowercase, no underscores, 3-63 chars) before provisioning."
+    },
+    {
+      "timestamp": "2026-10-05T13:16:03",
+      "action_name": "CREATE EC2 INSTANCE",
       "iterations_used": 3,
       "final_status": "success",
       "errors_encountered": [],
       "fixes_applied": [
-        "The pre-flight **terraform validate** command failed during `terraform init` due to invalid Terraform configuration; the automation could not proceed to deploy the Data Processor Lambda function, IAM ",
-        "The Terraform deployment failed during the `terraform apply` step due to an IAM `name_prefix` validation error",
-        "Terraform successfully initialized, validated, and applied the infrastructure changes to deploy the Data Processor Lambda"
+        "The automation failed during pre-flight validation when `terraform init` encountered initialization problems",
+        "The Terraform initialization, validation, and plan phases completed successfully, but the EC2 instance creation failed during `terraform apply` with the error `InvalidBlockDeviceMapping: Volume of siz",
+        "The automation successfully created a new t2"
       ],
-      "lesson": "Successfully deployed Data Processor Lambda using infrastructure-as-code with appropriate IAM permissions and environment-specific configurations."
+      "lesson": "The action succeeded with no errors, so the configuration approach used—including any AMI data sources, proper IAM permissions, and correct region-specific resource references—should be replicated for reliable EC2 provisioning."
+    },
+    {
+      "timestamp": "2026-10-05T15:46:23",
+      "action_name": "Creating a s3 bucket in us-east-1",
+      "iterations_used": 1,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "Terraform successfully initialized, planned, and applied to create an S3 bucket in us-east-1 with public access blocked, generating three resources including a randomized suffix"
+      ],
+      "lesson": "When creating S3 buckets in us-east-1, do not specify a LocationConstraint in the CreateBucketConfiguration, as us-east-1 is the default region and requires passing no configuration or null."
+    },
+    {
+      "timestamp": "2026-10-05T16:18:33",
+      "action_name": "creating a s3 bucket in us-east-1",
+      "iterations_used": 3,
+      "final_status": "success",
+      "errors_encountered": [],
+      "fixes_applied": [
+        "The pre-flight check (`terraform validate` / `py_compile`) failed due to a Terraform initialization error: `terraform init failed` with configuration validation problems preventing initialization",
+        "The pre-flight Terraform validation failed due to disk space exhaustion when attempting to install the HashiCorp AWS provider v5",
+        "The S3 bucket creation in us-east-1 completed successfully"
+      ],
+      "lesson": "Always specify a unique bucket name or enable `force_destroy` — S3 bucket names are globally unique, and attempting to create a bucket with an existing name will fail without a randomized suffix or proper error handling."
     }
   ]
 }

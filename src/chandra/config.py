@@ -38,11 +38,11 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="bedrock", alias="LLM_PROVIDER")
 
     # Model name used by the active provider.
-    # Bedrock:  anthropic.claude-sonnet-4-5-20250929-v1:0
+    # Bedrock:  moonshotai.kimi-k2.5
     # OpenAI:   Qwen/Qwen2.5-32B-Coder-Instruct, gpt-4o, etc.
     # Ollama:   qwen2.5-coder:32b
     llm_model: str = Field(
-        default="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="moonshotai.kimi-k2.5",
         alias="LLM_MODEL",
     )
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # ― Bedrock-specific ―
     bedrock_model_id: str = Field(
-        default="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="moonshotai.kimi-k2.5",
         alias="BEDROCK_MODEL_ID",
     )
 

@@ -107,7 +107,10 @@ export function AwsTasksOnboardingStep({
       if (search) params.set("search", search);
       if (filterType) params.set("resource_type", filterType);
       const res = await fetch(`${API_BASE}/aws-tasks?${params}`);
-      if (res.ok) setTasks(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setTasks(Array.isArray(data) ? data : (Array.isArray(data?.tasks) ? data.tasks : []));
+      }
     } catch (e) {
       console.error("Failed to fetch tasks:", e);
     } finally {

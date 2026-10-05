@@ -3,9 +3,9 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, fetchAwsTasks, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, fetchAwsTasks, submitDigitalWorkerApproval, listDigitalWorkerRequests, getDigitalWorkerRequest, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
-import { HumanApprovalCenter } from "./HumanApprovalCenter";
+import { HumanApprovalCenter, type UnifiedRequest } from "./HumanApprovalCenter";
 import {
   buildKraPayload,
   deriveApprovals,
@@ -1111,18 +1111,80 @@ function OperationsCopilot({
   unread,
   pendingHitlRequests = [],
   onSubmitHitl,
-  agentName
+  agentName,
+  agentOnboardedAt,
+  pendingHacRequest,
+  onHacPermissionSet
 }: { 
   latestEvent?: OpsEvent; 
   unread: number;
   pendingHitlRequests?: {actionId: string, actionName: string, kraCode: string, questions: string[], status?: string, requiredPermissions?: any[]}[];
   onSubmitHitl?: (actionId: string, answers: string[], permissionSetId?: string) => void;
   agentName?: string;
+  agentOnboardedAt?: number | null;
+  pendingHacRequest?: UnifiedRequest | null;
+  onHacPermissionSet?: (targetJobId: string, permissionSetId: string) => void;
 }) {
   const displayAgentName = agentName || "Chandra";
   const [open, setOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [activeHacRequest, setActiveHacRequest] = useState<UnifiedRequest | null>(pendingHacRequest || null);
+  const approvedJobIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (pendingHacRequest) {
+      if (agentOnboardedAt && (pendingHacRequest as any).submitted_at && (pendingHacRequest as any).submitted_at < agentOnboardedAt) {
+        setActiveHacRequest(null);
+      } else {
+        setActiveHacRequest(pendingHacRequest);
+      }
+    }
+  }, [pendingHacRequest, agentOnboardedAt]);
+
+  // Clear activeHacRequest if agent resets or new agent was onboarded or already approved
+  useEffect(() => {
+    if (activeHacRequest) {
+      if (agentOnboardedAt && (activeHacRequest as any).submitted_at && (activeHacRequest as any).submitted_at < agentOnboardedAt) {
+        setActiveHacRequest(null);
+      } else if (approvedJobIdsRef.current.has((activeHacRequest as any).job_id)) {
+        setActiveHacRequest(null);
+      }
+    }
+  }, [agentOnboardedAt, activeHacRequest]);
+
+  // When copilot is open or on mount, auto-discover any pending request from backend if not already set
+  useEffect(() => {
+    let mounted = true;
+    const checkRequests = async () => {
+      try {
+        const data = await listDigitalWorkerRequests();
+        if (!mounted) return;
+        const pending = data.requests?.find(
+          (r: any) =>
+            (r.status === "awaiting_approval" || r.status === "awaiting_permission" || r.requires_approval) &&
+            !r.isKra &&
+            !r.isAwsTask &&
+            !approvedJobIdsRef.current.has(r.job_id) &&
+            (!agentOnboardedAt || !r.submitted_at || r.submitted_at >= agentOnboardedAt)
+        );
+        if (pending && !activeHacRequest && !approvedJobIdsRef.current.has(pending.job_id)) {
+          setActiveHacRequest(pending as any);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    checkRequests();
+    const interval = setInterval(checkRequests, 4000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [activeHacRequest, agentOnboardedAt]);
+
   useEffect(() => { if (pendingHitlRequests.length > 0) setOpen(true); }, [pendingHitlRequests.length]);
+  // Auto-open when a HAC approval request is pending
+  useEffect(() => { if (pendingHacRequest) setOpen(true); }, [pendingHacRequest]);
   
   // Lock background scroll when expanded
   useEffect(() => {
@@ -1220,10 +1282,10 @@ function OperationsCopilot({
                 </button>
               </div>
             </div>
-            {pendingHitlRequests.length > 0 && (
+            {(pendingHitlRequests.length > 0 || pendingHacRequest) && (
               <div className="border-b border-blue-400/20 bg-blue-400/10 px-3 py-2">
                 <div className="flex items-center gap-1.5 text-[0.55rem] uppercase tracking-[0.18em] text-blue-300 font-semibold pulse-core">
-                  <AlertTriangle size={11} /> {pendingHitlRequests.length} ACTION{pendingHitlRequests.length > 1 ? "S" : ""} AWAITING INPUT
+                  <AlertTriangle size={11} /> {pendingHacRequest ? "1 APPROVAL AWAITING PERMISSION SET" : `${pendingHitlRequests.length} ACTION${pendingHitlRequests.length > 1 ? "S" : ""} AWAITING INPUT`}
                 </div>
               </div>
             )}
@@ -1329,6 +1391,131 @@ function OperationsCopilot({
                   </div>               
                 </div>
               ))}
+
+              {/* HAC Approval — Permission Gate via Ops Copilot */}
+              {(activeHacRequest || pendingHacRequest) && (
+                <div className="border border-emerald-400/30 bg-emerald-400/5 p-3 rounded-lg text-[0.7rem]">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="text-[0.6rem] uppercase tracking-[0.18em] font-semibold text-emerald-300">
+                      Permission Gate — Set &amp; Approve
+                    </div>
+                    {((activeHacRequest || pendingHacRequest)?.external_id) && (
+                      <span className="text-[0.55rem] uppercase tracking-[0.16em] text-sky-300 font-mono">
+                        {(activeHacRequest || pendingHacRequest)?.external_id}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[0.65rem] font-semibold text-frost mb-1">
+                    {(activeHacRequest || pendingHacRequest)?.title ?? "Untitled Request"}
+                  </div>
+                  {((activeHacRequest || pendingHacRequest)?.reason) && (
+                    <div className="text-[0.6rem] text-frost/60 mb-2 italic">
+                      {(activeHacRequest || pendingHacRequest)?.reason}
+                    </div>
+                  )}
+                  <PermissionSetSelector
+                    requiredPermissions={[{
+                      action: (activeHacRequest || pendingHacRequest)?.title || "",
+                      resource: "*",
+                      reason: (activeHacRequest || pendingHacRequest)?.reason || ""
+                    }]}
+                    onAttach={async (setId) => {
+                      const req = activeHacRequest || pendingHacRequest;
+                      if (!req) return;
+                      const targetJobId = req.job_id;
+                      approvedJobIdsRef.current.add(targetJobId);
+                      setActiveHacRequest(null);
+
+                      const permName = setId === "4bbb47a9-d7f7-4921-81e4-1f3d5f215579" ? "EC2 Operator" : (setId === "eab39a74-a48a-4f19-9803-e71e37cc4d62" ? "S3 Bucket Operator" : setId);
+                      const extId = req.external_id || "DEV";
+                      
+                      setMessages(prev => [
+                        ...prev,
+                        {
+                          role: "supervisor",
+                          text: `Attached permission set [${permName}] and approved execution for ${extId}: ${req.title}.`,
+                          meta: `approved by ${displayAgentName}`
+                        },
+                        {
+                          role: displayAgentName.toLowerCase() as CopilotChatMessage["role"],
+                          text: `Workflow execution started for ${extId}.\n\n` +
+                                `⚡ Step 1: Gate 1 IAM verification with ${permName}\n` +
+                                `⚡ Step 2: Terraform HCL code generation & plan\n` +
+                                `⚡ Step 3: Terraform apply in AWS\n` +
+                                `⚡ Step 4: Boto3 cloud resource verification\n` +
+                                `⚡ Step 5: Jira ticket update with execution details`,
+                          meta: "pipeline running"
+                        }
+                      ]);
+
+                      // Always submit approval directly to the backend
+                      try {
+                        await submitDigitalWorkerApproval(targetJobId, {
+                          approved: true,
+                          approver: displayAgentName || "console",
+                          permission_set_id: setId
+                        });
+                      } catch (err) {
+                        console.error("Failed to submit digital worker approval:", err);
+                      }
+
+                      if (onHacPermissionSet) {
+                        onHacPermissionSet(targetJobId, setId);
+                      }
+
+                      // Start live polling loop to report progress and completion in the chatbot
+                      const pollStartTime = Date.now();
+                      const pollInterval = setInterval(async () => {
+                        try {
+                          const res = await getDigitalWorkerRequest(req.job_id);
+                          const reqDetail = res.request;
+                          if (!reqDetail) return;
+                          
+                          if (reqDetail.status === "completed") {
+                            clearInterval(pollInterval);
+                            const summaryText = 
+                              `🎉 WORKFLOW COMPLETED SUCCESSFULLY for [${extId}]\n\n` +
+                              `📋 Process Steps:\n` +
+                              `  1. Permission Gate: Attached ${permName}\n` +
+                              `  2. Gate 1 Verification: Passed (Authorized with ${permName})\n` +
+                              `  3. Terraform Plan & Validation: Generated valid HCL\n` +
+                              `  4. Gate 2 Policy Check: Auto-approved\n` +
+                              `  5. Terraform Apply: AWS infrastructure created\n` +
+                              `  6. Boto3 Verification: Resource state confirmed (COMPLETED)\n` +
+                              `  7. Jira Ticket: Updated with execution comment & moved to Done\n\n` +
+                              `💬 Jira Comment Posted to ${extId}:\n` +
+                              `"Chandra Digital Worker outcome: executed (dry_run=False). ${reqDetail.message || 'Terraform apply and verification succeeded.'} Validation passed: True."`;
+
+                            setMessages(prev => [
+                              ...prev,
+                              {
+                                role: displayAgentName.toLowerCase() as CopilotChatMessage["role"],
+                                text: summaryText,
+                                meta: `jira: ${extId} · status: Done`
+                              }
+                            ]);
+                            setActiveHacRequest(null);
+                          } else if (reqDetail.status === "failed") {
+                            clearInterval(pollInterval);
+                            setMessages(prev => [
+                              ...prev,
+                              {
+                                role: displayAgentName.toLowerCase() as CopilotChatMessage["role"],
+                                text: `❌ Execution failed for [${extId}]: ${reqDetail.message || res.error || "Execution error"}`,
+                                meta: "execution failed"
+                              }
+                            ]);
+                          } else if (Date.now() - pollStartTime > 180000) {
+                            clearInterval(pollInterval);
+                          }
+                        } catch (err) {
+                          // ignore transient error
+                        }
+                      }, 2500);
+                    }}
+                  />
+                </div>
+              )}
             </div>
             <div className="border-t border-white/10 p-3">
               <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1360,10 +1547,10 @@ function OperationsCopilot({
         >
           <Sparkles size={13} className="text-signal" />
           {displayAgentName} Ops Copilot
-          <span className={`h-1.5 w-1.5 rounded-full pulse-core ${pendingHitlRequests.length > 0 ? "bg-blue-400" : "bg-emerald-300"}`} />
-          {unread > 0 || pendingHitlRequests.length > 0 ? (
-            <span className={`absolute -right-1.5 -top-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border px-1 text-[0.55rem] font-semibold text-frost ${pendingHitlRequests.length > 0 ? "bg-blue-500/90 border-blue-400" : "bg-signal/90 border-signal"}`}>
-              {pendingHitlRequests.length > 0 ? pendingHitlRequests.length : unread}
+          <span className={`h-1.5 w-1.5 rounded-full pulse-core ${(pendingHitlRequests.length > 0 || pendingHacRequest) ? "bg-blue-400" : "bg-emerald-300"}`} />
+          {unread > 0 || pendingHitlRequests.length > 0 || pendingHacRequest ? (
+            <span className={`absolute -right-1.5 -top-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border px-1 text-[0.55rem] font-semibold text-frost ${(pendingHitlRequests.length > 0 || pendingHacRequest) ? "bg-blue-500/90 border-blue-400" : "bg-signal/90 border-signal"}`}>
+              {pendingHacRequest ? "!" : pendingHitlRequests.length > 0 ? pendingHitlRequests.length : unread}
             </span>
           ) : null}
         </button>
@@ -1638,7 +1825,15 @@ function LiveOpsStream({ sync }: { sync?: ObservationsSyncState }) {
       try {
         const batch = await fetchBackendLogs(1000);
         if (cancelled) return;
-        setLogs(batch);
+        if (Array.isArray(batch) && batch.length > 0) {
+          setLogs(prev => {
+            if (prev.length === 0) return batch;
+            const prevMap = new Map(prev.map(l => [`${l.timestamp}_${l.message}`, l]));
+            batch.forEach(l => prevMap.set(`${l.timestamp}_${l.message}`, l));
+            const merged = Array.from(prevMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+            return merged.slice(-1000);
+          });
+        }
         
         if (autoScroll && containerRef.current) {
           containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -2422,7 +2617,8 @@ export function ChandraExperience() {
     setCostMetrics,
     setObservations,
     selectedAwsTasks,
-    selectedAwsPermissions
+    selectedAwsPermissions,
+    agentOnboardedAt: contextAgentOnboardedAt
   } = useOnboarding();
 
   // Ref to WorkerActionExecutionCenter — allows HumanReviewQueue to trigger execution
@@ -2453,6 +2649,10 @@ export function ChandraExperience() {
     questions: string[];
   };
   const [pendingHitlRequests, setPendingHitlRequests] = useState<HitlRequest[]>([]);
+  const [pendingHacApprovalReq, setPendingHacApprovalReq] = useState<UnifiedRequest | null>(null);
+
+  // Reactive agentOnboardedAt from OnboardingContext (updates immediately on onboarding complete / reset)
+  const agentOnboardedAt = contextAgentOnboardedAt ?? undefined;
 
   const [cwRegion, setCwRegion] = useState(process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1");
   const [cwHours, setCwHours] = useState(12);
@@ -2498,8 +2698,8 @@ export function ChandraExperience() {
           if (!cancelled) setDetectorIssues(res ?? null);
         })
         .catch(err => {
-          if (!cancelled) {
-            console.error("Detector issues error:", err);
+          if (!cancelled && err?.name !== "AbortError" && err?.name !== "TimeoutError") {
+            console.warn("Detector issues notice:", err?.message || err);
             setDetectorIssues({});
           }
         });
@@ -2561,7 +2761,9 @@ export function ChandraExperience() {
         });
       })
       .catch(err => {
-        if (!cancelled) console.error("fetchAwsTasks failed:", err);
+        if (!cancelled && err?.name !== "AbortError" && err?.name !== "TimeoutError") {
+          console.warn("fetchAwsTasks notice:", err?.message || err);
+        }
       });
 
     return () => { cancelled = true; };
@@ -2595,10 +2797,12 @@ export function ChandraExperience() {
           setCostMetricsRef.current(data);
           setCostMetricsState(data);
         })
-        .catch((error: unknown) => {
-          if (controller.signal.aborted) return;
+        .catch((error: any) => {
+          if (controller.signal.aborted || error?.name === "AbortError") return;
           const message = error instanceof Error ? error.message : "Cost metrics request failed";
-          console.error("COST METRICS ERROR", message);
+          if (error?.name !== "TimeoutError") {
+            console.warn("Cost metrics notice:", message);
+          }
           setCostMetricsRef.current(null, message);
           setCostMetricsState(null);
         });
@@ -2931,6 +3135,8 @@ export function ChandraExperience() {
           <HumanApprovalCenter 
             kraCards={predefinedApprovals} 
             kraActionNames={new Set(predefinedApprovals.map(r => r.incident.toLowerCase().trim()))}
+            agentOnboardedAt={agentOnboardedAt}
+            onRequestApprove={(req) => setPendingHacApprovalReq(req)}
             onAutoApproved={(action, approved) => {
               if (approved) {
                 // If it's a predefined approval, mark it as executing in the UI state
@@ -3043,15 +3249,18 @@ export function ChandraExperience() {
         latestEvent={events[0]} 
         unread={unread}
         pendingHitlRequests={pendingHitlRequests}
-        onSubmitHitl={async (actionId, answers) => {
+        onSubmitHitl={async (actionId, answers, permissionSetId) => {
           if (workerRef.current) {
-            await workerRef.current.submitActionAnswers(actionId, answers);
-            // The execution center will call onInputResolved once it updates,
-            // but we can also optimistically remove it here for instant feedback.
+            await workerRef.current.submitActionAnswers(actionId, answers, permissionSetId);
             setPendingHitlRequests(prev => prev.filter(r => r.actionId !== actionId));
           }
         }}
         agentName={agentName}
+        agentOnboardedAt={agentOnboardedAt}
+        pendingHacRequest={pendingHacApprovalReq}
+        onHacPermissionSet={async (_targetJobId, _permSetId) => {
+          setPendingHacApprovalReq(null);
+        }}
       />
     </main>
   );

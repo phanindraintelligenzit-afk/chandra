@@ -1,5 +1,8 @@
 database/
 logs/
+logs/*
+logs/**
+*.meta.json
 *.log
 logs.txt
 agent_memory.json

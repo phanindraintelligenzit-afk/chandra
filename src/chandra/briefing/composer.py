@@ -507,3 +507,16 @@ def _truncate(text: str, n: int) -> str:
     if len(text) <= n:
         return text
     return text[: n - 1] + "…"
+
+
+def compose_execution_summary(description: str, execution_logs: str) -> str:
+    """Summarize execution logs for Jira and audit reporting."""
+    if not execution_logs:
+        return "Execution completed successfully with no logs."
+    lines = [
+        line.strip()
+        for line in execution_logs.splitlines()
+        if line.strip() and not line.strip().startswith("Refreshing state")
+    ]
+    recent = lines[-15:] if len(lines) > 15 else lines
+    return "*Execution Log Summary:*\n```text\n" + "\n".join(recent) + "\n```"

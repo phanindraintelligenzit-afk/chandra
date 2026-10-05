@@ -9,11 +9,11 @@
  * gate (`awaiting_approval`) surface an Approve / Reject control that calls
  * POST /requests/{job_id}/approve, resuming the graph.
  *
- * This is wired to the *Digital Worker* workflow, distinct from the legacy
- * WorkerActionExecutionCenter (which drives the /orchestrate escalation
- * flow). Real-time updates use short-interval polling — the same pattern
- * the rest of services/api.ts already uses for async jobs.
+ * For Jira / REST requests, clicking Approve routes to the Ops Copilot
+ * bottom-right panel where the operator selects a permission set (S3, EC2,
+ * Lambda…) before confirming. KRA / AWS-Task approvals approve directly.
  */
+
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -25,9 +25,10 @@ import {
   type DigitalWorkerRequestSummary,
   type DigitalWorkerStatus
 } from "../services/api";
-import { Search } from "lucide-react";
+import { Loader2, Search, ShieldCheck } from "lucide-react";
 
 const POLL_INTERVAL_MS = 4000;
+
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
   pending: { label: "Queued", className: "text-frost/70 border-white/15 bg-white/5" },
@@ -91,6 +92,8 @@ function Badge({ children, className }: { children: React.ReactNode; className?:
     </span>
   );
 }
+
+
 
 function relativeTime(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "—";
@@ -266,21 +269,32 @@ function RequestDetailPanel({ req }: { req: UnifiedRequest }) {
 
 function RequestCard({
   req,
-  onDecision
+  onDecision,
+  onApproveRequest
 }: {
   req: UnifiedRequest;
-  onDecision: (req: UnifiedRequest, approved: boolean) => Promise<void>;
+  onDecision: (req: UnifiedRequest, approved: boolean, permissionSetId?: string) => Promise<void>;
+  onApproveRequest?: (req: UnifiedRequest) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<null | "approve" | "reject">(null);
 
   const decide = async (approved: boolean) => {
-    setBusy(approved ? "approve" : "reject");
-    try {
-      await onDecision(req, approved);
-    } finally {
-      setBusy(null);
+    if (!approved) {
+      // Reject directly — no permission needed
+      setBusy("reject");
+      try { await onDecision(req, false); } finally { setBusy(null); }
+      return;
+    }
+    // For Jira / REST requests, route to Ops Copilot permission panel
+    if (!req.isKra && !req.isAwsTask) {
+      if (onApproveRequest) {
+        onApproveRequest(req);
+      }
+    } else {
+      // KRA / AWS Task — direct approval
+      setBusy("approve");
+      try { await onDecision(req, true); } finally { setBusy(null); }
     }
   };
 
@@ -288,94 +302,112 @@ function RequestCard({
   const isRunning = req.status === "pending" || req.status === "running";
 
   return (
-    <div className="glass w-full rounded-2xl border border-white/10 p-4 flex flex-col h-fit">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-[0.65rem] uppercase tracking-[0.14em]">
-            <span className="border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-white">
-              {STATUS_META[req.status]?.label ?? req.status}
-            </span>
-            <span className={`border px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] ${req.isAwsTask ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-300" : req.isKra ? "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300" : "border-sky-400/30 bg-sky-400/10 text-sky-300"}`}>
-              {req.isAwsTask ? "AWS TASK" : req.isKra ? "KRA" : (req.source ? req.source.toUpperCase() : "JIRA")}
-            </span>
-            {(req.kraData?.kraCode || req.external_id) && (
-              <span className="border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-sky-300">
-                {req.kraData?.kraCode || req.external_id}
+    <>
+      <div className="glass w-full rounded-2xl border border-white/10 p-4 flex flex-col h-fit">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 text-[0.65rem] uppercase tracking-[0.14em]">
+              <span className="border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-white">
+                {STATUS_META[req.status]?.label ?? req.status}
               </span>
-            )}
-            {req.resourceId && (
-              <span className="border border-indigo-400/30 bg-indigo-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-indigo-300 truncate max-w-[200px]" title={req.resourceId}>
-                {req.resourceId.split(':').pop() || req.resourceId}
+              <span className={`border px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] ${req.isAwsTask ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-300" : req.isKra ? "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300" : "border-sky-400/30 bg-sky-400/10 text-sky-300"}`}>
+                {req.isAwsTask ? "AWS TASK" : req.isKra ? "KRA" : (req.source ? req.source.toUpperCase() : "JIRA")}
               </span>
-            )}
-            {req.priority && (
-              <span className="border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-frost/80">
-                {req.priority}
-              </span>
-            )}
-            {req.action && (
-              <span className="border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-emerald-300 truncate max-w-[250px]" title={req.action}>
-                ACT: {req.action.replace(/^remediate_/, "")}
-              </span>
-            )}
-          </div>
-          
-          <div className="mt-2 text-sm font-semibold text-frost break-words uppercase">{req.title ?? "UNTITLED REQUEST"}</div>
-          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4 max-w-2xl">
-            <Field label="Category" value={req.category ?? "—"} />
-            <Field label="Platform" value={req.platform ?? "—"} />
-            <Field label="Decision" value={req.decision_mode ?? "—"} />
-            <Field label="Submitted" value={relativeTime(req.submitted_at)} />
-          </div>
-          
-          {isRunning && (
-            <div className="mt-3">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-sky-400/70 transition-all"
-                  style={{ width: `${Math.max(8, req.progress)}%` }}
-                />
-              </div>
-              <p className="mt-1 text-[10px] uppercase tracking-wider text-frost/60">{req.message}</p>
+              {(req.kraData?.kraCode || req.external_id) && (
+                <span className="border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-sky-300">
+                  {req.kraData?.kraCode || req.external_id}
+                </span>
+              )}
+              {req.resourceId && (
+                <span className="border border-indigo-400/30 bg-indigo-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-indigo-300 truncate max-w-[200px]" title={req.resourceId}>
+                  {req.resourceId.split(':').pop() || req.resourceId}
+                </span>
+              )}
+              {req.priority && (
+                <span className="border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-frost/80">
+                  {req.priority}
+                </span>
+              )}
+              {req.action && (
+                <span className="border border-emerald-400/30 bg-emerald-400/10 px-1.5 py-0.5 text-[0.55rem] tracking-[0.16em] text-emerald-300 truncate max-w-[250px]" title={req.action}>
+                  ACT: {req.action.replace(/^remediate_/, "")}
+                </span>
+              )}
             </div>
-          )}
 
-          {req.reason && (
-             <div className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-[0.68rem] text-frost/70 uppercase">
-               <span className="text-frost/50">REASON: </span>
-               {req.reason}
-             </div>
-          )}
-          
-          {expanded && <RequestDetailPanel req={req} />}
-          
-          {isPending && (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <button onClick={() => decide(true)} disabled={busy !== null} className="rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition disabled:opacity-50">{busy === "approve" ? "APPROVING…" : "Approve"}</button>
-              <button onClick={() => decide(false)} disabled={busy !== null} className="rounded-md border border-signal/30 bg-signal/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition disabled:opacity-50">{busy === "reject" ? "REJECTING…" : "Reject"}</button>
+            <div className="mt-2 text-sm font-semibold text-frost break-words uppercase">{req.title ?? "UNTITLED REQUEST"}</div>
+            <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4 max-w-2xl">
+              <Field label="Category" value={req.category ?? ""} />
+              <Field label="Platform" value={req.platform ?? ""} />
+              <Field label="Decision" value={req.decision_mode ?? ""} />
+              <Field label="Submitted" value={relativeTime(req.submitted_at)} />
             </div>
-          )}
+
+            {isRunning && (
+              <div className="mt-3">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full rounded-full bg-sky-400/70 transition-all" style={{ width: `${Math.max(8, req.progress)}%` }} />
+                </div>
+                <p className="mt-1 text-[10px] uppercase tracking-wider text-frost/60">{req.message}</p>
+              </div>
+            )}
+
+            {req.reason && (
+              <div className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-[0.68rem] text-frost/70 uppercase">
+                <span className="text-frost/50">REASON: </span>{req.reason}
+              </div>
+            )}
+
+            {expanded && <RequestDetailPanel req={req} />}
+
+            {isPending && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => decide(true)}
+                  disabled={busy !== null}
+                  className="flex items-center gap-1.5 rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-emerald-200 hover:bg-emerald-300/20 transition disabled:opacity-50"
+                >
+                  {busy === "approve" ? (<><Loader2 size={11} className="animate-spin" /> APPROVING…</>) : (<><ShieldCheck size={11} /> Approve</>)}
+                </button>
+                <button
+                  onClick={() => decide(false)}
+                  disabled={busy !== null}
+                  className="rounded-md border border-signal/30 bg-signal/10 px-4 py-2 text-[0.68rem] uppercase tracking-[0.08em] text-signal hover:bg-signal/20 transition disabled:opacity-50"
+                >
+                  {busy === "reject" ? "REJECTING…" : "Reject"}
+                </button>
+                {!req.isKra && !req.isAwsTask && (
+                  <span className="ml-1 text-[0.58rem] uppercase tracking-[0.12em] text-frost/40">· Opens permission gate
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded-full border border-white/15 px-3 py-1 text-[0.65rem] uppercase tracking-[0.1em] text-frost/70 transition hover:bg-white/10 flex-shrink-0"
+          >
+            {expanded ? "Hide" : "Details"}
+          </button>
         </div>
-        
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="rounded-full border border-white/15 px-3 py-1 text-[0.65rem] uppercase tracking-[0.1em] text-frost/70 transition hover:bg-white/10 flex-shrink-0"
-        >
-          {expanded ? "Hide" : "Details"}
-        </button>
       </div>
-    </div>
+    </>
   );
 }
 
 export function HumanApprovalCenter({ 
   kraCards = [], 
   kraActionNames = new Set<string>(), 
-  onAutoApproved 
+  onAutoApproved,
+  agentOnboardedAt,
+  onRequestApprove
 }: { 
   kraCards?: any[]; 
   kraActionNames?: Set<string>; 
   onAutoApproved?: (action: any, approved: boolean) => void;
+  agentOnboardedAt?: number;
+  onRequestApprove?: (req: UnifiedRequest) => void;
 }) {
   const [requests, setRequests] = useState<DigitalWorkerRequestSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -410,8 +442,10 @@ export function HumanApprovalCenter({
       setRequests(data.requests);
       setCounts(data.counts);
       setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to reach the Digital Worker API");
+    } catch (e: any) {
+      if (e?.name !== "TimeoutError" && !e?.message?.includes("timed out") && e?.name !== "AbortError") {
+        setError(e instanceof Error ? e.message : "Failed to reach the Digital Worker API");
+      }
     } finally {
       setLoaded(true);
     }
@@ -424,11 +458,10 @@ export function HumanApprovalCenter({
   }, [load, filter]);
 
   const onDecision = useCallback(
-    async (req: UnifiedRequest, approved: boolean) => {
+    async (req: UnifiedRequest, approved: boolean, permissionSetId?: string) => {
       if (req.isKra || req.isAwsTask) {
         const newState = approved ? "Approved" : "Rejected";
         localDecisions.current[req.job_id] = newState;
-        
         setKraApprovals(curr => curr.map(r => r.id === req.job_id ? { ...r, state: newState } : r));
         const row = kraApprovals.find(r => r.id === req.job_id);
         if (approved && row && onAutoApproved) {
@@ -439,7 +472,7 @@ export function HumanApprovalCenter({
             severity: row.severity,
             kraCode: row.kraCode || "",
             steps: row.steps || [],
-            // AWS Tasks must NEVER carry detectorId — that routes to the KRA remediation path
+            // AWS Tasks must NEVER carry detectorId — routes to KRA remediation path
             detectorId: row.isAwsTask ? undefined : row.detectorId,
             region: row.region,
             isAwsTask: row.isAwsTask || false,
@@ -447,7 +480,11 @@ export function HumanApprovalCenter({
           }, true);
         }
       } else {
-        await submitDigitalWorkerApproval(req.job_id, { approved, approver: "console" });
+        await submitDigitalWorkerApproval(req.job_id, {
+          approved,
+          approver: "console",
+          permission_set_id: permissionSetId
+        });
         await load();
       }
     },
@@ -480,8 +517,15 @@ export function HumanApprovalCenter({
     }));
 
     const filteredJira = requests.filter(req => {
+      // Per-agent isolation: hide tickets submitted before this agent was onboarded
+      if (agentOnboardedAt && req.submitted_at && req.submitted_at < agentOnboardedAt) return false;
       if (!req.title) return true;
-      return !kraActionNames.has(req.title.toLowerCase().trim());
+      if ((req.status as string) === "dry_run") return false;
+      if (req.title.toLowerCase().startsWith("task_")) return false;
+      if (!kraActionNames.has(req.title.toLowerCase().trim())) {
+        return true;
+      }
+      return false;
     }).map(req => ({
       isKra: false,
       job_id: req.job_id,
@@ -665,7 +709,7 @@ export function HumanApprovalCenter({
           </div>
         )}
         {unifiedRequests.map((req) => (
-          <RequestCard key={req.job_id} req={req} onDecision={onDecision} />
+          <RequestCard key={req.job_id} req={req} onDecision={onDecision} onApproveRequest={onRequestApprove} />
         ))}
       </div>
     </div>

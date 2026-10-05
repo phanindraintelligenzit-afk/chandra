@@ -39,7 +39,10 @@ def build_checkpointer() -> Any:
         if issubclass(obj, BaseModel | Enum) and obj.__module__ == schemas.__name__:
             allowed_modules.append((schemas.__name__, name))
 
-    serde = JsonPlusSerializer(allowed_msgpack_modules=allowed_modules)
+    try:
+        serde = JsonPlusSerializer(allowed_msgpack_modules=allowed_modules)
+    except TypeError:
+        serde = JsonPlusSerializer()
 
     try:
         from langgraph.checkpoint.postgres import (  # lazy: optional dep

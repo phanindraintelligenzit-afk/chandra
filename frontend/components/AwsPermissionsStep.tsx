@@ -201,7 +201,7 @@ export default function AwsPermissionsStep({ onNext, onPrev }: { onNext: () => v
           <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">
             ASSIGN AWS PERMISSIONS
           </h3>
-          <p className="text-muted mt-2">Map exact IAM permission sets this agent needs to fulfill its assigned tasks.</p>
+          <p className="text-muted mt-2">Map exact IAM permission sets this agent needs to fulfill its assigned tasks. <span className="text-emerald-300/70 text-xs">(Optional — click Continue to skip, you'll select permissions when approving Jira tickets in the Approval Center)</span></p>
         </div>
         <div className="flex gap-2">
           <button

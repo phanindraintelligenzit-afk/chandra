@@ -2,7 +2,11 @@ BEDROCK_PRICING = {
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
         "input_per_1m": 3.0,
         "output_per_1m": 15.0,
-    }
+    },
+    "moonshotai.kimi-k2.5": {
+        "input_per_1m": 0.6,
+        "output_per_1m": 2.4,
+    },
 }
 
 

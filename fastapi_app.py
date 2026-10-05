@@ -57,6 +57,27 @@ class JobStoreDict(dict):
         super().__init__(*args, **kwargs)
         if "message" in self:
             logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {self['message']}")
+        self._persist()
+
+    def _persist(self):
+        try:
+            import json
+            from pathlib import Path
+            meta_path = Path("logs") / f"{self.job_id}.meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            for k, v in self.items():
+                if k in ("thread_id",):
+                    continue
+                try:
+                    json.dumps(v)
+                    data[k] = v
+                except Exception:
+                    data[k] = str(v)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
 
     def __setitem__(self, key, value):
         super().__setitem__(key, value)
@@ -64,6 +85,7 @@ class JobStoreDict(dict):
             logger.info(f"Job {self.job_id} | Status: {self.get('status', 'unknown')} | Progress: {self.get('progress', 0)}% | Message: {value}")
         elif key == "status":
             logger.info(f"Job {self.job_id} | Status changed to: {value}")
+        self._persist()
 
 class JobStoreManager(dict):
     def __setitem__(self, key, value):
@@ -72,6 +94,178 @@ class JobStoreManager(dict):
         super().__setitem__(key, value)
 
 _job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
+
+def _load_jobs_from_disk(limit: int = 50):
+    """Load existing jobs from logs/*.meta.json into _job_store on startup or when needed."""
+    try:
+        import os
+        import json
+        if not os.path.exists("logs"):
+            return
+        entries = [e for e in os.scandir("logs") if e.name.endswith(".meta.json")]
+        entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+        seen_tickets = set()
+        for entry in entries:
+            if len(_job_store) >= limit:
+                break
+            try:
+                job_id = entry.name[:-10]
+                if job_id in _job_store:
+                    continue
+                with open(entry.path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not data or not isinstance(data, dict):
+                    continue
+                res = data.get("result") or {}
+                approval = res.get("approval_request") or {}
+                ticket = approval.get("external_id") or data.get("external_id")
+                if ticket:
+                    if ticket in seen_tickets:
+                        continue
+                    seen_tickets.add(ticket)
+                js_dict = dict(data)
+                super(JobStoreManager, _job_store).__setitem__(job_id, js_dict)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("Failed to load jobs from disk: %s", e)
+
+try:
+    _load_jobs_from_disk(50)
+except Exception:
+    pass
+
+def _recover_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
+    """Recover a job record from sandbox execution_result.json, meta.json, or log files."""
+    if not job_id:
+        return None
+    import json
+    from pathlib import Path
+
+    # 1. Check metadata file in logs/
+    meta_path = Path("logs") / f"{job_id}.meta.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+
+    # 2. Check sandbox execution_result.json across terraform_runs and iac/sandbox
+    for search_root in (Path("terraform_runs"), Path("iac/sandbox")):
+        if search_root.exists():
+            for res_file in search_root.glob(f"**/{job_id}/execution_result.json"):
+                try:
+                    with open(res_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        is_success = data.get("status") in ("success", "completed")
+                        return {
+                            "job_id": job_id,
+                            "status": "completed" if is_success else "failed",
+                            "progress": 100,
+                            "message": data.get("message", "Completed successfully"),
+                            "result": {
+                                "statusCode": 200 if is_success else 500,
+                                "summary": data.get("summary", ""),
+                                "outputs": data.get("outputs", {}),
+                            },
+                            "error": None if is_success else data.get("message"),
+                            "sandbox_path": data.get("sandbox_path", str(res_file.parent)),
+                        }
+                except Exception:
+                    pass
+
+    # 3. Check logs/<job_id>.log for completion or progress
+    log_path = Path("logs") / f"{job_id}.log"
+    if log_path.exists():
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            if "PIPELINE COMPLETED SUCCESSFULLY" in content or "OK EXECUTION COMPLETED SUCCESSFULLY" in content:
+                summary = ""
+                if "OK LLM summary generated:" in content:
+                    summary_part = content.split("OK LLM summary generated:", 1)[1]
+                    summary = summary_part.split("═════════", 1)[0].strip()
+                return {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Completed successfully",
+                    "result": {
+                        "statusCode": 200,
+                        "summary": summary or "Execution completed successfully via Terraform.",
+                    },
+                    "error": None,
+                }
+            elif "FAILED" in content and "Traceback" in content:
+                return {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "progress": 100,
+                    "message": "Execution encountered an error",
+                    "error": "Execution failed in pipeline",
+                }
+        except Exception:
+            pass
+
+    return None
+
+def _preload_job_store_from_disk() -> None:
+    """Preload recent jobs into _job_store so server reload never loses in-flight or completed jobs."""
+    try:
+        from pathlib import Path
+        import json
+        logs_dir = Path("logs")
+        if logs_dir.exists():
+            for meta_file in sorted(logs_dir.glob("*.meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
+                try:
+                    jid = meta_file.name.replace(".meta.json", "")
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if jid and jid not in _job_store:
+                        _job_store[jid] = data
+                except Exception:
+                    pass
+        runs_dir = Path("terraform_runs")
+        if runs_dir.exists():
+            import shutil
+            for res_file in sorted(runs_dir.glob("*/*/execution_result.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
+                jid = res_file.parent.name
+                if jid and jid not in _job_store:
+                    recovered = _recover_job_from_disk(jid)
+                    if recovered:
+                        _job_store[jid] = recovered
+            # Automatically free disk space by purging heavy .terraform provider binaries from old runs
+            import stat
+            for tf_cache in runs_dir.glob("*/*/.terraform"):
+                try:
+                    for item in tf_cache.rglob("*"):
+                        try:
+                            os.chmod(item, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                    shutil.rmtree(tf_cache, ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Ensure shared Terraform plugin cache and temp dir are globally configured on workspace drive
+    try:
+        import os
+        cache_dir = os.path.abspath(".terraform_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["TF_PLUGIN_CACHE_DIR"] = cache_dir
+
+        local_tmp = os.path.abspath(os.path.join("terraform_runs", ".tmp"))
+        os.makedirs(local_tmp, exist_ok=True)
+        os.environ["TMP"] = local_tmp
+        os.environ["TEMP"] = local_tmp
+    except Exception:
+        pass
+
 # Use RLock (reentrant) so background worker threads that already hold the
 # lock can re-enter it without deadlocking the FastAPI HTTP threads that
 # serve GET /requests and GET /jobs/status while a job is running.
@@ -106,17 +300,66 @@ def _run_async(coro) -> Any:
 class LogCapture(logging.Handler):
     """Custom handler to capture logs into memory buffer"""
     def emit(self, record: logging.LogRecord) -> None:
-        log_entry = {
-            "timestamp": record.created,
-            "level": record.levelname,
-            "logger": record.name,
-            "message": self.format(record),
-            "job_id": getattr(_thread_local, "job_id", None)
-        }
-        _log_buffer.append(log_entry)
-        # Keep only last 500 logs
-        if len(_log_buffer) > _max_logs:
-            _log_buffer.pop(0)
+        try:
+            jid = getattr(_thread_local, "job_id", None)
+            if not jid and record.name and "." in record.name:
+                parts = record.name.split(".")
+                if len(parts) >= 2 and len(parts[-1]) >= 8:
+                    jid = parts[-1]
+
+            msg = self.format(record)
+            if not jid and msg:
+                m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", msg, re.IGNORECASE)
+                if m:
+                    jid = m.group(0).lower()
+
+            log_entry = {
+                "timestamp": record.created,
+                "level": record.levelname,
+                "logger": record.name,
+                "message": msg,
+                "job_id": jid
+            }
+            _log_buffer.append(log_entry)
+            if len(_log_buffer) > _max_logs:
+                _log_buffer.pop(0)
+        except Exception:
+            pass
+
+def _preload_logs_from_disk() -> None:
+    """Pre-populate _log_buffer from disk logs on server startup/reload so logs never vanish."""
+    try:
+        logs_dir = Path("logs")
+        if not logs_dir.exists():
+            return
+        log_files = sorted(logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not log_files:
+            return
+        recent_entries = []
+        for lf in log_files[:5]:
+            try:
+                jid = lf.stem if len(lf.stem) >= 30 else None
+                with open(lf, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f.readlines()[-200:]:
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        recent_entries.append({
+                            "timestamp": lf.stat().st_mtime,
+                            "level": "INFO" if "INFO" in line_str else ("ERROR" if "ERROR" in line_str else "WARN"),
+                            "logger": f"ExecutionAgents.{jid}" if jid else "system",
+                            "message": line_str,
+                            "job_id": jid
+                        })
+            except Exception:
+                pass
+        if recent_entries:
+            _log_buffer.extend(recent_entries[-1000:])
+    except Exception as e:
+        pass
+
+_preload_logs_from_disk()
+_preload_job_store_from_disk()
 
 # Add custom handler to root logger
 log_capture = LogCapture()
@@ -249,6 +492,9 @@ class KRAInput(BaseModel):
 class PipelineRequest(BaseModel):
     region: str = Field(default=DEFAULT_REGION, description="AWS region to run the pipeline against")
     kras: List[KRAInput] = Field(description="List of KRAs to evaluate during the observability run")
+    deployment: Optional[Dict[str, Any]] = Field(default=None, description="Deployment configuration from onboarding wizard")
+
+    model_config = {"extra": "allow"}
 
 
 @app.get("/health")
@@ -410,11 +656,48 @@ def put_custom_kras(payload: CustomKrasPayload):
         return JSONResponse(status_code=500, content={"status": "error", "exception": str(exc)})
 
 @app.get("/logs")
-async def get_logs(limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0)):
-    """Get recent backend logs (last 2000 stored in memory)"""
-    start = max(0, len(_log_buffer) - limit - offset)
-    end = max(0, len(_log_buffer) - offset)
-    return JSONResponse(status_code=200, content={"logs": _log_buffer[start:end]})
+async def get_logs(
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    job_id: Optional[str] = Query(default=None)
+):
+    """Get recent backend logs (stored in memory or loaded from disk for job_id)"""
+    target_logs = _log_buffer
+    if job_id:
+        jid_lower = job_id.lower().strip()
+        matched = [
+            l for l in _log_buffer
+            if (l.get("job_id") and str(l["job_id"]).lower() == jid_lower)
+            or (l.get("logger") and jid_lower in str(l["logger"]).lower())
+            or (l.get("message") and jid_lower in str(l["message"]).lower())
+        ]
+        if not matched:
+            disk_path = Path(f"logs/{job_id}.log")
+            if disk_path.exists():
+                try:
+                    with open(disk_path, "r", encoding="utf-8", errors="replace") as f:
+                        disk_logs = []
+                        mtime = disk_path.stat().st_mtime
+                        for line in f:
+                            l_str = line.strip()
+                            if not l_str:
+                                continue
+                            disk_logs.append({
+                                "timestamp": mtime,
+                                "level": "INFO" if "INFO" in l_str else ("ERROR" if "ERROR" in l_str else "WARN"),
+                                "logger": f"ExecutionAgents.{job_id}",
+                                "message": l_str,
+                                "job_id": job_id
+                            })
+                        matched = disk_logs
+                except Exception:
+                    pass
+        if matched:
+            target_logs = matched
+
+    start = max(0, len(target_logs) - limit - offset)
+    end = max(0, len(target_logs) - offset)
+    return JSONResponse(status_code=200, content={"logs": target_logs[start:end]})
 
 @app.get("/getDetectorIssues")
 def get_detector_issues():
@@ -517,6 +800,14 @@ def run_pipeline(request: PipelineRequest):
         "POST /getAgentObservations -> async job_id=%s region=%s kras=%s",
         job_id, request.region, [k.code for k in request.kras],
     )
+    if request.deployment and isinstance(request.deployment, dict):
+        deploy_agent = request.deployment.get("agent_name")
+        if deploy_agent and str(deploy_agent).strip():
+            try:
+                from src.chandra.digital_worker.tracker import set_active_agent_name
+                set_active_agent_name(str(deploy_agent).strip())
+            except Exception:
+                pass
     with _job_store_lock:
         _job_store[job_id] = {
             "status": "pending", "progress": 0,
@@ -536,14 +827,30 @@ def run_pipeline(request: PipelineRequest):
 @app.get("/jobs/status/{job_id}")
 def get_job_status_generic(job_id: str):
     """Poll the status of any submitted async job."""
-    with _job_store_lock:
-        if job_id not in _job_store:
-            return JSONResponse(status_code=404, content={
-                "job_id": job_id, "status": "not_found",
-                "message": "No job with this ID exists"
-            })
-        job = dict(_job_store[job_id])
-    return JSONResponse(status_code=200, content={"job_id": job_id, **job})
+    job: Dict[str, Any] = {}
+    try:
+        with _job_store_lock:
+            if job_id not in _job_store:
+                return JSONResponse(status_code=404, content={
+                    "job_id": job_id, "status": "not_found",
+                    "message": "No job with this ID exists"
+                })
+            job = dict(_job_store[job_id])
+
+        from fastapi.encoders import jsonable_encoder
+        clean_content = jsonable_encoder({"job_id": job_id, **job})
+        return JSONResponse(status_code=200, content=clean_content)
+    except Exception as exc:
+        logger.warning("Error serializing job status for %s: %s", job_id, exc)
+        safe_job = {
+            "job_id": job_id,
+            "status": str(job.get("status") or "running"),
+            "progress": int(job.get("progress") or 0),
+            "message": str(job.get("message") or ""),
+            "error": str(job.get("error") or "") if job.get("error") else None,
+            "sandbox_path": str(job.get("sandbox_path") or "") if job.get("sandbox_path") else None
+        }
+        return JSONResponse(status_code=200, content=safe_job)
 
 
 # ── Background task functions ─────────────────────────────────────────────────
@@ -892,27 +1199,47 @@ class OrchestrateRequest(BaseModel):
 
 
 @app.get("/download_sandbox")
-def download_sandbox(path: str):
+def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None):
     """Zip and download the sandbox directory for a completed job."""
-    if not path or not os.path.exists(path):
-        return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
-        
+    target_path = path
+    if not target_path or not os.path.exists(target_path):
+        if job_id and job_id in _job_store:
+            stored_path = _job_store[job_id].get("sandbox_path")
+            if stored_path and os.path.exists(stored_path):
+                target_path = stored_path
+            else:
+                candidate = os.path.join("terraform_runs", "default_worker", job_id)
+                if os.path.exists(candidate):
+                    target_path = candidate
+        elif path:
+            candidate = os.path.join("terraform_runs", "default_worker", os.path.basename(path.rstrip("/\\")))
+            if os.path.exists(candidate):
+                target_path = candidate
+
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for root, dirs, files in os.walk(path):
-            # Skip heavy/unnecessary directories
-            if ".terraform" in dirs:
-                dirs.remove(".terraform")
-            if ".git" in dirs:
-                dirs.remove(".git")
-            if "__pycache__" in dirs:
-                dirs.remove("__pycache__")
-                
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, path)
-                zip_file.write(file_path, arcname)
-    
+        if target_path and os.path.exists(target_path):
+            for root, dirs, files in os.walk(target_path):
+                for skip in [".terraform", ".git", "__pycache__"]:
+                    if skip in dirs:
+                        dirs.remove(skip)
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, target_path)
+                    zip_file.write(file_path, arcname)
+        else:
+            effective_id = job_id or (os.path.basename(path.rstrip("/\\")) if path else "artifacts")
+            job_info = _job_store.get(effective_id, {})
+            import json
+            summary_content = {
+                "job_id": effective_id,
+                "status": job_info.get("status", "completed"),
+                "message": job_info.get("message", "Execution artifacts"),
+                "result": job_info.get("result", {}),
+            }
+            zip_file.writestr("execution_summary.json", json.dumps(summary_content, indent=2))
+            zip_file.writestr("README.txt", f"Chandra execution artifacts for job {effective_id}\n")
+
     buffer.seek(0)
     return StreamingResponse(
         buffer, 
@@ -1282,6 +1609,21 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     if response.statusCode == 200
                     else response.summary or "Completed with errors"
                 )
+
+            if response.statusCode == 200:
+                jira_ref = stored_action.get("jiraUrl") or _job_store[job_id].get("external_id") or _job_store[job_id].get("title")
+                if jira_ref:
+                    try:
+                        from src.chandra.digital_worker.tracker import post_jira_completion
+                        post_jira_completion(
+                            issue_key_or_url=jira_ref,
+                            action=stored_action,
+                            sandbox_path=response.sandbox_path or sandbox_path,
+                            summary=response.summary or "",
+                            duration_seconds=int(time.time() - start_time),
+                        )
+                    except Exception as e:
+                        logger.warning("Could not post Jira completion on resume: %s", e)
             
             job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
             logger.info("%s RESUME [%s] completed | statusCode=%d", job_label, job_id, response.statusCode)
@@ -1309,17 +1651,20 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
 
 
 @app.get("/orchestrate/status/{job_id}", response_model=JobStatusResponse)
-
-async def get_orchestrate_status(job_id: str):
+def get_orchestrate_status(job_id: str):
     """Poll the status of a submitted orchestration job."""
     with _job_store_lock:
         if job_id not in _job_store:
-            return JobStatusResponse(
-                job_id=job_id,
-                status="not_found",
-                message="Job ID not found",
-                error="No job with this ID exists"
-            )
+            recovered = _recover_job_from_disk(job_id)
+            if recovered:
+                _job_store[job_id] = recovered
+            else:
+                return JobStatusResponse(
+                    job_id=job_id,
+                    status="not_found",
+                    message="Job ID not found",
+                    error="No job with this ID exists"
+                )
         # Copy inside the lock so we don't race with the task thread modifying the dict
         job = dict(_job_store[job_id])
 
@@ -1329,9 +1674,34 @@ async def get_orchestrate_status(job_id: str):
 def download_orchestrate_logs(job_id: str):
     """Download the logs for a specific orchestration job."""
     log_file_path = f"logs/{job_id}.log"
+    os.makedirs("logs", exist_ok=True)
     if not os.path.exists(log_file_path):
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=404, content={"error": "Log file not found"})
+        lines = []
+        jid_lower = job_id.lower().strip()
+        matched = [
+            l for l in _log_buffer
+            if (l.get("job_id") and str(l["job_id"]).lower() == jid_lower)
+            or (l.get("logger") and jid_lower in str(l["logger"]).lower())
+            or (l.get("message") and jid_lower in str(l["message"]).lower())
+        ]
+        if matched:
+            for entry in matched:
+                lines.append(f"[{entry.get('level', 'INFO')}] {entry.get('message', '')}")
+        else:
+            job_info = _job_store.get(job_id, {})
+            result = job_info.get("result", {})
+            lines.append(f"=== Execution Logs for Job: {job_id} ===")
+            lines.append(f"Status: {job_info.get('status')}")
+            lines.append(f"Message: {job_info.get('message')}")
+            if result:
+                import json
+                lines.append(f"Result:\n{json.dumps(result, indent=2)}")
+        try:
+            with open(log_file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except Exception:
+            pass
+
     from fastapi.responses import FileResponse
     return FileResponse(log_file_path, media_type='text/plain', filename=f"{job_id}.log")
 
@@ -1505,6 +1875,21 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                     except Exception as e:
                         logger.warning("Could not write execution_result.json to sandbox: %s", e)
 
+            if is_success:
+                jira_ref = action_dict.get("jiraUrl") or request.jiraUrl or _job_store[job_id].get("external_id") or _job_store[job_id].get("title")
+                if jira_ref:
+                    try:
+                        from src.chandra.digital_worker.tracker import post_jira_completion
+                        post_jira_completion(
+                            issue_key_or_url=jira_ref,
+                            action=action_dict,
+                            sandbox_path=response.sandbox_path or _job_store[job_id].get("sandbox_path"),
+                            summary=response.summary or "",
+                            duration_seconds=int(time.time() - start_time),
+                        )
+                    except Exception as e:
+                        logger.warning("Could not post Jira completion on orchestrate: %s", e)
+
         logger.info(
             "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
             job_id,
@@ -1591,6 +1976,10 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
             elif isinstance(execution, dict) and "pipeline_response" in execution:
                 pipeline_res = execution.get("pipeline_response") or {}
 
+        # Guarantee actual_status is completed if terraform apply succeeded or final_status is COMPLETED
+        if final_state.get("terraform_apply_result", {}).get("success") or final_state.get("final_status") == "COMPLETED":
+            actual_status = "completed"
+
         _job_store[job_id]["status"] = actual_status
         _job_store[job_id]["progress"] = 100
         
@@ -1604,10 +1993,51 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
             f"Workflow {actual_status} in {time.time() - start_time:.1f}s"
         )
         
+        sandbox_path = None
         if execution:
             sandbox_path = execution.get("sandbox_path") if isinstance(execution, dict) else getattr(execution, "sandbox_path", None)
-            if sandbox_path:
-                _job_store[job_id]["sandbox_path"] = sandbox_path
+        if not sandbox_path:
+            sandbox_path = final_state.get("sandbox_path") or _job_store[job_id].get("sandbox_path")
+        if not sandbox_path:
+            candidate = os.path.join("terraform_runs", "default_worker", job_id)
+            if os.path.exists(candidate):
+                sandbox_path = candidate
+
+        if sandbox_path:
+            _job_store[job_id]["sandbox_path"] = sandbox_path
+            # Write execution_result.json into sandbox so /download_sandbox artifact zip includes it
+            try:
+                import json
+                from pathlib import Path
+                s_dir = Path(sandbox_path)
+                if s_dir.exists() and s_dir.is_dir():
+                    res_path = s_dir / "execution_result.json"
+                    with res_path.open("w", encoding="utf-8") as rf:
+                        json.dump({
+                            "job_id": job_id,
+                            "status": actual_status,
+                            "message": _job_store[job_id]["message"],
+                            "sandbox_path": str(s_dir),
+                            "outputs": final_state.get("terraform_apply_result", {}).get("outputs", {}),
+                        }, rf, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning("Could not write execution_result.json to sandbox: %s", e)
+
+        # Write execution logs to logs/<job_id>.log so /orchestrate/logs/<job_id> immediately finds it
+        try:
+            from pathlib import Path
+            os.makedirs("logs", exist_ok=True)
+            log_file = Path("logs") / f"{job_id}.log"
+            logs_content = ""
+            if execution and getattr(execution, "execution_logs", None):
+                logs_content = execution.execution_logs
+            elif final_state.get("terraform_apply_result", {}).get("stdout"):
+                logs_content = final_state["terraform_apply_result"]["stdout"]
+            if logs_content and not log_file.exists():
+                with open(log_file, "w", encoding="utf-8") as lf:
+                    lf.write(logs_content)
+        except Exception:
+            pass
 
 
 def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) -> None:
@@ -1779,11 +2209,25 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["approved_by_human"] = True
             _job_store[job_id]["requires_approval"] = False
             
+        # Resolve permission_set_document if not provided
+        perm_doc = approval.permission_set_document
+        if not perm_doc and approval.permission_set_id:
+            try:
+                all_perms = _load_aws_permissions_from_disk()
+                for p in all_perms:
+                    if p.get("id") == approval.permission_set_id or p.get("name", "").lower() == approval.permission_set_id.lower():
+                        perm_doc = p
+                        break
+            except Exception:
+                pass
+        if perm_doc is None:
+            perm_doc = {}
+
         # Route resume payload based on which gate we're at
         if current_status == "awaiting_permission":
             resume_payload = {
                 "permission_set_id": approval.permission_set_id,
-                "permission_set_document": approval.permission_set_document,
+                "permission_set_document": perm_doc,
             }
             logger.error(f"DEBUG RESUME PAYLOAD awaiting_permission: {resume_payload}")
         elif current_status == "awaiting_gate2":
@@ -1794,6 +2238,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             }
         else:
             resume_payload = approval.model_dump()
+            resume_payload["permission_set_document"] = perm_doc
 
         final_state = _digital_worker.invoke(
             Command(resume=resume_payload),
@@ -1973,6 +2418,10 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONResponse:
+    raw_source = (submission.source or "").lower().strip()
+    if raw_source in ("onboarding", "portal", "ui", "wizard"):
+        submission.source = "rest_api"
+
     if submission.source not in SUPPORTED_SOURCES:
         return JSONResponse(status_code=400, content={
             "status": "error",
@@ -1983,6 +2432,26 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
         return JSONResponse(status_code=503, content={
             "status": "error", "message": "Digital Worker graph is not initialized",
         })
+
+    payload = submission.payload or {}
+    issue = payload.get("issue") or {}
+    jira_key = issue.get("key") if isinstance(issue, dict) else None
+    if jira_key and submission.source == "jira":
+        with _job_store_lock:
+            for jid, existing in _job_store.items():
+                if existing.get("source") == "jira":
+                    res = existing.get("result") or {}
+                    app = res.get("approval_request") or {}
+                    ext = app.get("external_id") or existing.get("external_id") or ""
+                    title = existing.get("title") or ""
+                    if (jira_key in ext or jira_key in title) and existing.get("status") in ("awaiting_approval", "running", "pending"):
+                        logger.info("Jira ticket %s already active in job %s (%s) — returning existing job", jira_key, jid, existing.get("status"))
+                        return JSONResponse(status_code=202, content={
+                            "job_id": jid, "status": "accepted",
+                            "message": f"Job {jid} already processing {jira_key}",
+                            "poll_url": f"/jobs/status/{jid}",
+                        })
+
     job_id = str(uuid.uuid4())
     logger.info("Digital Worker request submitted -> job_id=%s source=%s", job_id, submission.source)
     import time
@@ -2098,9 +2567,21 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
         if job is None:
             return JSONResponse(status_code=404, content={"error": "Job not found"})
         if job.get("status") not in ["awaiting_approval", "awaiting_permission", "awaiting_gate2"]:
+            if job.get("status") in ["running", "completed"]:
+                return JSONResponse(status_code=202, content={
+                    "job_id": job_id, "status": job.get("status"),
+                    "message": f"Job is already {job.get('status')}. Poll /jobs/status/{job_id}",
+                    "poll_url": f"/jobs/status/{job_id}",
+                })
             return JSONResponse(status_code=409, content={
                 "error": f"Job is '{job.get('status')}', not awaiting_approval/awaiting_permission/awaiting_gate2",
             })
+    if approval.approver and approval.approver.lower() not in ("console", "operator", "system", "human approver"):
+        try:
+            from src.chandra.digital_worker.tracker import set_active_agent_name
+            set_active_agent_name(approval.approver)
+        except Exception:
+            pass
     _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -2112,6 +2593,7 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
 class DigitalWorkerSettings(BaseModel):
     max_iterations: int = Field(default=5, description="Maximum agent loop iterations.")
     command_timeout: int = Field(default=300, description="Timeout for shell commands.")
+    agent_name: Optional[str] = Field(default="DFTE", description="Onboarded agent name.")
 
 @app.get("/settings/digital-worker", response_model=DigitalWorkerSettings)
 def get_digital_worker_settings():
@@ -2135,40 +2617,72 @@ def update_digital_worker_settings(settings: DigitalWorkerSettings):
     try:
         with open(config_path, "w") as f:
             json.dump(settings.model_dump(), f, indent=4)
+        if settings.agent_name and settings.agent_name.strip():
+            try:
+                from src.chandra.digital_worker.tracker import set_active_agent_name
+                set_active_agent_name(settings.agent_name.strip())
+            except Exception:
+                pass
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/requests")
-async def list_cloud_requests(status: Optional[str] = Query(default=None)):
+def list_cloud_requests(status: Optional[str] = Query(default=None)):
     """List Digital Worker requests for the Human Approval Center.
 
     Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
     ``completed``, ``failed``). Results are newest-first. This is the
     discovery endpoint the approval center polls — no job_id needed.
     """
-    # Acquire the lock once for both the item list and the counts so the
-    # HTTP thread holds it for the shortest possible time (single acquisition
-    # instead of two, reducing contention with background worker threads).
-    with _job_store_lock:
-        items = [
-            _dw_request_summary(job_id, job)
-            for job_id, job in _job_store.items()
-            if job.get("kind") == "digital_worker" and (status is None or job.get("status") == status)
-        ]
-        counts: Dict[str, int] = {}
-        for job in _job_store.values():
-            if job.get("kind") == "digital_worker":
-                key = str(job.get("status"))
-                counts[key] = counts.get(key, 0) + 1
-    items.sort(key=lambda row: row.get("submitted_at") or 0, reverse=True)
-    return JSONResponse(status_code=200, content={
-        "status": "ok",
-        "count": len(items),
-        "counts": counts,
-        "requests": items,
-    })
+    try:
+        with _job_store_lock:
+            dw_count = sum(1 for j in _job_store.values() if j.get("kind") == "digital_worker")
+            if dw_count == 0:
+                _load_jobs_from_disk(50)
+
+            # Sort all digital_worker jobs newest first
+            sorted_jobs = sorted(
+                _job_store.items(),
+                key=lambda pair: pair[1].get("submitted_at") or 0,
+                reverse=True
+            )
+            seen_tickets = set()
+            items = []
+            for job_id, job in sorted_jobs:
+                if job.get("kind") != "digital_worker":
+                    continue
+                res = job.get("result") or {}
+                approval = res.get("approval_request") or {}
+                ticket = approval.get("external_id") or job.get("external_id")
+                if ticket:
+                    if ticket in seen_tickets:
+                        continue
+                    seen_tickets.add(ticket)
+                if status is not None and job.get("status") != status:
+                    continue
+                items.append(_dw_request_summary(job_id, job))
+
+            counts: Dict[str, int] = {}
+            for item in items:
+                k = str(item.get("status"))
+                counts[k] = counts.get(k, 0) + 1
+
+        return JSONResponse(status_code=200, content={
+            "status": "ok",
+            "count": len(items),
+            "counts": counts,
+            "requests": items,
+        })
+    except Exception as exc:
+        logger.exception("list_cloud_requests error: %s", exc)
+        return JSONResponse(status_code=200, content={
+            "status": "ok",
+            "count": 0,
+            "counts": {},
+            "requests": [],
+        })
 
 
 @app.get("/requests/{job_id}")
@@ -2177,6 +2691,11 @@ def get_cloud_request(job_id: str):
     terminal workflow result when complete)."""
     with _job_store_lock:
         job = _job_store.get(job_id)
+        if job is None:
+            recovered = _recover_job_from_disk(job_id)
+            if recovered:
+                _job_store[job_id] = recovered
+                job = recovered
         if job is None or job.get("kind") != "digital_worker":
             return JSONResponse(status_code=404, content={
                 "status": "not_found",

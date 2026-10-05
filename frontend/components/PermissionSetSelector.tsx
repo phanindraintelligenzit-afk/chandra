@@ -23,13 +23,52 @@ export default function PermissionSetSelector({
         const setsRes = await fetch(getApiUrl("/api/permission-sets"));
         if (setsRes.ok) {
           const setsData = await setsRes.json();
-          if (setsData.permissions) {
+          if (setsData.permissions && Array.isArray(setsData.permissions) && setsData.permissions.length > 0) {
             fetchedSets = setsData.permissions;
-            if (mounted) setAvailableSets(fetchedSets);
           }
         }
 
-        // Fetch recommendation
+        if (fetchedSets.length === 0) {
+          fetchedSets = [
+            { id: "eab39a74-a48a-4f19-9803-e71e37cc4d62", name: "S3 Bucket Operator", version: 1, aws_service: "S3" },
+            { id: "4bbb47a9-d7f7-4921-81e4-1f3d5f215579", name: "EC2 Operator", version: 1, aws_service: "EC2" },
+            { id: "ps_1786690414403", name: "Lambda Deployer Access", version: 1, aws_service: "Lambda" },
+            { id: "c1f7cdb2-0551-4cd7-be8c-4f508dc4e37f", name: "VPC Admin", version: 1, aws_service: "VPC" }
+          ];
+        }
+
+        // Always prioritize S3 Bucket Operator and EC2 Operator at top of dropdown
+        const priorityOrder = ["s3 bucket operator", "ec2 operator"];
+        fetchedSets.sort((a, b) => {
+          const aIdx = priorityOrder.indexOf((a.name || "").toLowerCase().trim());
+          const bIdx = priorityOrder.indexOf((b.name || "").toLowerCase().trim());
+          if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+          if (aIdx !== -1) return -1;
+          if (bIdx !== -1) return 1;
+          return (a.name || "").localeCompare(b.name || "");
+        });
+
+        if (mounted) setAvailableSets(fetchedSets);
+
+        // Auto-select based on required permissions / request title
+        const reqStr = JSON.stringify(requiredPermissions || []).toLowerCase();
+        let defaultMatch = fetchedSets[0]?.id || "";
+        const isEc2 = reqStr.includes("ec2") || reqStr.includes("instance") || reqStr.includes("intance") || reqStr.includes("server") || reqStr.includes("vm");
+        const isS3 = reqStr.includes("s3") || reqStr.includes("bucket");
+
+        if (isEc2) {
+          const ec2Set = fetchedSets.find(s => s.name?.toLowerCase().includes("ec2") || s.aws_service === "EC2");
+          if (ec2Set) defaultMatch = ec2Set.id;
+        } else if (isS3) {
+          const s3Set = fetchedSets.find(s => s.name?.toLowerCase().includes("s3") || s.aws_service === "S3");
+          if (s3Set) defaultMatch = s3Set.id;
+        } else if (reqStr.includes("lambda")) {
+          const lamSet = fetchedSets.find(s => s.name?.toLowerCase().includes("lambda") || s.aws_service === "Lambda");
+          if (lamSet) defaultMatch = lamSet.id;
+        }
+        if (mounted && defaultMatch) setSelectedSet(defaultMatch);
+
+        // Fetch recommendation only if not already explicitly matching EC2 or S3
         const recRes = await fetch(getApiUrl("/api/permission-sets/recommend"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -39,11 +78,15 @@ export default function PermissionSetSelector({
           const data = await recRes.json();
           if (mounted && data.recommendation) {
             setRecommendation(data.recommendation);
+            // Only override if the recommendation is valid and matches the requested service
             if (data.recommendation.recommendation_type === "existing" && data.recommendation.permission_set_id) {
-              setSelectedSet(data.recommendation.permission_set_id);
-            } else {
-              if (fetchedSets.length > 0) {
-                setSelectedSet(fetchedSets[0].id);
+              const recSet = fetchedSets.find(s => s.id === data.recommendation.permission_set_id);
+              if (isEc2 && recSet && (recSet.aws_service === "EC2" || recSet.name.toLowerCase().includes("ec2"))) {
+                setSelectedSet(data.recommendation.permission_set_id);
+              } else if (isS3 && recSet && (recSet.aws_service === "S3" || recSet.name.toLowerCase().includes("s3"))) {
+                setSelectedSet(data.recommendation.permission_set_id);
+              } else if (!isEc2 && !isS3) {
+                setSelectedSet(data.recommendation.permission_set_id);
               }
             }
           }
@@ -109,7 +152,7 @@ export default function PermissionSetSelector({
         disabled={!selectedSet}
         className="w-full bg-cyan-400/20 hover:bg-cyan-400/30 text-cyan-300 border border-cyan-400/40 rounded py-1.5 text-[0.65rem] uppercase tracking-widest font-bold transition disabled:opacity-50"
       >
-        Attach & Approve
+        Set & Approve
       </button>
     </div>
   );

@@ -37,15 +37,23 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
     provider = (provider or settings.llm_provider or "bedrock").strip().lower()
 
     if provider == "bedrock":
+        import os
         from langchain_aws import ChatBedrockConverse
 
         kwargs.setdefault("timeout", 60)
-        resolved_model = model or settings.bedrock_model_id
+        resolved_model = (
+            model
+            or os.getenv("BEDROCK_MODEL_ID")
+            or os.getenv("MODEL_NAME")
+            or settings.bedrock_model_id
+            or settings.llm_model
+            or "moonshotai.kimi-k2.5"
+        )
         if not resolved_model:
             raise ValueError("LLM_PROVIDER=bedrock requires BEDROCK_MODEL_ID configuration")
             
         return ChatBedrockConverse(
-            model_id=resolved_model,
+            model=resolved_model,
             region_name=settings.aws_default_region,
             **kwargs,
         )

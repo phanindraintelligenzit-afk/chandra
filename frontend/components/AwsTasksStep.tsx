@@ -13,6 +13,49 @@ const RESOURCE_ICONS: Record<string, string> = {
   ECS: "🐳", ELB: "⚖️", CloudFront: "🌍", ElastiCache: "⚡", APIGateway: "🔌",
 };
 
+const DEFAULT_PRESET_TASKS: AwsTask[] = [
+  {
+    id: "task_ec2_create",
+    name: "CREATE EC2 INSTANCE",
+    description: "Create a new t2.micro EC2 instance with approved security group and key pair.",
+    category: "EC2",
+    ownership: "System",
+    version: 1,
+    is_preset: true,
+    is_predefined: true
+  },
+  {
+    id: "task_s3_bucket",
+    name: "CREATE S3 BUCKET",
+    description: "Create an Amazon S3 storage bucket with default AES-256 encryption and public access blocks.",
+    category: "S3",
+    ownership: "System",
+    version: 1,
+    is_preset: true,
+    is_predefined: true
+  },
+  {
+    id: "task_s3_permissions",
+    name: "NEED S3 PERMISSION",
+    description: "Inspect and configure IAM policies for Amazon S3 read/write access.",
+    category: "S3",
+    ownership: "System",
+    version: 1,
+    is_preset: true,
+    is_predefined: true
+  },
+  {
+    id: "task_lambda_deploy",
+    name: "Deploy Data Processor Lambda",
+    description: "Create a new Node.js Lambda function to process incoming S3 events and update DynamoDB.",
+    category: "Lambda",
+    ownership: "System",
+    version: 1,
+    is_preset: true,
+    is_predefined: true
+  }
+];
+
 export default function AwsTasksStep({ onNext, onPrev }: { onNext: () => void; onPrev: () => void }) {
   const { agentName, selectedAwsTasks, toggleAwsTask, addAwsTask, removeAwsTask } = useOnboarding();
   const [tasks, setTasks] = useState<AwsTask[]>([]);
@@ -30,9 +73,22 @@ export default function AwsTasksStep({ onNext, onPrev }: { onNext: () => void; o
 
   const loadTasks = useCallback(async () => {
     setLoading(true);
-    const data = await fetchAwsTasks();
-    setTasks(data);
-    setLoading(false);
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const data = await fetchAwsTasks({ signal: controller.signal });
+      clearTimeout(timer);
+      if (Array.isArray(data) && data.length > 0) {
+        setTasks(data);
+      } else {
+        setTasks(DEFAULT_PRESET_TASKS);
+      }
+    } catch (e) {
+      console.warn("Unable to fetch AWS Tasks, falling back to preset tasks:", e);
+      setTasks(DEFAULT_PRESET_TASKS);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { loadTasks(); }, [loadTasks]);
@@ -126,7 +182,7 @@ export default function AwsTasksStep({ onNext, onPrev }: { onNext: () => void; o
     setShowForm(true);
   };
 
-  const canProceed = selectedAwsTasks.length > 0;
+  const canProceed = true; // Allow proceeding even if user has not selected any task checkboxes
 
   return (
     <motion.div key="aws-tasks" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
@@ -135,7 +191,7 @@ export default function AwsTasksStep({ onNext, onPrev }: { onNext: () => void; o
           <h3 className="text-2xl font-semibold uppercase tracking-[0.02em]">
             ASSIGN AWS TASKS TO {(agentName || "THIS AGENT").toUpperCase()}
           </h3>
-          <p className="text-muted mt-2">Select the specific AWS operational tasks this worker is authorized to execute.</p>
+          <p className="text-muted mt-2">Select the specific AWS operational tasks this worker is authorized to execute. <span className="text-emerald-300/70 text-xs">(Optional — click Continue to skip, tasks are auto-assigned from Jira tickets)</span></p>
         </div>
         <button
           onClick={() => { setShowForm(true); setEditingTask(null); setForm({ name: "", description: "", category: "S3" }); }}

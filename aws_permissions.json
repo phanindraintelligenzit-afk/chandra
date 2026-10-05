@@ -1,12 +1,19 @@
 [
   {
     "id": "eab39a74-a48a-4f19-9803-e71e37cc4d62",
-    "name": "S3 Full Access",
-    "description": "Full read/write access to S3",
+    "name": "S3 Bucket Operator",
+    "description": "Full read/write and management access to S3 buckets",
     "aws_service": "S3",
     "actions": [
       "s3:*",
-      "s3:CreateBucket"
+      "s3:CreateBucket",
+      "s3:DeleteBucket",
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:ListBucket",
+      "s3:PutBucketVersioning",
+      "s3:PutBucketPolicy",
+      "s3:GetBucketLocation"
     ],
     "resource_arn": "arn:aws:s3:::*",
     "is_predefined": true,
@@ -33,14 +40,25 @@
   {
     "id": "4bbb47a9-d7f7-4921-81e4-1f3d5f215579",
     "name": "EC2 Operator",
-    "description": "EC2 lifecycle management",
+    "description": "EC2 lifecycle management and instance creation",
     "aws_service": "EC2",
     "actions": [
+      "ec2:*",
       "ec2:RunInstances",
       "ec2:StartInstances",
       "ec2:StopInstances",
       "ec2:TerminateInstances",
-      "ec2:DescribeInstances"
+      "ec2:DescribeInstances",
+      "ec2:DescribeImages",
+      "ec2:DescribeKeyPairs",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+      "ec2:CreateTags",
+      "iam:PassRole",
+      "iam:GetInstanceProfile",
+      "iam:ListInstanceProfiles",
+      "iam:CreateServiceLinkedRole"
     ],
     "resource_arn": "arn:aws:ec2:*:*:instance/*",
     "is_predefined": true,

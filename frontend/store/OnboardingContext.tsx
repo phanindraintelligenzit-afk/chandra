@@ -40,6 +40,7 @@ export type OnboardingState = {
   costMetricsError: string | null;
   selectedAwsTasks: string[];
   selectedAwsPermissions: string[];
+  agentOnboardedAt: number | null;
   setAgentName: (name: string) => void;
   setEmployeeId: (id: string) => void;
   setGender: (gender: AgentGender) => void;
@@ -80,6 +81,7 @@ const defaultState: OnboardingState = {
   selectedKRAs: [],
   kraPayload: { predefinedKras: [], customKras: [], selectedKras: [] },
   onboardingCompleted: false,
+  agentOnboardedAt: null,
   hydrated: false,
   observations: null,
   observationsError: null,
@@ -161,6 +163,13 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [selectedAwsTasks, setSelectedAwsTasks] = useState<string[]>([]);
   const [selectedAwsPermissions, setSelectedAwsPermissions] = useState<string[]>([]);
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(false);
+  const [agentOnboardedAt, setAgentOnboardedAt] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const v = window.localStorage.getItem("agentOnboardedAt");
+      return v ? parseFloat(v) : null;
+    } catch { return null; }
+  });
   const [observations, setObservationsState] = useState<AgentObservation | null>(null);
   const [observationsError, setObservationsError] = useState<string | null>(null);
   const [costMetrics, setCostMetricsState] = useState<CostMetricsOutput | null>(null);
@@ -376,6 +385,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
 
   const completeOnboarding = useCallback(() => {
     setOnboardingCompleted(true);
+    const nowSec = Date.now() / 1000;
+    setAgentOnboardedAt(nowSec);
+    // Stamp the time so the HAC only shows tickets created after this agent was onboarded
+    try {
+      window.localStorage.setItem("agentOnboardedAt", String(nowSec));
+    } catch { /* ignore */ }
   }, []);
 
   const openDashboard = useCallback(() => {
@@ -408,6 +423,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setSelectedAwsTasks([]);
     setSelectedAwsPermissions([]);
     setOnboardingCompleted(false);
+    setAgentOnboardedAt(null);
     setObservationsState(null);
     setObservationsError(null);
     setCostMetricsState(null);
@@ -416,6 +432,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
       window.sessionStorage.removeItem(STORAGE_KEY);
+      // Clear the onboarded-at timestamp so the next agent starts fresh
+      window.localStorage.removeItem("agentOnboardedAt");
     } catch {
       // ignore
     }
@@ -437,6 +455,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
+      agentOnboardedAt,
       dashboardOpened,
       hydrated,
       observations,
@@ -482,6 +501,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       selectedAwsPermissions,
       kraPayload,
       onboardingCompleted,
+      agentOnboardedAt,
       dashboardOpened,
       hydrated,
       observations,

@@ -241,8 +241,6 @@ export default function OnboardingWizard() {
       if (pathname !== STEP_PATHS[2]) router.replace(STEP_PATHS[2]);
     } else if (idx > 3 && selectedKRAs.length === 0) {
       if (pathname !== STEP_PATHS[3]) router.replace(STEP_PATHS[3]);
-    } else if (idx > 4 && selectedAwsTasks.length === 0) {
-      if (pathname !== STEP_PATHS[4]) router.replace(STEP_PATHS[4]);
     } else {
       if (idx !== step) {
         setStep(idx);
@@ -262,10 +260,10 @@ export default function OnboardingWizard() {
     if (step === 1) return role === "AWS Cloud Engineer";
     if (step === 2) return maturity === "L2";
     if (step === 3) return selectedKRAs.length > 0;
-    if (step === 4) return selectedAwsTasks.length > 0;
+    if (step === 4) return true; // aws tasks optional
     if (step === 5) return true; // permissions can proceed anytime
     return true;
-  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length, selectedAwsTasks.length]);
+  }, [step, normalizedName.length, duplicateName, hasSelectedAvatar, role, maturity, selectedKRAs.length]);
 
   function next() {
     if (step === 0) {
@@ -378,25 +376,11 @@ export default function OnboardingWizard() {
             setCostMetrics(null, message);
           });
 
-        // Submit the user-selected AWS Tasks to the digital worker so they appear in the Human Approval Center
-        if (selectedAwsTasks && selectedAwsTasks.length > 0) {
-          selectedAwsTasks.forEach((taskTitle) => {
-            import('@/services/api').then(({ submitDigitalWorkerRequest }) => {
-              submitDigitalWorkerRequest({
-                source: "onboarding",
-                payload: {
-                  title: taskTitle,
-                  description: `User-selected AWS task from onboarding: ${taskTitle}`,
-                  priority: "High"
-                }
-              }).catch(err => console.error("Failed to submit AWS Task:", err));
-            });
-          });
-        }
 
-        // Fire observations fetch in background (don't await) with longer timeout
+
+        // Fire observations fetch in background (don't await) with 24h timeout
         const obsController = new AbortController();
-        const obsTimeout = setTimeout(() => obsController.abort(), 600_000); // 10 minute timeout
+        const obsTimeout = setTimeout(() => obsController.abort(), 86_400_000); // 24 hours
 
         fetchAgentObservations(payload, { signal: obsController.signal })
           .then((data) => {
@@ -404,10 +388,11 @@ export default function OnboardingWizard() {
             console.log("OBS RESPONSE SUCCESS", data);
             setObservations(data);
           })
-          .catch((error) => {
+          .catch((error: any) => {
             clearTimeout(obsTimeout);
+            if (error?.name === "AbortError") return;
             const message = error instanceof Error ? error.message : "Backend request failed";
-            console.error("OBS RESPONSE ERROR", message);
+            console.warn("Observations background notice:", message);
             setObservations(null, message);
           });
 

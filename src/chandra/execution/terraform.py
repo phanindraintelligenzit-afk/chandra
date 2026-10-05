@@ -51,9 +51,25 @@ def terraform_available() -> bool:
 
 def _run(args: list[str], cwd: Path) -> tuple[bool, str]:
     try:
+        import os
+        env = os.environ.copy()
+        cache_dir = os.path.abspath(".terraform_cache")
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            env["TF_PLUGIN_CACHE_DIR"] = cache_dir
+        except Exception:
+            pass
+        local_tmp = os.path.abspath(os.path.join("terraform_runs", ".tmp"))
+        try:
+            os.makedirs(local_tmp, exist_ok=True)
+            env["TMP"] = local_tmp
+            env["TEMP"] = local_tmp
+        except Exception:
+            pass
         proc = subprocess.run(
             ["terraform", *args],
             cwd=str(cwd),
+            env=env,
             capture_output=True,
             text=True,
             timeout=_STAGE_TIMEOUT_S,

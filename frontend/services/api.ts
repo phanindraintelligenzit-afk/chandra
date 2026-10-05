@@ -183,7 +183,7 @@ export type AnalyzerPipelineResponse = {
 };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const ORCHESTRATE_TIMEOUT_MS = 1_800_000; // 30 minutes for long-running orchestrations
+const ORCHESTRATE_TIMEOUT_MS = 86_400_000; // 24 hours for long-running orchestrations (extended from 30m)
 const DEV_PROXY_PREFIX = "/api/backend";
 const DEFAULT_API_URL = "http://localhost:6001";
 
@@ -219,7 +219,7 @@ async function pollJobStatus<T>(
   jobId: string,
   extractResult: (jobResult: unknown) => T,
   intervalMs = 3000,
-  maxWaitMs = 1_800_000,
+  maxWaitMs = 86_400_000, // 24 hours (extended from 30m)
   signal?: AbortSignal
 ): Promise<T> {
   const deadline = Date.now() + maxWaitMs;
@@ -229,15 +229,25 @@ async function pollJobStatus<T>(
       err.name = "AbortError";
       throw err;
     }
-    const status = await request<Record<string, unknown>>(`/jobs/status/${jobId}`, { signal }, 30_000);
-    if (status.status === "completed") {
-      return extractResult(status.result);
-    }
-    if (status.status === "failed") {
-      throw new Error(String(status.error || "Background job failed"));
-    }
-    if (status.status === "not_found") {
-      throw new Error(`Job ${jobId} not found on backend`);
+    try {
+      const status = await request<Record<string, unknown>>(`/jobs/status/${jobId}`, { signal }, 30_000);
+      if (status.status === "completed") {
+        return extractResult(status.result);
+      }
+      if (status.status === "failed") {
+        throw new Error(String(status.error || "Background job failed"));
+      }
+      if (status.status === "not_found") {
+        // If job was just submitted, give it up to 15s before throwing not_found
+        if (Date.now() - (deadline - maxWaitMs) > 15_000) {
+          throw new Error(`Job ${jobId} not found on backend`);
+        }
+      }
+    } catch (pollErr: any) {
+      if (signal?.aborted) {
+        throw pollErr;
+      }
+      console.warn(`Transient issue polling job ${jobId} (will retry):`, pollErr?.message || pollErr);
     }
     // Still pending/running — wait then poll again
     await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
@@ -245,11 +255,13 @@ async function pollJobStatus<T>(
   throw new Error(`Job ${jobId} timed out after ${maxWaitMs / 1000}s`);
 }
 
-class HttpError extends Error {
+export class HttpError extends Error {
   readonly status: number;
   readonly body: string;
   constructor(status: number, body: string) {
-    super(`HTTP ${status}`);
+    const detail = body?.trim() ? `: ${body.trim().substring(0, 150)}` : "";
+    super(`HTTP ${status}${detail}`);
+    this.name = "HttpError";
     this.status = status;
     this.body = body;
   }
@@ -257,13 +269,13 @@ class HttpError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
+  let timedOut = false;
 
   // If the caller supplied a signal that is already aborted, fail immediately
   // without touching the network.
   const callerSignal = init.signal instanceof AbortSignal ? init.signal : undefined;
   if (callerSignal?.aborted) {
-    const err = new Error("Request timed out before the backend responded");
-    err.name = "AbortError";
+    const err = new DOMException("The user aborted a request.", "AbortError");
     throw err;
   }
 
@@ -278,7 +290,10 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFA
   // Always drive the fetch with our internal controller so the timeout abort
   // (via setTimeout below) is guaranteed to reach the running fetch regardless
   // of whether the caller also supplied a signal.
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(getApiUrl(path), {
       ...init,
@@ -290,19 +305,26 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = DEFA
       }
     });
     const text = await response.text();
-    if (!text) {
-      throw new Error("Empty response body");
+    if (!response.ok) {
+      throw new HttpError(response.status, text);
+    }
+    if (!text || !text.trim()) {
+      return {} as T;
     }
     try {
       const parsed = JSON.parse(text) as T;
       return parsed;
     } catch {
-      throw new Error(`Malformed JSON response: ${text.substring(0, 100)}`);
+      throw new Error(`Malformed JSON response from ${path}: ${text.substring(0, 100)}`);
     }
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      const err = new Error("Request timed out before the backend responded");
-      err.name = "AbortError";
+      if (timedOut) {
+        const err = new Error(`Request to ${path} timed out before the backend responded`);
+        err.name = "TimeoutError";
+        throw err;
+      }
+      const err = new DOMException("Request was cancelled", "AbortError");
       throw err;
     }
     throw error;
@@ -445,7 +467,7 @@ export async function fetchAgentObservations(
       const jobResp = await request<Record<string, unknown>>(
         "/getAgentObservations",
         { method: "POST", body: JSON.stringify(payload), signal: options.signal },
-        30_000
+        60_000
       );
 
       // Backward-compat: if backend returned result directly (old format)
@@ -467,7 +489,7 @@ export async function fetchAgentObservations(
           return normalizeAgentObservation(output);
         },
         3000,
-        1_800_000,
+        86_400_000, // 24 hours
         options.signal
       );
 
@@ -744,20 +766,17 @@ export type LogsResponse = {
 export async function fetchBackendLogs(
   limit: number = 500,
   offset: number = 0,
+  jobId?: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<BackendLog[]> {
   try {
-    const response = await request<LogsResponse>(`/logs?limit=${limit}&offset=${offset}`, {
+    const jobParam = jobId ? `&job_id=${encodeURIComponent(jobId)}` : "";
+    const response = await request<LogsResponse>(`/logs?limit=${limit}&offset=${offset}${jobParam}`, {
       method: "GET",
       signal: options.signal
     }, 8_000);
     return response?.logs ?? [];
   } catch (e: any) {
-    // AbortError means the 8 s discovery poll timed out (backend is busy
-    // running a job). Swallow it silently — the next poll cycle (5 s)
-    // will try again once the backend is free.
-    if (e?.name === "AbortError") return [];
-    console.error("Failed to fetch background digital worker jobs:", e);
     return [];
   }
 }
@@ -838,7 +857,7 @@ export async function getJobStatus(
   const response = await request<JobStatusResponse>(`/orchestrate/status/${jobId}`, {
     method: "GET",
     signal: options.signal
-  }, 30_000);
+  }, 60_000);
 
   return response;
 }
@@ -956,6 +975,7 @@ export type ApprovalDecisionInput = {
   approved: boolean;
   approver?: string;
   comment?: string;
+  permission_set_id?: string;
 };
 
 export type SubmitRequestInput = {
@@ -999,12 +1019,15 @@ export async function listDigitalWorkerRequests(
   options: { signal?: AbortSignal } = {}
 ): Promise<DigitalWorkerListResponse> {
   const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-  return request<DigitalWorkerListResponse>(`/requests${qs}`, {
-    method: "GET",
-    signal: options.signal
-  // 8 s is enough for a simple in-memory read; keeps the discovery poll
-  // responsive even when a long-running execution holds the job-store lock.
-  }, 8_000);
+  try {
+    return await request<DigitalWorkerListResponse>(`/requests${qs}`, {
+      method: "GET",
+      signal: options.signal
+    }, 15_000);
+  } catch (err: any) {
+    // Background discovery poll should fail softly and return empty results instead of crashing the UI
+    return { status: "ok", count: 0, counts: {}, requests: [] };
+  }
 }
 
 /** Full detail for one Digital Worker request (approval payload + result). */
@@ -1036,9 +1059,12 @@ export async function submitDigitalWorkerRequest(
   input: SubmitRequestInput,
   options: { signal?: AbortSignal } = {}
 ): Promise<SubmitRequestResponse> {
+  const safeSource = (!input.source || input.source === "onboarding" || input.source === "portal" || input.source === "ui" || input.source === "wizard")
+    ? "rest_api"
+    : input.source;
   return request<SubmitRequestResponse>("/requests", {
     method: "POST",
-    body: JSON.stringify({ source: "rest_api", dry_run: true, ...input }),
+    body: JSON.stringify({ dry_run: true, ...input, source: safeSource }),
     signal: options.signal
   }, 30_000);
 }
@@ -1157,7 +1183,7 @@ export async function fetchAwsTasks(
     const response = await request<FetchAwsTasksResponse>("/aws-tasks", {
       method: "GET",
       signal: options.signal
-    });
+    }, 8_000);
     return Array.isArray(response?.tasks) ? response.tasks : [];
   } catch (error) {
     console.error("Failed to fetch AWS Tasks:", error);

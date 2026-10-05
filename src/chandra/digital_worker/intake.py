@@ -258,6 +258,8 @@ def normalize_request(source: RequestSource | str, payload: dict[str, Any]) -> C
     Raises :class:`ValueError` for an unknown source — the only condition
     callers must handle; malformed payload fields degrade to defaults.
     """
+    if isinstance(source, str) and source.lower() in ("onboarding", "portal", "ui", "wizard"):
+        source = RequestSource.REST_API
     try:
         resolved = RequestSource(source) if not isinstance(source, RequestSource) else source
     except ValueError as exc:
