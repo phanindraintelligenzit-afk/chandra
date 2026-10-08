@@ -801,6 +801,8 @@ export type OrchestrateRequest = {
   answers?: string[];
   command_timeout?: number;
   jiraUrl?: string;
+  jira_issue_key?: string;
+  jiraKey?: string;
   max_iterations?: number;
   aws_permissions?: string[];
 };
@@ -974,6 +976,7 @@ export type DigitalWorkerRequestDetail = {
 export type ApprovalDecisionInput = {
   approved: boolean;
   approver?: string;
+  agent_name?: string;
   comment?: string;
   permission_set_id?: string;
 };
@@ -994,31 +997,53 @@ export type SubmitRequestResponse = {
 export type DigitalWorkerSettings = {
   max_iterations: number;
   command_timeout: number;
+  agent_name?: string;
+  onboarded_at?: number | null;
 };
 
 export async function getDigitalWorkerSettings(): Promise<DigitalWorkerSettings> {
   const url = getApiUrl("/settings/digital-worker");
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Failed to fetch digital worker settings");
-  return res.json();
+  try {
+    const res = await fetch(url);
+    if (res.ok) return res.json();
+  } catch {
+    // fallback with trailing slash
+  }
+  const fallbackRes = await fetch(getApiUrl("/settings/digital-worker/"));
+  if (!fallbackRes.ok) throw new Error("Failed to fetch digital worker settings");
+  return fallbackRes.json();
 }
 
 export async function updateDigitalWorkerSettings(settings: DigitalWorkerSettings): Promise<void> {
   const url = getApiUrl("/settings/digital-worker");
-  const res = await fetch(url, {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    if (res.ok) return;
+  } catch {
+    // Retry with trailing slash if dev proxy rewrites enforce trailing slash
+  }
+  const slashRes = await fetch(getApiUrl("/settings/digital-worker/"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
-  if (!res.ok) throw new Error("Failed to update digital worker settings");
+  if (!slashRes.ok) throw new Error("Failed to update digital worker settings");
 }
 
-/** List Digital Worker requests, optionally filtered by status. */
+/** List Digital Worker requests, optionally filtered by status and onboarding timestamp. */
 export async function listDigitalWorkerRequests(
   status?: DigitalWorkerStatus,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; since?: number } = {}
 ): Promise<DigitalWorkerListResponse> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  const params = new URLSearchParams();
+  if (status) params.append("status", status);
+  if (options.since) params.append("since", String(options.since));
+  const qs = params.toString() ? `?${params.toString()}` : "";
   try {
     return await request<DigitalWorkerListResponse>(`/requests${qs}`, {
       method: "GET",
@@ -1066,6 +1091,21 @@ export async function submitDigitalWorkerRequest(
     method: "POST",
     body: JSON.stringify({ dry_run: true, ...input, source: safeSource }),
     signal: options.signal
+  }, 30_000);
+}
+
+/** Directly trigger Jira sync on the backend to ingest recent tickets (e.g. DEV-1033). */
+export async function syncJiraRequests(limit: number = 10): Promise<{
+  status: string;
+  message: string;
+  tickets: Array<{ key: string; summary: string; status: string }>;
+}> {
+  return request<{
+    status: string;
+    message: string;
+    tickets: Array<{ key: string; summary: string; status: string }>;
+  }>(`/requests/sync-jira?limit=${limit}`, {
+    method: "POST"
   }, 30_000);
 }
 

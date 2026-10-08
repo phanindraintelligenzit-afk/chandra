@@ -52,7 +52,11 @@ def test_postgres_down_memory_fallback(monkeypatch):
     def mock_db_connection(*args, **kwargs):
         raise Exception("psycopg.OperationalError: connection refused")
 
-    monkeypatch.setattr("psycopg.connect", mock_db_connection)
+    try:
+        import psycopg
+        monkeypatch.setattr("psycopg.connect", mock_db_connection)
+    except ImportError:
+        pass
     result = {
         "status": "completed",
         "briefing": "Briefing with in-memory state",

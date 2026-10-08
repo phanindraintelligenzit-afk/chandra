@@ -214,7 +214,38 @@ def add_label_to_ticket(issue_key: str, label: str) -> dict:  # type: ignore
         return {"status": "success"}
     except Exception as e:
         print(f"Failed to add label to {issue_key}: {e}")
-        return {"status": "error", "message": str(e)}
+def delete_jira_ticket(issue_key: str) -> dict:  # type: ignore
+    """Delete a Jira ticket completely from Jira upon infrastructure destruction.
+    
+    If hard deletion is disallowed by Jira project permissions, gracefully falls back
+    to updating the status to 'Done'/'Closed' and tagging with 'infrastructure-destroyed'.
+    """
+    JIRA_SERVER = os.getenv("JIRA_SERVER")
+    JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+    JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+    if not issue_key:
+        return {"status": "error", "message": "issue_key is required"}
+
+    clean_key = issue_key.strip()
+    if "/" in clean_key:
+        clean_key = clean_key.rstrip("/").split("/")[-1]
+
+    try:
+        jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
+        issue = jira.issue(clean_key)
+        issue.delete()
+        print(f"Successfully deleted Jira ticket '{clean_key}'")
+        return {"status": "success", "message": f"Ticket {clean_key} deleted successfully"}
+    except Exception as e:
+        print(f"Direct delete failed for {clean_key}: {e}. Applying fallback transition & label...")
+        try:
+            # Fallback for restricted permissions: tag and close ticket
+            add_label_to_ticket(clean_key, "infrastructure-destroyed")
+            transition_jira_ticket(clean_key, "Done")
+            return {"status": "partial", "message": f"Marked {clean_key} as Done/Destroyed (Hard-delete permission restricted: {e})"}
+        except Exception as fe:
+            return {"status": "error", "message": f"Delete and fallback both failed: {fe}"}
 
 # ==========================================
 # HOW TO USE THE FUNCTION:

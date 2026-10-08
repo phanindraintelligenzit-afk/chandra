@@ -4,7 +4,7 @@ from src.chandra.aws.encryption_checks import scan_ebs_encryption, scan_s3_encry
 
 
 def test_s3_encryption_returns_list():
-    with patch("chandra.aws.encryption_checks.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.encryption_checks.boto3.client") as mock_boto3:
         mock_s3 = MagicMock()
         mock_boto3.return_value = mock_s3
         mock_s3.list_buckets.return_value = {"Buckets": []}
@@ -14,7 +14,7 @@ def test_s3_encryption_returns_list():
 
 
 def test_ebs_encryption_detects_disabled():
-    with patch("chandra.aws.encryption_checks.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.encryption_checks.boto3.client") as mock_boto3:
         mock_ec2 = MagicMock()
         mock_boto3.return_value = mock_ec2
         mock_ec2.get_ebs_encryption_by_default.return_value = {"EbsEncryptionByDefault": False}

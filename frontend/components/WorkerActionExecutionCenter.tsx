@@ -1,6 +1,7 @@
 "use client";
 
 import { orchestrateAction, getJobStatus, fetchBackendLogs, listDigitalWorkerRequests, getApiUrl, getDigitalWorkerSettings, updateDigitalWorkerSettings, submitDigitalWorkerApproval, type BackendLog } from "@/services/api";
+import { useOnboarding } from "@/store/OnboardingContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { Play, CheckCircle2, AlertTriangle, Clock, X, Loader2, Download, RotateCcw, Trash2, StopCircle, Octagon, Shield, XCircle, CheckCircle } from "lucide-react";
@@ -107,8 +108,10 @@ export const WorkerActionExecutionCenter = forwardRef<
     onActionDestroyed?: (kraCode: string | undefined, actionId: string) => void;
     onPendingHitlChange?: (pendingRequests: {actionId: string, actionName: string, kraCode: string, questions: string[], status?: string, requiredPermissions?: any[]}[]) => void;
     awsPermissions?: string[];
+    agentOnboardedAt?: number | null;
   }
->(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange, awsPermissions }, ref) {
+>(function WorkerActionExecutionCenter({ onActionApproved, onActionCompleted, onActionDestroyed, onPendingHitlChange, awsPermissions, agentOnboardedAt }, ref) {
+  const { agentName } = useOnboarding();
   const [executingActions, setExecutingActions] = useState<ExecutingAction[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDestroyId, setConfirmDestroyId] = useState<string | null>(null);
@@ -117,6 +120,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const [logSearchQueries, setLogSearchQueries] = useState<Record<string, string>>({});
   const [maxIterations, setMaxIterations] = useState(5);
   const [timeoutMins, setTimeoutMins] = useState(5);
+  const [backendOnboardedAt, setBackendOnboardedAt] = useState<number | null>(null);
   const dismissedJobIdsRef = useRef<Set<string>>(new Set());
   // Per-action refs for the logs scroll container — keyed by action id
   const logsContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -141,6 +145,15 @@ export const WorkerActionExecutionCenter = forwardRef<
     getDigitalWorkerSettings().then(settings => {
       setMaxIterations(settings.max_iterations);
       setTimeoutMins(Math.floor(settings.command_timeout / 60));
+      if (typeof settings.onboarded_at === "number" && settings.onboarded_at > 0) {
+        setBackendOnboardedAt(settings.onboarded_at);
+        try {
+          const stored = window.localStorage.getItem("agentOnboardedAt");
+          if (!stored || Number(stored) < settings.onboarded_at) {
+            window.localStorage.setItem("agentOnboardedAt", String(settings.onboarded_at));
+          }
+        } catch {}
+      }
     }).catch(err => console.error("Failed to load digital worker settings", err));
     
     try {
@@ -178,6 +191,31 @@ export const WorkerActionExecutionCenter = forwardRef<
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  // Read effective onboarding timestamp (from prop, backend settings, or localStorage)
+  const getEffectiveOnboardedAt = () => {
+    if (typeof agentOnboardedAt === "number" && agentOnboardedAt > 0) return agentOnboardedAt;
+    if (typeof backendOnboardedAt === "number" && backendOnboardedAt > 0) return backendOnboardedAt;
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("agentOnboardedAt");
+      if (stored) {
+        const val = Number(stored);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    }
+    return null;
+  };
+
+  // When onboarding timestamp resolves or updates (newly onboarded agent), purge stale actions from previous agents
+  useEffect(() => {
+    const effectiveAt = getEffectiveOnboardedAt();
+    if (effectiveAt) {
+      setExecutingActions(prev => prev.filter(a => {
+        const actionSec = (a.startedAt || 0) / 1000;
+        return actionSec >= effectiveAt;
+      }));
+    }
+  }, [agentOnboardedAt, backendOnboardedAt]);
+
   useImperativeHandle(ref, () => ({
     execute: handleExecuteAction,
     submitActionAnswers: async (actionId, answers, permissionSetId) => {
@@ -201,7 +239,8 @@ export const WorkerActionExecutionCenter = forwardRef<
   useEffect(() => {
     const pollBackgroundJobs = async () => {
       try {
-        const res = await listDigitalWorkerRequests();
+        const effectiveAt = getEffectiveOnboardedAt();
+        const res = await listDigitalWorkerRequests(undefined, { since: effectiveAt ?? undefined });
         if (res && res.requests) {
           // Discover jobs that belong in the Worker Action Execution Center.
           //
@@ -219,6 +258,13 @@ export const WorkerActionExecutionCenter = forwardRef<
           // Auto-execute jobs (no approval needed):
           //   decision_mode="auto_execute" or completed/failed → always include
           const dwJobs = res.requests.filter(r => {
+            // Per-agent isolation: exclude tickets/jobs created before this agent was onboarded
+            if (effectiveAt) {
+              const jobTime = r.submitted_at || r.started_at;
+              if (!jobTime || jobTime < effectiveAt) {
+                return false;
+              }
+            }
             // Must be in a trackable state
             if (r.requires_approval) return false;
             if (r.status !== "running" && r.status !== "completed" && r.status !== "failed") return false;
@@ -281,7 +327,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                   status: job.status === "running" ? "running" : (job.status === "completed" ? "completed" : (job.status === "skipped" ? "skipped" : "failed")),
                   jobId: job.job_id,
                   threadId: job.job_id,
-                  startedAt: job.started_at ? job.started_at * 1000 : Date.now(),
+                  startedAt: job.started_at ? job.started_at * 1000 : (job.submitted_at ? job.submitted_at * 1000 : Date.now()),
                   logs: [],
                   progress: job.progress || 0,
                   jobMessage: job.message,
@@ -477,6 +523,19 @@ export const WorkerActionExecutionCenter = forwardRef<
             console.warn("Failed to fetch final logs", e);
           }
 
+          // Sync all accumulated actionLogs with backend disk storage
+          const effectiveSyncId = (jobId || actionId || "").replace(/^dw-/, "");
+          if (effectiveSyncId && actionLogs.length > 0) {
+            try {
+              const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+              fetch(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveSyncId)}/sync`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ logs: actionLogs }),
+              }).catch(() => {});
+            } catch (_) {}
+          }
+
           const result = jobStatus.result as any;
           const statusCode: number = result?.statusCode ?? 0;
 
@@ -612,7 +671,8 @@ export const WorkerActionExecutionCenter = forwardRef<
       await submitDigitalWorkerApproval(action.originalJobId || action.jobId, {
         approved,
         comment,
-        approver: "operator", // could get from user context if available
+        approver: agentName || "operator",
+        agent_name: agentName || undefined,
       });
       // Polling will pick up the running state and new logs
     } catch (err) {
@@ -766,6 +826,8 @@ export const WorkerActionExecutionCenter = forwardRef<
           action_type: isAwsTask ? "AWS_TASK" : "KRA_REMEDIATION"
         },
         jiraUrl: executing.jiraUrl,
+        jira_issue_key: executing.jiraKey,
+        jiraKey: executing.jiraKey,
         command_timeout: timeoutMins * 60,
         max_iterations: maxIterations,
         aws_permissions: awsPermissions || []
@@ -888,7 +950,11 @@ export const WorkerActionExecutionCenter = forwardRef<
             </div>
             <button
               onClick={() => {
-                updateDigitalWorkerSettings({ max_iterations: maxIterations, command_timeout: timeoutMins * 60 })
+                updateDigitalWorkerSettings({
+                  max_iterations: maxIterations,
+                  command_timeout: timeoutMins * 60,
+                  agent_name: agentName || undefined
+                })
                   .then(() => alert("Default settings saved successfully! Webhooks will now use these settings."))
                   .catch(err => alert("Failed to save settings: " + err.message));
               }}
@@ -1011,12 +1077,28 @@ export const WorkerActionExecutionCenter = forwardRef<
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.status === "completed" && (
                               <button 
-                                onClick={(e) => {
+                                onClick={async (e) => {
                                   e.stopPropagation();
                                   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                  const rawId = action.jobId || action.id || "";
+                                  const effectiveId = rawId.replace(/^dw-/, "");
+                                  
+                                  // Best-effort: sync frontend logs to backend so artifact zip contains full live logs
+                                  if (action.logs && action.logs.length > 0 && effectiveId) {
+                                    try {
+                                      await fetch(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}/sync`, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ logs: action.logs }),
+                                      });
+                                    } catch (_) {}
+                                  }
+
                                   const params = new URLSearchParams();
                                   if (action.sandboxPath) params.set("path", action.sandboxPath);
-                                  if (action.jobId) params.set("job_id", action.jobId);
+                                  if (effectiveId) params.set("job_id", effectiveId);
+                                  if (action.jiraUrl || action.jiraKey) params.set("jiraUrl", action.jiraUrl || action.jiraKey || '');
+                                  params.set("t", Date.now().toString());
                                   window.open(`${apiUrl}/download_sandbox?${params.toString()}`, '_blank');
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
@@ -1026,7 +1108,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                               </button>
                             )}
 
-                            {action.sandboxPath && action.status === "completed" && (
+                            {(action.sandboxPath || action.jobId) && action.status === "completed" && (
                               <>
                               {confirmDestroyId === action.id ? (
                                 <div className="flex items-center gap-2 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[0.65rem] tracking-[0.1em] text-red-400">
@@ -1044,7 +1126,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                                       startLogsPolling();
                                       const logUpdater = setInterval(() => {
                                         const allLogs = cachedLogsRef.current;
-                                        const jobIdLower = action.jobId.toLowerCase();
+                                        const jobIdLower = (action.jobId || action.id || '').replace(/^dw-/, '').toLowerCase();
                                         const actionLogs = allLogs.filter(log => log.job_id && log.job_id.toLowerCase() === jobIdLower);
                                         if (actionLogs.length > 0) {
                                             setExecutingActions(current => 
@@ -1055,10 +1137,15 @@ export const WorkerActionExecutionCenter = forwardRef<
 
                                       try {
                                         const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
+                                        const effectiveJobId = action.jobId || (action.id ? action.id.replace(/^dw-/, '') : '');
                                         const response = await fetch(`${apiUrl}/destroy_sandbox`, {
                                           method: "POST",
                                           headers: { "Content-Type": "application/json" },
-                                          body: JSON.stringify({ path: action.sandboxPath!, job_id: action.jobId, jiraUrl: action.jiraUrl })
+                                          body: JSON.stringify({
+                                            path: action.sandboxPath || '',
+                                            job_id: effectiveJobId,
+                                            jiraUrl: action.jiraUrl || action.jiraKey
+                                          })
                                         });
                                         if (!response.ok) {
                                           const errData = await response.json().catch(() => ({}));
@@ -1068,11 +1155,14 @@ export const WorkerActionExecutionCenter = forwardRef<
                                           );
                                           return;
                                         }
-                                        // Silently update state to destroyed without popup
+                                        // Update state to destroyed and dismiss from card list cleanly
                                         setExecutingActions(current => 
                                           current.map(a => a.id === action.id ? { ...a, status: "destroyed" } : a)
                                         );
                                         if (onActionDestroyed) onActionDestroyed(action.kraCode, action.id);
+                                        setTimeout(() => {
+                                          removeAction(action.id);
+                                        }, 1200);
                                       } catch (error) {
                                         console.error(error);
                                         alert("Error occurred while destroying infrastructure.");
@@ -1129,11 +1219,24 @@ export const WorkerActionExecutionCenter = forwardRef<
                             
                             {(action.jobId || action.id) && (action.status === "completed" || action.status === "failed" || action.status === "exhausted" || action.status === "stopped") && (
                               <button 
-                                onClick={(e) => {
+                                onClick={async (e) => {
                                   e.stopPropagation();
-                                  const targetId = action.jobId || action.id;
+                                  const rawId = action.jobId || action.id || "";
+                                  const effectiveId = rawId.replace(/^dw-/, "");
                                   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
-                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(targetId)}`, '_blank');
+
+                                  // Best-effort: sync frontend logs to backend before download
+                                  if (action.logs && action.logs.length > 0 && effectiveId) {
+                                    try {
+                                      await fetch(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}/sync`, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ logs: action.logs }),
+                                      });
+                                    } catch (_) {}
+                                  }
+
+                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}?t=${Date.now()}`, '_blank');
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >

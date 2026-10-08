@@ -281,7 +281,7 @@ class Gate2ReviewPayload(BaseModel):
     planned_operation: str = ""
     required_permissions: list[dict[str, Any]] = Field(default_factory=list)
     permission_set_id: str | None = None
-    permission_set_version: str | None = None
+    permission_set_version: str | int | None = None
     gate_1_result: dict[str, Any] = Field(default_factory=dict)
     terraform_validation: dict[str, Any] = Field(default_factory=dict)
     terraform_plan: dict[str, Any] = Field(default_factory=dict)
@@ -290,6 +290,13 @@ class Gate2ReviewPayload(BaseModel):
     destroy_count: int = 0
     risk_level: str = ""
     job_id: str | None = None
+
+    @field_validator("permission_set_version", mode="before")
+    @classmethod
+    def _coerce_version(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        return str(v)
 
 
 class Gate2Decision(BaseModel):

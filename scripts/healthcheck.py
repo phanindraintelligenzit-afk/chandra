@@ -18,7 +18,7 @@ HEALTH_URL = "http://127.0.0.1:6001/health"
 
 def main() -> int:
     try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=5) as response:
+        with urllib.request.urlopen(HEALTH_URL, timeout=10) as response:
             if response.status == 200:
                 print("healthy")
                 return 0

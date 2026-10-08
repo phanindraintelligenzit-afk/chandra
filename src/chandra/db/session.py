@@ -20,8 +20,10 @@ def get_engine() -> Engine:
         _engine = create_engine(
             settings.postgres_url,
             pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=5,
+            pool_recycle=1800,
+            pool_size=20,
+            max_overflow=20,
+            pool_timeout=30,
             future=True,
         )
     return _engine

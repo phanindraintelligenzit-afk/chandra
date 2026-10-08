@@ -365,7 +365,7 @@ export default function OnboardingWizard() {
         setDeployStage(6);
         await animateProgressTo(100, controller.signal);
         await wait(420);
-        completeOnboarding();
+        completeOnboarding(agentName || normalizedName || localName);
 
         // Fire cost metrics fetch in background (don't await) so it loads first
         const costController = new AbortController();

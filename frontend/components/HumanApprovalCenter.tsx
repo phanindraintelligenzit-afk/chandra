@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getDigitalWorkerRequest,
+  getDigitalWorkerSettings,
   listDigitalWorkerRequests,
   submitDigitalWorkerApproval,
   type ApprovalRequestDetail,
@@ -26,6 +27,7 @@ import {
   type DigitalWorkerStatus
 } from "../services/api";
 import { Loader2, Search, ShieldCheck } from "lucide-react";
+import { useOnboarding } from "@/store/OnboardingContext";
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -409,6 +411,7 @@ export function HumanApprovalCenter({
   agentOnboardedAt?: number;
   onRequestApprove?: (req: UnifiedRequest) => void;
 }) {
+  const { agentName } = useOnboarding();
   const [requests, setRequests] = useState<DigitalWorkerRequestSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState<DigitalWorkerStatus | "all">("all");
@@ -418,8 +421,30 @@ export function HumanApprovalCenter({
   const [sourceFilter, setSourceFilter] = useState("all");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [backendOnboardedAt, setBackendOnboardedAt] = useState<number | null>(null);
   const filterRef = useRef(filter);
   filterRef.current = filter;
+
+  useEffect(() => {
+    getDigitalWorkerSettings().then(settings => {
+      if (typeof settings.onboarded_at === "number" && settings.onboarded_at > 0) {
+        setBackendOnboardedAt(settings.onboarded_at);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const effectiveOnboardedAt = useMemo(() => {
+    if (typeof agentOnboardedAt === "number" && agentOnboardedAt > 0) return agentOnboardedAt;
+    if (typeof backendOnboardedAt === "number" && backendOnboardedAt > 0) return backendOnboardedAt;
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("agentOnboardedAt");
+      if (stored) {
+        const val = Number(stored);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    }
+    return null;
+  }, [agentOnboardedAt, backendOnboardedAt]);
 
   const [kraApprovals, setKraApprovals] = useState<any[]>([]);
   const localDecisions = useRef<Record<string, string>>({});
@@ -438,7 +463,7 @@ export function HumanApprovalCenter({
   const load = useCallback(async () => {
     try {
       const status = filterRef.current === "all" ? undefined : filterRef.current;
-      const data = await listDigitalWorkerRequests(status);
+      const data = await listDigitalWorkerRequests(status, { since: effectiveOnboardedAt ?? undefined });
       setRequests(data.requests);
       setCounts(data.counts);
       setError(null);
@@ -449,7 +474,7 @@ export function HumanApprovalCenter({
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [effectiveOnboardedAt]);
 
   useEffect(() => {
     load();
@@ -480,9 +505,11 @@ export function HumanApprovalCenter({
           }, true);
         }
       } else {
+        const humanApprover = (typeof window !== "undefined" && window.localStorage?.getItem("humanApproverName")) || "Security Lead";
         await submitDigitalWorkerApproval(req.job_id, {
           approved,
-          approver: "console",
+          approver: humanApprover,
+          agent_name: agentName || (typeof window !== "undefined" && window.localStorage?.getItem("agentName")) || undefined,
           permission_set_id: permissionSetId
         });
         await load();
@@ -517,8 +544,11 @@ export function HumanApprovalCenter({
     }));
 
     const filteredJira = requests.filter(req => {
-      // Per-agent isolation: hide tickets submitted before this agent was onboarded
-      if (agentOnboardedAt && req.submitted_at && req.submitted_at < agentOnboardedAt) return false;
+      // Per-agent isolation: newly onboarded agents should ONLY see tickets submitted after onboarding
+      const ticketTime = req.submitted_at || req.started_at;
+      if (effectiveOnboardedAt && (!ticketTime || ticketTime < effectiveOnboardedAt)) {
+        return false;
+      }
       if (!req.title) return true;
       if ((req.status as string) === "dry_run") return false;
       if (req.title.toLowerCase().startsWith("task_")) return false;
@@ -583,7 +613,7 @@ export function HumanApprovalCenter({
     }
 
     return matched.sort((a, b) => (b.submitted_at || 0) - (a.submitted_at || 0));
-  }, [kraApprovals, requests, kraActionNames, searchQuery, kraFilter, severityFilter, sourceFilter]);
+  }, [kraApprovals, requests, kraActionNames, searchQuery, kraFilter, severityFilter, sourceFilter, effectiveOnboardedAt]);
 
   const availableKras = useMemo(() => {
     const set = new Set<string>();

@@ -4,7 +4,7 @@ from src.chandra.aws.cloudtrail_audit import scan_cloudtrail
 
 
 def test_cloudtrail_returns_list():
-    with patch("chandra.aws.cloudtrail_audit.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.cloudtrail_audit.boto3.client") as mock_boto3:
         mock_cloudtrail = MagicMock()
         mock_boto3.return_value = mock_cloudtrail
         mock_cloudtrail.describe_trails.return_value = {"trailList": []}
@@ -14,7 +14,7 @@ def test_cloudtrail_returns_list():
 
 
 def test_cloudtrail_detects_disabled_logging():
-    with patch("chandra.aws.cloudtrail_audit.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.cloudtrail_audit.boto3.client") as mock_boto3:
         mock_cloudtrail = MagicMock()
         mock_boto3.return_value = mock_cloudtrail
         mock_cloudtrail.describe_trails.return_value = {

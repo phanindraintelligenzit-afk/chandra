@@ -66,6 +66,51 @@ class AnalyzerPipelineResponse(BaseModel):
     output: Optional[List[ActionResult]] = None
 
 
+class _SafeStructuredRunnable:
+    """Wraps structured LLM to handle tool_choice limitations and parse raw JSON fallback."""
+    def __init__(self, raw_llm: Any, structured_llm: Any, schema: Any, logger: Any):
+        self.raw_llm = raw_llm
+        self.structured_llm = structured_llm
+        self.schema = schema
+        self.logger = logger
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        try:
+            res = self.structured_llm.invoke(input, config=config, **kwargs)
+            if res is not None:
+                return res
+            self.logger.warning("Structured LLM returned None; attempting raw parse fallback")
+        except Exception as exc:
+            self.logger.warning("Structured LLM invocation failed (%s); attempting raw parse fallback", exc)
+
+        try:
+            resp = self.raw_llm.invoke(input, config=config, **kwargs)
+            if hasattr(resp, "tool_calls") and resp.tool_calls:
+                for tc in resp.tool_calls:
+                    args = tc.get("args")
+                    if args and isinstance(args, dict):
+                        return self.schema.model_validate(args)
+
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            if isinstance(content, list):
+                text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and "text" in b]
+                content = " ".join(text_parts)
+
+            import json, re
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", str(content), re.DOTALL)
+            raw_json = m.group(1) if m else None
+            if not raw_json:
+                m2 = re.search(r"(\{.*\})", str(content), re.DOTALL)
+                raw_json = m2.group(1) if m2 else None
+
+            if raw_json:
+                return self.schema.model_validate(json.loads(raw_json))
+        except Exception as fallback_exc:
+            self.logger.warning("Raw parse fallback failed: %s", fallback_exc)
+
+        raise ValueError(f"Failed to extract structured {getattr(self.schema, '__name__', 'model')} from LLM response")
+
+
 # ── Agent ──────────────────────────────────────────────────────────
 
 class AnalyzerAgent:
@@ -96,9 +141,19 @@ class AnalyzerAgent:
         openai_family = {"openai", "openai_compatible", "vllm", "ollama"}
         default_method = "json_schema" if provider in openai_family else "function_calling"
         method = (os.getenv("CHANDRA_STRUCTURED_OUTPUT_METHOD") or default_method).strip()
+
+        if hasattr(self.Llm, "supports_tool_choice_values"):
+            try:
+                self.Llm.supports_tool_choice_values = ("auto",)
+            except Exception:
+                pass
+
         if method == "function_calling":
-            return self.Llm.with_structured_output(schema)
-        return self.Llm.with_structured_output(schema, method=method)
+            structured = self.Llm.with_structured_output(schema)
+        else:
+            structured = self.Llm.with_structured_output(schema, method=method)
+
+        return _SafeStructuredRunnable(self.Llm, structured, schema, logger)
 
     def _analyze_node(self, state: AgentState) -> dict:
         actions = state["actionsDict"].get("actions", [])

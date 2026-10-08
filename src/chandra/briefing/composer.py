@@ -364,9 +364,29 @@ def _deterministic_permissions(request: dict[str, Any], plan: dict[str, Any]) ->
             {"action": "iam:CreateRole", "resource": "*", "reason": "Create IAM role"},
             {"action": "iam:AttachRolePolicy", "resource": "*", "reason": "Attach policy"},
         ])
+    if "vpc" in combined or "network" in combined or "subnet" in combined or "cidr" in combined:
+        perms.extend([
+            {"action": "ec2:CreateVpc", "resource": "*", "reason": "Create VPC"},
+            {"action": "ec2:CreateSubnet", "resource": "*", "reason": "Create Subnet"},
+            {"action": "ec2:CreateRouteTable", "resource": "*", "reason": "Create Route Table"},
+            {"action": "ec2:CreateInternetGateway", "resource": "*", "reason": "Create Internet Gateway"},
+            {"action": "ec2:AttachInternetGateway", "resource": "*", "reason": "Attach Internet Gateway"},
+            {"action": "ec2:CreateRoute", "resource": "*", "reason": "Create Route"},
+            {"action": "ec2:AssociateRouteTable", "resource": "*", "reason": "Associate Route Table"},
+            {"action": "ec2:CreateTags", "resource": "*", "reason": "Tag VPC resources"},
+            {"action": "ec2:DescribeVpcs", "resource": "*", "reason": "Verify VPC state"},
+            {"action": "ec2:DescribeSubnets", "resource": "*", "reason": "Verify Subnets"},
+            {"action": "ec2:DescribeRouteTables", "resource": "*", "reason": "Verify Route Tables"},
+            {"action": "ec2:DescribeInternetGateways", "resource": "*", "reason": "Verify Gateways"},
+        ])
     if "lambda" in combined or "function" in combined:
         perms.extend([
             {"action": "lambda:CreateFunction", "resource": "*", "reason": "Create Lambda function"},
+            {"action": "lambda:GetFunction", "resource": "*", "reason": "Verify Lambda function"},
+            {"action": "iam:PassRole", "resource": "*", "reason": "Pass IAM execution role"},
+            {"action": "iam:CreateRole", "resource": "*", "reason": "Create IAM execution role"},
+            {"action": "iam:AttachRolePolicy", "resource": "*", "reason": "Attach basic execution policy"},
+            {"action": "logs:CreateLogGroup", "resource": "*", "reason": "CloudWatch log group"},
         ])
     if "dynamodb" in combined or "table" in combined:
         perms.extend([

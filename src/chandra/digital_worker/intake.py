@@ -58,18 +58,59 @@ def _text(value: Any, default: str = "") -> str:
     return str(value)
 
 
+def _extract_jira_description(value: Any) -> str:
+    """Extract readable text from a Jira description, handling Atlassian Document Format (ADF) dictionaries."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        parts: list[str] = []
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                if node.get("type") == "text" and "text" in node:
+                    parts.append(str(node["text"]))
+                if "content" in node and isinstance(node["content"], list):
+                    for child in node["content"]:
+                        _walk(child)
+                if node.get("type") in ["paragraph", "heading", "listItem"]:
+                    parts.append("\n")
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(value)
+        res = "".join(parts).strip()
+        if res:
+            return res
+        return str(value)
+    return str(value)
+
+
 def _from_jira(payload: dict[str, Any]) -> CloudRequest:
     """Jira webhook (`jira:issue_created` / REST issue shape)."""
-    issue = payload.get("issue", payload)
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else payload
     fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
     priority_field = fields.get("priority") or {}
     reporter = fields.get("reporter") or {}
     labels = fields.get("labels") or []
+
+    key = issue.get("key") if isinstance(issue, dict) else None
+    if not key and isinstance(payload, dict):
+        key = payload.get("key") or payload.get("issue_key")
+
+    raw_desc = fields.get("description")
+    description = _extract_jira_description(raw_desc)
+    summary = _text(fields.get("summary"), default="Jira request")
+    if not description:
+        description = summary
+
     return CloudRequest(
         source=RequestSource.JIRA,
-        external_id=_text(issue.get("key")) or None if isinstance(issue, dict) else None,
-        title=_text(fields.get("summary"), default="Jira request"),
-        description=_text(fields.get("description")),
+        external_id=_text(key) or None,
+        title=summary,
+        description=description,
         priority=parse_priority(
             priority_field.get("name") if isinstance(priority_field, dict) else priority_field
         ),

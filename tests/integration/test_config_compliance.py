@@ -4,7 +4,7 @@ from src.chandra.aws.config_compliance import scan_config_compliance
 
 
 def test_config_compliance_returns_list():
-    with patch("chandra.aws.config_compliance.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.config_compliance.boto3.client") as mock_boto3:
         mock_config = MagicMock()
         mock_boto3.return_value = mock_config
         mock_config.describe_compliance_by_config_rule.return_value = {
@@ -16,7 +16,7 @@ def test_config_compliance_returns_list():
 
 
 def test_config_compliance_detects_non_compliant():
-    with patch("chandra.aws.config_compliance.boto3.client") as mock_boto3:
+    with patch("src.chandra.aws.config_compliance.boto3.client") as mock_boto3:
         mock_config = MagicMock()
         mock_boto3.return_value = mock_config
         mock_config.describe_compliance_by_config_rule.return_value = {

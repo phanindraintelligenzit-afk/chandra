@@ -10,7 +10,8 @@ missing configuration or an unreachable Jira yields a ``skipped`` /
 from __future__ import annotations
 
 import os
-from typing import Any
+import time
+from typing import Any, Optional
 
 from enum import Enum
 from jira import JIRA
@@ -22,6 +23,8 @@ from src.chandra.digital_worker.schemas import (
 from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
+
+_posted_failure_jobs: set[str] = set()
 
 
 class ChandraEvent(str, Enum):
@@ -40,21 +43,11 @@ class ChandraEvent(str, Enum):
 
 
 def get_active_agent_name() -> str:
-    """Retrieve the current active onboarded digital worker agent name."""
-    env_name = os.environ.get("CHANDRA_AGENT_NAME") or os.environ.get("ACTIVE_AGENT_NAME")
-    if env_name and env_name.strip():
-        return env_name.strip().upper()
-
-    for p in ["logs/active_agent_name.txt", "active_agent_name.txt"]:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    txt = f.read().strip()
-                    if txt:
-                        return txt.upper()
-            except Exception:
-                pass
-
+    """Retrieve the current active onboarded digital worker agent name.
+    
+    The configured digital worker name (from digital_worker_config.json or logs/active_agent_name.txt)
+    is the canonical source of truth and must NEVER be overwritten by human approver names.
+    """
     config_paths = [
         "digital_worker_config.json",
         os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "digital_worker_config.json")
@@ -66,31 +59,93 @@ def get_active_agent_name() -> str:
                 with open(cp, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     name = data.get("agent_name") or data.get("agentName")
-                    if name and str(name).strip():
-                        return str(name).strip().upper()
+                    if name and str(name).strip() and str(name).strip().lower() not in ("console", "operator", "system", "human approver", "unknown", "dfte", "sugar baby"):
+                        clean_val = str(name).strip().upper()
+                        os.environ["CHANDRA_AGENT_NAME"] = clean_val
+                        return clean_val
             except Exception:
                 pass
 
-    return "DFTE"
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    for p in [
+        "logs/active_agent_name.txt",
+        os.path.join(root_dir, "logs", "active_agent_name.txt"),
+        "active_agent_name.txt",
+        os.path.join(root_dir, "active_agent_name.txt")
+    ]:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    txt = f.read().strip()
+                    if txt and txt.lower() not in ("console", "operator", "system", "human approver", "unknown", "dfte", "sugar baby"):
+                        clean_val = txt.upper()
+                        os.environ["CHANDRA_AGENT_NAME"] = clean_val
+                        return clean_val
+            except Exception:
+                pass
+
+    env_name = os.environ.get("CHANDRA_AGENT_NAME") or os.environ.get("ACTIVE_AGENT_NAME")
+    if env_name and env_name.strip() and env_name.strip().lower() not in ("console", "operator", "system", "human approver", "unknown", "dfte", "sugar baby"):
+        return env_name.strip().upper()
+
+    return "CHANDRA DIGITAL WORKER"
+
+
+def get_active_agent_onboarded_at() -> Optional[float]:
+    """Return the timestamp when the current active agent was onboarded."""
+    import json
+    config_paths = [
+        "digital_worker_config.json",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "digital_worker_config.json")
+    ]
+    for cp in config_paths:
+        if os.path.exists(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    ts = data.get("onboarded_at")
+                    if ts and isinstance(ts, (int, float)) and ts > 0:
+                        return float(ts)
+            except Exception:
+                pass
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    for p in [
+        "logs/active_agent_name.txt",
+        os.path.join(root_dir, "logs", "active_agent_name.txt"),
+        "active_agent_name.txt",
+        os.path.join(root_dir, "active_agent_name.txt")
+    ]:
+        if os.path.exists(p):
+            try:
+                return os.path.getmtime(p)
+            except Exception:
+                pass
+    return None
 
 
 def set_active_agent_name(name: str) -> None:
-    """Persist the active onboarded agent name."""
-    if not name or name.strip().lower() in ("console", "operator", "system", "human approver", "unknown"):
+    """Persist the active onboarded agent name and update onboarding timestamp."""
+    if not name or name.strip().lower() in ("console", "operator", "system", "human approver", "unknown", "dfte", "sugar baby"):
         return
     clean_name = name.strip()
     os.environ["CHANDRA_AGENT_NAME"] = clean_name
-    try:
-        os.makedirs("logs", exist_ok=True)
-        with open("logs/active_agent_name.txt", "w", encoding="utf-8") as f:
-            f.write(clean_name)
-    except Exception:
-        pass
+    now_ts = time.time()
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    for p in [
+        "logs/active_agent_name.txt",
+        os.path.join(root_dir, "logs", "active_agent_name.txt")
+    ]:
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(clean_name)
+        except Exception:
+            pass
     try:
         import json
         config_paths = [
             "digital_worker_config.json",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "digital_worker_config.json")
+            os.path.join(root_dir, "digital_worker_config.json")
         ]
         for cp in config_paths:
             data = {}
@@ -100,6 +155,9 @@ def set_active_agent_name(name: str) -> None:
                         data = json.load(f)
                 except Exception:
                     data = {}
+            # If agent name is changing, refresh onboarded_at
+            if data.get("agent_name", "").strip().upper() != clean_name.upper() or not data.get("onboarded_at"):
+                data["onboarded_at"] = now_ts
             data["agent_name"] = clean_name
             with open(cp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
@@ -113,12 +171,19 @@ _MAX_SIMILAR = 5
 
 def _jira_client() -> Any | None:
     """Return an authenticated JIRA client, or ``None`` when unconfigured."""
-    server = os.getenv("JIRA_SERVER")
-    email = os.getenv("JIRA_EMAIL")
-    token = os.getenv("JIRA_API_TOKEN")
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+    server = (os.getenv("JIRA_SERVER") or "").strip().rstrip("/")
+    email = (os.getenv("JIRA_EMAIL") or "").strip()
+    token = (os.getenv("JIRA_API_TOKEN") or "").strip()
     if not (server and email and token):
+        logger.warning("Jira client unconfigured: missing JIRA_SERVER, JIRA_EMAIL, or JIRA_API_TOKEN")
         return None
-    return JIRA(server=server, basic_auth=(email, token))
+    try:
+        return JIRA(server=server, basic_auth=(email, token))
+    except Exception as exc:
+        logger.error("Failed to initialize JIRA client: %s", exc)
+        return None
 
 
 def search_similar_issues(title: str) -> list[dict[str, Any]]:
@@ -176,15 +241,19 @@ def update_request_ticket(
         if (str(req_source).lower() == "jira" or str(request.source).lower() == "jira") and request.external_id:
             issue_key = request.external_id
             
-            # Safely add first comment (Governed Execution Completed)
+            # Safely add first comment (Governed Execution Completed or Failed)
             try:
                 client.add_comment(issue_key, comment)
             except Exception as e:
                 logger.warning("tracker.jira_comment_failed", error=str(e))
                 # Fallback to a shorter comment if the logs were too long
-                client.add_comment(issue_key, f"{get_active_agent_name()} Governed Workflow completed.\n(Terminal logs omitted due to Jira length limits. Check dashboard for full logs).")
+                try:
+                    status_word = "completed" if resolved else "failed"
+                    client.add_comment(issue_key, f"{get_active_agent_name()} Governed Workflow {status_word}.\n(Terminal logs omitted due to Jira length limits. Check dashboard for full logs).")
+                except Exception as err2:
+                    logger.debug("tracker.jira_fallback_comment_failed", error=str(err2))
 
-            # Safely add second comment (Outcome Details with resource outputs and Validation passed: True)
+            # Safely add second comment (Outcome Details with resource outputs and Validation passed)
             if second_comment:
                 import time
                 time.sleep(1.5)  # brief pause so Jira timestamps guarantee correct order
@@ -200,6 +269,12 @@ def update_request_ticket(
                     client.add_worklog(issue_key, timeSpent="15m", comment=f"{get_active_agent_name()} automation completed.")
                 except Exception as e:
                     logger.warning("tracker.jira_transition_failed", error=str(e))
+            else:
+                _posted_failure_jobs.add(f"{issue_key}:{request.request_id}:FAILURE")
+                try:
+                    _transition(client, issue_key, "Failed")
+                except Exception:
+                    pass
                     
             logger.info("tracker.jira_updated", issue_key=issue_key, resolved=resolved)
             return TrackerUpdate(issue_key=issue_key, status="updated", detail="comment added")
@@ -407,6 +482,61 @@ def post_jira_completion(
         return False
 
 
+_posted_failure_jobs: set[str] = set()
+
+
+def post_jira_failure(
+    issue_key_or_url: str,
+    error: str = "",
+    job_id: str = "",
+    action: dict | None = None,
+) -> bool:
+    """Post an execution failure comment to Jira so operators/users see the failure immediately in Jira."""
+    import re
+    if not issue_key_or_url:
+        return False
+    match = re.search(r"([A-Z]+-\d+)", str(issue_key_or_url), re.IGNORECASE)
+    if not match:
+        return False
+    issue_key = match.group(1).upper()
+
+    dedup_key = f"{issue_key}:{job_id or 'unknown'}:FAILURE"
+    if dedup_key in _posted_failure_jobs:
+        logger.debug("post_jira_failure: already posted failure comment for %s", dedup_key)
+        return True
+
+    client = _jira_client()
+    if not client:
+        logger.warning("post_jira_failure: Jira client not configured")
+        return False
+
+    agent_name_upper = str(get_active_agent_name()).strip().upper()
+    clean_err = str(error).strip()
+    if len(clean_err) > 800:
+        clean_err = clean_err[:800] + "... (see execution dashboard for full logs)"
+
+    comment = (
+        f"{agent_name_upper} GOVERNED EXECUTION FAILED\n\n"
+        f"*Status:* FAILED\n"
+        f"*Job ID:* {job_id}\n"
+        f"*Error:* {clean_err}\n\n"
+        f"Validation passed: False.\n"
+        f"The automated deployment encountered an error. Please inspect the execution logs or retry from the dashboard."
+    )
+    try:
+        client.add_comment(issue_key, comment)
+        _posted_failure_jobs.add(dedup_key)
+        logger.info("post_jira_failure: posted failure comment to %s", issue_key)
+        try:
+            _transition(client, issue_key, "Failed")
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logger.warning("post_jira_failure error for %s: %s", issue_key, exc)
+        return False
+
+
 def _transition(client: Any, issue_key: str, status_name: str) -> None:
     """Move an issue to ``status_name`` when such a transition exists, with multi-hop fallback."""
     available = client.transitions(issue_key)
@@ -455,9 +585,7 @@ class JiraActivityRecorder:
         **kwargs: Any
     ) -> None:
         """Idempotently record a ChandraEvent into Jira Comments and History."""
-        if kwargs.get("approver"):
-            set_active_agent_name(kwargs["approver"])
-        if kwargs.get("agent_name"):
+        if kwargs.get("agent_name") and str(kwargs["agent_name"]).strip().lower() not in ("console", "operator", "system", "human approver", "unknown"):
             set_active_agent_name(kwargs["agent_name"])
 
         event_id = f"{issue_key}:{job_id}:{event_type.value}"
@@ -470,17 +598,27 @@ class JiraActivityRecorder:
         try:
             client = _jira_client()
             if not client:
+                cls._recorded_events.discard(event_id)
+                logger.warning("tracker.jira_client_unavailable", event_id=event_id)
                 return
                 
             comment_text = cls._format_comment(event_type, job_id, **kwargs)
             if comment_text:
-                client.add_comment(issue_key, comment_text)
+                try:
+                    client.add_comment(issue_key, comment_text)
+                    logger.info("tracker.jira_comment_added: event=%s, issue=%s", event_type.value, issue_key)
+                except Exception as c_err:
+                    logger.warning("tracker.jira_comment_failed for %s: %s", issue_key, c_err)
                 
             status_target = cls._get_transition_for_event(event_type)
             if status_target:
-                _transition(client, issue_key, status_target)
+                try:
+                    _transition(client, issue_key, status_target)
+                except Exception as t_err:
+                    logger.warning("tracker.jira_transition_failed for %s: %s", issue_key, t_err)
                 
         except Exception as exc:
+            cls._recorded_events.discard(event_id)
             logger.error("tracker.record_event_failed", event_id=event_id, error=str(exc))
 
     @classmethod
@@ -501,11 +639,13 @@ class JiraActivityRecorder:
         try:
             client = _jira_client()
             if not client:
+                cls._recorded_events.discard(event_id)
                 return
             
             client.add_worklog(issue_key, timeSpentSeconds=duration_seconds, comment=summary)
             logger.info("tracker.jira_worklog_added", issue=issue_key, duration=duration_seconds)
         except Exception as exc:
+            cls._recorded_events.discard(event_id)
             logger.error("tracker.record_worklog_failed", issue=issue_key, error=str(exc))
 
     @staticmethod
@@ -603,3 +743,35 @@ class JiraActivityRecorder:
             ChandraEvent.EXECUTION_FAILED: "Failed"
         }
         return mapping.get(event)
+
+
+def delete_jira_issue(issue_key_or_url: str) -> bool:
+    """Delete a Jira ticket completely from Jira upon infrastructure destruction.
+    
+    If hard deletion is disallowed by Jira project permissions, gracefully falls back
+    to updating the status to 'Done'/'Closed' and tagging with 'infrastructure-destroyed'.
+    """
+    if not issue_key_or_url:
+        return False
+    key = str(issue_key_or_url).strip()
+    if "/" in key:
+        key = key.rstrip("/").split("/")[-1]
+    
+    client = _jira_client()
+    if not client:
+        logger.warning(f"Jira client unavailable to delete issue {key}")
+        return False
+    try:
+        issue = client.issue(key)
+        issue.delete()
+        logger.info(f"Successfully deleted Jira issue {key}")
+        return True
+    except Exception as e:
+        logger.warning(f"Direct delete failed for Jira issue {key}: {e}. Applying fallback...")
+        try:
+            from tools.jira_tools.create_jira_ticket import transition_jira_ticket, add_label_to_ticket
+            add_label_to_ticket(key, "infrastructure-destroyed")
+            transition_jira_ticket(key, "Done")
+            return True
+        except Exception:
+            return False

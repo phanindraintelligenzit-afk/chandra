@@ -38,40 +38,75 @@ def build_chat_model(model: str | None = None, provider: str | None = None, **kw
 
     if provider == "bedrock":
         import os
-        from langchain_aws import ChatBedrockConverse
+        from botocore.config import Config
+        try:
+            from langchain_aws import ChatBedrockConverse
+        except ImportError:
+            from langchain_community.chat_models import BedrockChat as ChatBedrockConverse
 
-        kwargs.setdefault("timeout", 60)
-        resolved_model = (
-            model
-            or os.getenv("BEDROCK_MODEL_ID")
-            or os.getenv("MODEL_NAME")
-            or settings.bedrock_model_id
-            or settings.llm_model
-            or "moonshotai.kimi-k2.5"
-        )
+        # botocore Converse API rejects unexpected top-level inputs like "timeout" or "max_retries".
+        # HTTP client timeouts and retry policies must be configured on botocore.config.Config.
+        timeout_val = kwargs.pop("timeout", 60)
+        max_retries_val = kwargs.pop("max_retries", None)
+        if "config" not in kwargs:
+            cfg_kwargs: dict[str, Any] = {
+                "read_timeout": timeout_val,
+                "connect_timeout": 15,
+            }
+            if max_retries_val is not None:
+                cfg_kwargs["retries"] = {"max_attempts": max_retries_val + 1}
+            kwargs["config"] = Config(**cfg_kwargs)
+        elif isinstance(kwargs["config"], Config):
+            pass
+
+        resolved_model = model or getattr(settings, "bedrock_model_id", None)
         if not resolved_model:
             raise ValueError("LLM_PROVIDER=bedrock requires BEDROCK_MODEL_ID configuration")
+
+        clean_rm = resolved_model.strip()
+        if clean_rm in ("anthropic.claude-sonnet-5-5", "claude-sonnet-5-5", "claude-3-5-sonnet"):
+            resolved_model = "us.anthropic.claude-sonnet-5-5"
+        elif clean_rm.startswith("anthropic.claude-") and not clean_rm.startswith(("us.", "eu.", "apac.", "cr-")):
+            resolved_model = f"us.{clean_rm}"
+        else:
+            resolved_model = clean_rm
             
-        return ChatBedrockConverse(
+        kwargs.setdefault("supports_tool_choice_values", ("auto",))
+        llm = ChatBedrockConverse(
             model=resolved_model,
-            region_name=settings.aws_default_region,
+            region_name=settings.aws_default_region or "us-east-1",
             **kwargs,
         )
+        try:
+            llm.supports_tool_choice_values = ("auto",)
+        except Exception:
+            pass
+        return llm
 
     if provider in ("openai", "openai_compatible", "vllm"):
-        from langchain_openai import ChatOpenAI
-
         # Local providers might take longer for complex prompts — use 120s timeout
         kwargs.setdefault("timeout", 120)
         kwargs.setdefault("max_retries", 2)
         base_url = settings.vllm_api_base or settings.openai_api_base
         api_key = settings.vllm_api_key or settings.openai_api_key or "not-needed"
+        resolved = model or settings.vllm_model or settings.openai_model_name
         if not base_url:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_API_BASE (or OPENAI_API_BASE)")
-            
-        resolved = model or settings.vllm_model or settings.openai_model_name
         if not resolved:
             raise ValueError(f"LLM_PROVIDER={provider} requires VLLM_MODEL (or OPENAI_MODEL_NAME)")
+
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError:
+            try:
+                from langchain_community.chat_models import ChatOpenAI
+            except ImportError:
+                class ChatOpenAI:
+                    def __init__(self, base_url=None, api_key=None, model=None, **kw):
+                        self.base_url = base_url
+                        self.api_key = api_key
+                        self.model_name = model
+                        self.model = model
             
         return ChatOpenAI(base_url=base_url, api_key=api_key, model=resolved, **kwargs)
 

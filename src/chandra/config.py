@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # OpenAI:   Qwen/Qwen2.5-32B-Coder-Instruct, gpt-4o, etc.
     # Ollama:   qwen2.5-coder:32b
     llm_model: str = Field(
-        default="moonshotai.kimi-k2.5",
+        default="us.anthropic.claude-sonnet-5-5",
         alias="LLM_MODEL",
     )
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # ― Bedrock-specific ―
     bedrock_model_id: str = Field(
-        default="moonshotai.kimi-k2.5",
+        default="us.anthropic.claude-sonnet-5-5",
         alias="BEDROCK_MODEL_ID",
     )
 

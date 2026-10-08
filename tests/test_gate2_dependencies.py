@@ -154,3 +154,19 @@ def test_pure_delete_plan_allowed_if_task_is_delete(validator):
         assert is_valid is True, f"Failed: {reason}"
     finally:
         os.remove(plan_path)
+
+def test_vpc_with_legitimate_dependencies(validator):
+    plan_path = write_plan(["aws_vpc", "aws_subnet", "aws_route_table", "aws_route", "aws_internet_gateway"])
+    try:
+        is_valid, reason = validator.validate_plan(plan_path, "c1f7cdb2-0551-4cd7-be8c-4f508dc4e37f", "CREATE VPC IN US-EAST-01")
+        assert is_valid is True, f"Failed: {reason}"
+    finally:
+        os.remove(plan_path)
+
+def test_lambda_with_legitimate_dependencies(validator):
+    plan_path = write_plan(["aws_lambda_function", "aws_iam_role", "aws_iam_role_policy_attachment", "aws_cloudwatch_log_group"])
+    try:
+        is_valid, reason = validator.validate_plan(plan_path, "ps_1786690414403", "CREATE LAMBDA FUNCTION")
+        assert is_valid is True, f"Failed: {reason}"
+    finally:
+        os.remove(plan_path)

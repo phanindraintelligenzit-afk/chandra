@@ -53,22 +53,35 @@ export default function PermissionSetSelector({
         // Auto-select based on required permissions / request title
         const reqStr = JSON.stringify(requiredPermissions || []).toLowerCase();
         let defaultMatch = fetchedSets[0]?.id || "";
-        const isEc2 = reqStr.includes("ec2") || reqStr.includes("instance") || reqStr.includes("intance") || reqStr.includes("server") || reqStr.includes("vm");
+        const isVpc = reqStr.includes("vpc") || reqStr.includes("subnet") || reqStr.includes("network") || reqStr.includes("cidr") || reqStr.includes("route_table");
+        const isLambda = reqStr.includes("lambda") || reqStr.includes("function") || reqStr.includes("serverless");
+        const isEc2 = !isVpc && (reqStr.includes("ec2") || reqStr.includes("instance") || reqStr.includes("intance") || reqStr.includes("server") || reqStr.includes("vm"));
         const isS3 = reqStr.includes("s3") || reqStr.includes("bucket");
+        const isDynamo = reqStr.includes("dynamo") || reqStr.includes("table");
+        const isRds = reqStr.includes("rds") || reqStr.includes("database");
 
-        if (isEc2) {
+        if (isVpc) {
+          const vpcSet = fetchedSets.find(s => s.name?.toLowerCase().includes("vpc") || s.aws_service === "VPC");
+          if (vpcSet) defaultMatch = vpcSet.id;
+        } else if (isLambda) {
+          const lamSet = fetchedSets.find(s => s.name?.toLowerCase().includes("lambda") || s.aws_service === "Lambda");
+          if (lamSet) defaultMatch = lamSet.id;
+        } else if (isEc2) {
           const ec2Set = fetchedSets.find(s => s.name?.toLowerCase().includes("ec2") || s.aws_service === "EC2");
           if (ec2Set) defaultMatch = ec2Set.id;
         } else if (isS3) {
           const s3Set = fetchedSets.find(s => s.name?.toLowerCase().includes("s3") || s.aws_service === "S3");
           if (s3Set) defaultMatch = s3Set.id;
-        } else if (reqStr.includes("lambda")) {
-          const lamSet = fetchedSets.find(s => s.name?.toLowerCase().includes("lambda") || s.aws_service === "Lambda");
-          if (lamSet) defaultMatch = lamSet.id;
+        } else if (isDynamo) {
+          const dynamoSet = fetchedSets.find(s => s.name?.toLowerCase().includes("dynamo") || s.aws_service === "DynamoDB");
+          if (dynamoSet) defaultMatch = dynamoSet.id;
+        } else if (isRds) {
+          const rdsSet = fetchedSets.find(s => s.name?.toLowerCase().includes("rds") || s.aws_service === "RDS");
+          if (rdsSet) defaultMatch = rdsSet.id;
         }
         if (mounted && defaultMatch) setSelectedSet(defaultMatch);
 
-        // Fetch recommendation only if not already explicitly matching EC2 or S3
+        // Fetch recommendation only if not already explicitly matching
         const recRes = await fetch(getApiUrl("/api/permission-sets/recommend"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -81,11 +94,15 @@ export default function PermissionSetSelector({
             // Only override if the recommendation is valid and matches the requested service
             if (data.recommendation.recommendation_type === "existing" && data.recommendation.permission_set_id) {
               const recSet = fetchedSets.find(s => s.id === data.recommendation.permission_set_id);
-              if (isEc2 && recSet && (recSet.aws_service === "EC2" || recSet.name.toLowerCase().includes("ec2"))) {
+              if (isVpc && recSet && (recSet.aws_service === "VPC" || recSet.name?.toLowerCase().includes("vpc"))) {
                 setSelectedSet(data.recommendation.permission_set_id);
-              } else if (isS3 && recSet && (recSet.aws_service === "S3" || recSet.name.toLowerCase().includes("s3"))) {
+              } else if (isLambda && recSet && (recSet.aws_service === "Lambda" || recSet.name?.toLowerCase().includes("lambda"))) {
                 setSelectedSet(data.recommendation.permission_set_id);
-              } else if (!isEc2 && !isS3) {
+              } else if (isEc2 && recSet && (recSet.aws_service === "EC2" || recSet.name?.toLowerCase().includes("ec2"))) {
+                setSelectedSet(data.recommendation.permission_set_id);
+              } else if (isS3 && recSet && (recSet.aws_service === "S3" || recSet.name?.toLowerCase().includes("s3"))) {
+                setSelectedSet(data.recommendation.permission_set_id);
+              } else if (!isEc2 && !isS3 && !isVpc && !isLambda) {
                 setSelectedSet(data.recommendation.permission_set_id);
               }
             }

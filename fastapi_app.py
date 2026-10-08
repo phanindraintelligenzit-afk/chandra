@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Header, Query, HTTPException
+from fastapi import FastAPI, Header, Query, HTTPException, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -49,6 +50,52 @@ logger = logging.getLogger("fastapi_app")
 # In-memory log buffer (keep last 2000 logs for better tracking)
 _log_buffer: List[Dict[str, Any]] = []
 _max_logs = 2000
+
+# Context and multi-source tracking for full live log retention
+import contextvars
+
+_active_job_id_cv = contextvars.ContextVar("active_job_id", default=None)
+_thread_to_job_id: Dict[int, str] = {}
+_request_id_to_job_id: Dict[str, str] = {}
+_ticket_to_job_id: Dict[str, str] = {}
+_job_live_logs: Dict[str, List[Dict[str, Any]]] = {}
+_job_sandbox_map: Dict[str, str] = {}
+_synced_frontend_logs: Dict[str, List[Dict[str, Any]]] = {}
+
+def _clean_job_id(jid: Optional[str]) -> str:
+    if not jid:
+        return ""
+    j = str(jid).strip()
+    if j.lower().startswith("dw-"):
+        j = j[3:]
+    return j.lower()
+
+def register_job_context(
+    job_id: str,
+    thread_id: Optional[int] = None,
+    request_id: Optional[str] = None,
+    ticket: Optional[str] = None,
+    sandbox_path: Optional[str] = None,
+) -> None:
+    clean_id = _clean_job_id(job_id)
+    if not clean_id:
+        return
+    if clean_id not in _job_live_logs:
+        _job_live_logs[clean_id] = []
+    if thread_id is not None:
+        _thread_to_job_id[thread_id] = clean_id
+    if request_id:
+        _request_id_to_job_id[str(request_id).strip().lower()] = clean_id
+    if ticket:
+        raw_tick = str(ticket).strip()
+        _ticket_to_job_id[raw_tick.upper()] = clean_id
+        _ticket_to_job_id[raw_tick.lower()] = clean_id
+        m = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', raw_tick.upper())
+        if m:
+            _ticket_to_job_id[m.group(1)] = clean_id
+            _ticket_to_job_id[m.group(1).lower()] = clean_id
+    if sandbox_path:
+        _job_sandbox_map[clean_id] = str(sandbox_path)
 
 # Job tracking for long-running orchestrations
 class JobStoreDict(dict):
@@ -93,9 +140,35 @@ class JobStoreManager(dict):
             value = JobStoreDict(key, value)
         super().__setitem__(key, value)
 
+    def _load_from_disk_if_needed(self, key):
+        if not super().__contains__(key) and isinstance(key, str):
+            try:
+                from pathlib import Path
+                import json
+                meta_path = Path("logs") / f"{key}.meta.json"
+                if meta_path.is_file():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        super().__setitem__(key, JobStoreDict(key, data))
+            except Exception:
+                pass
+
+    def __contains__(self, key):
+        self._load_from_disk_if_needed(key)
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        self._load_from_disk_if_needed(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._load_from_disk_if_needed(key)
+        return super().get(key, default)
+
 _job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
 
-def _load_jobs_from_disk(limit: int = 50):
+def _load_jobs_from_disk(limit: int = 50, digital_worker_only: bool = False):
     """Load existing jobs from logs/*.meta.json into _job_store on startup or when needed."""
     try:
         import os
@@ -105,16 +178,20 @@ def _load_jobs_from_disk(limit: int = 50):
         entries = [e for e in os.scandir("logs") if e.name.endswith(".meta.json")]
         entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
         seen_tickets = set()
+        dw_loaded = 0
         for entry in entries:
-            if len(_job_store) >= limit:
-                break
             try:
                 job_id = entry.name[:-10]
                 if job_id in _job_store:
+                    if _job_store[job_id].get("kind") == "digital_worker":
+                        dw_loaded += 1
                     continue
                 with open(entry.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if not data or not isinstance(data, dict):
+                    continue
+                is_dw = data.get("kind") == "digital_worker"
+                if digital_worker_only and not is_dw:
                     continue
                 res = data.get("result") or {}
                 approval = res.get("approval_request") or {}
@@ -122,9 +199,21 @@ def _load_jobs_from_disk(limit: int = 50):
                 if ticket:
                     if ticket in seen_tickets:
                         continue
-                    seen_tickets.add(ticket)
                 js_dict = dict(data)
+                # Cleanup zombie running/pending jobs from disk:
+                # If a job was saved with status "running" or "pending" but server restarted,
+                # mark it as failed so it doesn't spin as active forever (e.g. DEV-987)
+                if js_dict.get("status") in ("running", "pending"):
+                    js_dict["status"] = "failed"
+                    js_dict["error"] = "Process interrupted by server restart"
+                    js_dict["message"] = "Execution halted when backend restarted"
                 super(JobStoreManager, _job_store).__setitem__(job_id, js_dict)
+                if is_dw:
+                    dw_loaded += 1
+                if digital_worker_only and dw_loaded >= limit:
+                    break
+                elif not digital_worker_only and len(_job_store) >= limit:
+                    break
             except Exception:
                 pass
     except Exception as e:
@@ -279,55 +368,127 @@ _thread_local = threading.local()
 # competing event loops that crash uvicorn. Instead, we keep ONE persistent
 # event loop running in a dedicated daemon thread and submit all async work
 # to it via asyncio.run_coroutine_threadsafe().
-_bg_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+# Process-safe: restarts loop if PID changes after uvicorn forks worker processes.
+_bg_loop: Optional[asyncio.AbstractEventLoop] = None
+_bg_loop_thread: Optional[threading.Thread] = None
+_bg_loop_pid: Optional[int] = None
+_bg_loop_lock = threading.Lock()
 
-def _start_bg_loop(loop: asyncio.AbstractEventLoop) -> None:
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
+def _ensure_bg_loop() -> asyncio.AbstractEventLoop:
+    global _bg_loop, _bg_loop_thread, _bg_loop_pid
+    curr_pid = os.getpid()
+    with _bg_loop_lock:
+        if (
+            _bg_loop is None
+            or _bg_loop_pid != curr_pid
+            or _bg_loop.is_closed()
+            or not (_bg_loop_thread and _bg_loop_thread.is_alive())
+        ):
+            loop = asyncio.new_event_loop()
+            def _runner(l: asyncio.AbstractEventLoop) -> None:
+                asyncio.set_event_loop(l)
+                l.run_forever()
+            t = threading.Thread(
+                target=_runner, args=(loop,), daemon=True, name=f"bg-async-loop-{curr_pid}"
+            )
+            t.start()
+            _bg_loop = loop
+            _bg_loop_thread = t
+            _bg_loop_pid = curr_pid
+    return _bg_loop
 
-_bg_loop_thread = threading.Thread(
-    target=_start_bg_loop, args=(_bg_loop,), daemon=True, name="bg-async-loop"
-)
-_bg_loop_thread.start()
+_ensure_bg_loop()
 
 
-def _run_async(coro) -> Any:
+def _run_async(coro, timeout: float = 120.0) -> Any:
     """Run an async coroutine on the shared background event loop and block until done."""
-    future = asyncio.run_coroutine_threadsafe(coro, _bg_loop)
-    return future.result()  # blocks the calling thread until coroutine completes
+    loop = _ensure_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)  # blocks the calling thread until coroutine completes with safety timeout
 
 
 class LogCapture(logging.Handler):
-    """Custom handler to capture logs into memory buffer"""
+    """Custom handler to capture logs into memory buffer and real-time disk streams."""
     def emit(self, record: logging.LogRecord) -> None:
         try:
             jid = getattr(_thread_local, "job_id", None)
+            if not jid:
+                try:
+                    jid = _active_job_id_cv.get()
+                except Exception:
+                    jid = None
+            if not jid:
+                jid = _thread_to_job_id.get(threading.get_ident())
             if not jid and record.name and "." in record.name:
                 parts = record.name.split(".")
                 if len(parts) >= 2 and len(parts[-1]) >= 8:
-                    jid = parts[-1]
+                    candidate = parts[-1].strip().lower()
+                    if candidate in _job_live_logs or candidate in _job_store or re.match(r"^[0-9a-f\-]{30,}$", candidate):
+                        jid = candidate
 
             msg = self.format(record)
+
+            # Check message for known tickets
             if not jid and msg:
-                m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", msg, re.IGNORECASE)
-                if m:
-                    jid = m.group(0).lower()
+                for ticket, mapped_jid in list(_ticket_to_job_id.items()):
+                    if ticket and ticket in msg:
+                        jid = mapped_jid
+                        break
+
+            # Check message for known UUIDs or request IDs
+            if not jid and msg:
+                for m in re.finditer(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", msg, re.IGNORECASE):
+                    found_uuid = m.group(0).lower()
+                    if found_uuid in _request_id_to_job_id:
+                        jid = _request_id_to_job_id[found_uuid]
+                        break
+                    if found_uuid in _job_store or found_uuid in _job_live_logs:
+                        jid = found_uuid
+                        break
+
+            clean_jid = _clean_job_id(jid) if jid else None
 
             log_entry = {
                 "timestamp": record.created,
                 "level": record.levelname,
                 "logger": record.name,
                 "message": msg,
-                "job_id": jid
+                "job_id": clean_jid
             }
             _log_buffer.append(log_entry)
             if len(_log_buffer) > _max_logs:
                 _log_buffer.pop(0)
+
+            # Real-time persistence for the active job
+            if clean_jid:
+                if clean_jid not in _job_live_logs:
+                    _job_live_logs[clean_jid] = []
+                _job_live_logs[clean_jid].append(log_entry)
+                if len(_job_live_logs[clean_jid]) > 5000:
+                    _job_live_logs[clean_jid].pop(0)
+
+                # Real-time append to logs/<clean_jid>.live.log
+                try:
+                    os.makedirs("logs", exist_ok=True)
+                    live_path = os.path.join("logs", f"{clean_jid}.live.log")
+                    with open(live_path, "a", encoding="utf-8", errors="replace") as f:
+                        f.write(f"{msg}\n")
+                except Exception:
+                    pass
+
+                # If sandbox is known, append directly to live_logs.txt in sandbox
+                sb_path = _job_sandbox_map.get(clean_jid) or os.path.join("terraform_runs", "default_worker", clean_jid)
+                if sb_path and os.path.exists(sb_path):
+                    try:
+                        with open(os.path.join(sb_path, "live_logs.txt"), "a", encoding="utf-8", errors="replace") as f:
+                            f.write(f"{msg}\n")
+                    except Exception:
+                        pass
         except Exception:
             pass
 
 def _preload_logs_from_disk() -> None:
-    """Pre-populate _log_buffer from disk logs on server startup/reload so logs never vanish."""
+    """Pre-populate _log_buffer and _job_live_logs from disk logs on server startup/reload."""
     try:
         logs_dir = Path("logs")
         if not logs_dir.exists():
@@ -336,26 +497,35 @@ def _preload_logs_from_disk() -> None:
         if not log_files:
             return
         recent_entries = []
-        for lf in log_files[:5]:
+        for lf in log_files[:10]:
             try:
-                jid = lf.stem if len(lf.stem) >= 30 else None
+                base_name = lf.stem
+                is_live = base_name.endswith(".live")
+                clean_stem = _clean_job_id(base_name[:-5] if is_live else base_name)
+                jid = clean_stem if len(clean_stem) >= 30 else None
+                mtime = lf.stat().st_mtime
                 with open(lf, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f.readlines()[-200:]:
+                    for line in f.readlines()[-300:]:
                         line_str = line.strip()
-                        if not line_str:
+                        if not line_str or line_str.startswith("===") or line_str.startswith("CHANDRA"):
                             continue
-                        recent_entries.append({
-                            "timestamp": lf.stat().st_mtime,
+                        entry = {
+                            "timestamp": mtime,
                             "level": "INFO" if "INFO" in line_str else ("ERROR" if "ERROR" in line_str else "WARN"),
                             "logger": f"ExecutionAgents.{jid}" if jid else "system",
                             "message": line_str,
                             "job_id": jid
-                        })
+                        }
+                        recent_entries.append(entry)
+                        if jid:
+                            if jid not in _job_live_logs:
+                                _job_live_logs[jid] = []
+                            _job_live_logs[jid].append(entry)
             except Exception:
                 pass
         if recent_entries:
             _log_buffer.extend(recent_entries[-1000:])
-    except Exception as e:
+    except Exception:
         pass
 
 _preload_logs_from_disk()
@@ -425,6 +595,15 @@ async def lifespan(app: FastAPI):
         logger.info("Region/endpoint = %s", settings.ollama_host)
     logger.info("==================================")
     
+    # Safe DB initialization check
+    try:
+        from src.chandra.db.models import Base
+        from src.chandra.db.session import get_engine
+        Base.metadata.create_all(bind=get_engine())
+        logger.info("Database schema verified/created successfully.")
+    except Exception as exc:
+        logger.warning("Could not auto-create database tables on startup (PostgreSQL might still be initializing): %s", exc)
+
     yield
 
     # Stop background tasks gracefully to prevent dangling threads during app teardown
@@ -434,8 +613,10 @@ async def lifespan(app: FastAPI):
     
     logger.info("Shutting down background async loop...")
     try:
-        _bg_loop.call_soon_threadsafe(_bg_loop.stop)
-        _bg_loop_thread.join(timeout=5.0)
+        if _bg_loop and _bg_loop.is_running():
+            _bg_loop.call_soon_threadsafe(_bg_loop.stop)
+            if _bg_loop_thread:
+                _bg_loop_thread.join(timeout=3.0)
     except Exception as e:
         logger.error(f"Error shutting down background loop: {e}")
 
@@ -462,9 +643,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import Request
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled application exception on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc), "path": request.url.path}
+    )
+
 # Built once so MemorySaver persists across requests (keyed by sessionId / thread_id)
 # Wrapped in try/except so FastAPI still starts even if an agent fails to initialize
 # (e.g. Bedrock unreachable, Postgres timeout, missing env var)
+def get_copilot_agent():
+    global _copilot_agent
+    if _copilot_agent is None:
+        try:
+            _copilot_agent = build_graph()
+            logger.info("Copilot agent initialized successfully")
+        except Exception as _e:
+            logger.error("Failed to initialize copilot agent: %s", _e)
+    return _copilot_agent
+
+def get_digital_worker():
+    global _digital_worker
+    if _digital_worker is None:
+        try:
+            _digital_worker = build_digital_worker_graph()
+            logger.info("Digital Worker graph initialized successfully")
+        except Exception as _e:
+            logger.error("Failed to initialize Digital Worker graph: %s", _e)
+    return _digital_worker
+
 try:
     _copilot_agent = build_graph()
     logger.info("Copilot agent initialized successfully")
@@ -472,9 +683,6 @@ except Exception as _e:
     logger.error("Failed to initialize copilot agent: %s", _e)
     _copilot_agent = None
 
-# Digital Worker request workflow (omnichannel intake). Built once so the
-# in-memory checkpointer persists across requests — approval resumes are
-# keyed by thread_id == job_id.
 try:
     _digital_worker = build_digital_worker_graph()
     logger.info("Digital Worker graph initialized successfully")
@@ -514,8 +722,10 @@ def health_ready():
     """
     components: Dict[str, str] = {}
 
-    components["copilot_agent"] = "ok" if _copilot_agent is not None else "unavailable"
-    components["digital_worker"] = "ok" if _digital_worker is not None else "unavailable"
+    copilot = get_copilot_agent()
+    dw = get_digital_worker()
+    components["copilot_agent"] = "ok" if copilot is not None else "unavailable"
+    components["digital_worker"] = "ok" if dw is not None else "unavailable"
 
     try:
         from sqlalchemy import text as _sql_text
@@ -664,34 +874,71 @@ async def get_logs(
     """Get recent backend logs (stored in memory or loaded from disk for job_id)"""
     target_logs = _log_buffer
     if job_id:
-        jid_lower = job_id.lower().strip()
-        matched = [
-            l for l in _log_buffer
-            if (l.get("job_id") and str(l["job_id"]).lower() == jid_lower)
-            or (l.get("logger") and jid_lower in str(l["logger"]).lower())
-            or (l.get("message") and jid_lower in str(l["message"]).lower())
-        ]
-        if not matched:
-            disk_path = Path(f"logs/{job_id}.log")
-            if disk_path.exists():
-                try:
-                    with open(disk_path, "r", encoding="utf-8", errors="replace") as f:
-                        disk_logs = []
-                        mtime = disk_path.stat().st_mtime
-                        for line in f:
-                            l_str = line.strip()
-                            if not l_str:
-                                continue
-                            disk_logs.append({
+        clean_id = _clean_job_id(job_id)
+        
+        # 1. Start with dedicated in-memory live logs for this job
+        matched = list(_job_live_logs.get(clean_id, []))
+        
+        # 2. Add synced logs from frontend
+        if clean_id in _synced_frontend_logs:
+            existing_msgs = {l.get("message") for l in matched}
+            for fl in _synced_frontend_logs[clean_id]:
+                if fl.get("message") not in existing_msgs:
+                    matched.append(fl)
+                    existing_msgs.add(fl.get("message"))
+
+        # 3. Add matches from global buffer
+        existing_msgs = {l.get("message") for l in matched}
+        for l in _log_buffer:
+            l_jid = _clean_job_id(l.get("job_id"))
+            l_logger = str(l.get("logger", "")).lower()
+            l_msg = str(l.get("message", "")).lower()
+            if (l_jid == clean_id or clean_id in l_logger or clean_id in l_msg) and l.get("message") not in existing_msgs:
+                if "AWSOBSERVABILITYAGENT" in str(l.get("logger", "")).upper() and clean_id not in l_msg:
+                    continue
+                matched.append(l)
+                existing_msgs.add(l.get("message"))
+
+        # 4. Check real-time live log file on disk (logs/{clean_id}.live.log)
+        live_disk_path = Path(f"logs/{clean_id}.live.log")
+        if live_disk_path.exists():
+            try:
+                mtime = live_disk_path.stat().st_mtime
+                with open(live_disk_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        l_str = line.strip()
+                        if l_str and l_str not in existing_msgs:
+                            matched.append({
                                 "timestamp": mtime,
                                 "level": "INFO" if "INFO" in l_str else ("ERROR" if "ERROR" in l_str else "WARN"),
-                                "logger": f"ExecutionAgents.{job_id}",
+                                "logger": f"ExecutionAgents.{clean_id}",
                                 "message": l_str,
-                                "job_id": job_id
+                                "job_id": clean_id
                             })
-                        matched = disk_logs
-                except Exception:
-                    pass
+                            existing_msgs.add(l_str)
+            except Exception:
+                pass
+
+        # 5. Check completed disk log file (logs/{clean_id}.log)
+        disk_path = Path(f"logs/{clean_id}.log")
+        if disk_path.exists() and len(matched) < 5:
+            try:
+                mtime = disk_path.stat().st_mtime
+                with open(disk_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        l_str = line.strip()
+                        if l_str and not l_str.startswith("===") and not l_str.startswith("CHANDRA") and l_str not in existing_msgs:
+                            matched.append({
+                                "timestamp": mtime,
+                                "level": "INFO" if "INFO" in l_str else ("ERROR" if "ERROR" in l_str else "WARN"),
+                                "logger": f"ExecutionAgents.{clean_id}",
+                                "message": l_str,
+                                "job_id": clean_id
+                            })
+                            existing_msgs.add(l_str)
+            except Exception:
+                pass
+
         if matched:
             target_logs = matched
 
@@ -1050,6 +1297,7 @@ def _run_cloudwatch_task(job_id: str, request: CloudWatchMetricsRequest):
         _thread_local.job_id = None
 
 class ActionInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     actionName: str = Field(description="Short name of the action")
     actionDescription: str = Field(description="Detailed description of what needs to be done")
     service: Optional[str] = Field(default="AWS", description="AWS service this action applies to")
@@ -1061,6 +1309,7 @@ class ActionInput(BaseModel):
     region: Optional[str] = Field(default=os.getenv("AWS_DEFAULT_REGION", "us-east-1"), description="Target region for predefined KRA actions")
     action_type: Optional[str] = Field(default="KRA_REMEDIATION", description="Execution path discriminator. Either AWS_TASK or KRA_REMEDIATION.")
     permission_set_id: Optional[str] = Field(default=None, description="AWS permission set selected during onboarding")
+    isAwsTask: Optional[bool] = Field(default=None, description="Flag indicating if this is an AWS Task")
 
 
 class AnalyzerRequest(BaseModel):
@@ -1154,7 +1403,10 @@ def copilot_chat_endpoint(request: CopilotRequest):
     """
     logger.info("POST /copilot/chat sessionId=%s", request.sessionId)
     try:
-        reply = copilot_chat(_copilot_agent, request.sessionId, request.message)
+        agent = get_copilot_agent()
+        if agent is None:
+            return JSONResponse(status_code=503, content={"status": "error", "message": "Copilot agent unavailable"})
+        reply = copilot_chat(agent, request.sessionId, request.message)
         return JSONResponse(status_code=200, content={"sessionId": request.sessionId, "reply": reply})
     except Exception as exc:
         logger.exception("Copilot chat failed: %s", exc)
@@ -1163,6 +1415,7 @@ def copilot_chat_endpoint(request: CopilotRequest):
 
 
 class OrchestrateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: ActionInput = Field(description="Action to generate and execute")
     sandbox_path: Optional[str] = Field(
         default=None,
@@ -1188,6 +1441,18 @@ class OrchestrateRequest(BaseModel):
         default=None,
         description="Full Jira URL to post final summary comment to after orchestration completes.",
     )
+    jira_url: Optional[str] = Field(
+        default=None,
+        description="Alias for jiraUrl.",
+    )
+    jira_issue_key: Optional[str] = Field(
+        default=None,
+        description="Jira issue key (e.g. DEV-1069) associated with this task.",
+    )
+    jiraKey: Optional[str] = Field(
+        default=None,
+        description="Alias for jira_issue_key.",
+    )
     max_iterations: int = Field(
         default=5,
         description="Maximum number of generate-execute iterations (default: 5).",
@@ -1198,114 +1463,903 @@ class OrchestrateRequest(BaseModel):
     )
 
 
+def _build_full_job_logs(job_id: str) -> str:
+    """Build the comprehensive live log stream and execution report for a job."""
+    if not job_id:
+        return "No job ID provided."
+
+    import json
+    import time
+    from datetime import datetime
+
+    app_root = Path(__file__).resolve().parent
+    clean_id = _clean_job_id(job_id)
+
+    # If clean_id looks like a Jira ticket (e.g., DEV-1068) or action ID, resolve to real UUID
+    jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', str(job_id).upper())
+    resolved_ticket = jira_match.group(1) if jira_match else None
+
+    if resolved_ticket and resolved_ticket in _ticket_to_job_id:
+        clean_id = _clean_job_id(_ticket_to_job_id[resolved_ticket])
+    elif resolved_ticket:
+        with _job_store_lock:
+            for jid, val in _job_store.items():
+                if val.get("external_id") == resolved_ticket or resolved_ticket in str(val.get("title", "")):
+                    clean_id = _clean_job_id(jid)
+                    break
+        if clean_id == _clean_job_id(job_id) or not clean_id:
+            # Check meta.json files
+            for m_file in (app_root / "logs").glob("*.meta.json"):
+                try:
+                    with open(m_file, "r", encoding="utf-8") as f:
+                        m_val = json.load(f)
+                    if m_val.get("external_id") == resolved_ticket:
+                        clean_id = _clean_job_id(m_file.name[:-10])
+                        break
+                except Exception:
+                    pass
+
+    log_file_path = str(app_root / "logs" / f"{clean_id}.log")
+    meta_file = str(app_root / "logs" / f"{clean_id}.meta.json")
+    if not os.path.exists(meta_file):
+        alt_meta = str(app_root / "logs" / f"dw-{clean_id}.meta.json")
+        if os.path.exists(alt_meta):
+            meta_file = alt_meta
+
+    # 1. Recover job info
+    job_info = dict(_job_store.get(clean_id, {}) or _job_store.get(f"dw-{clean_id}", {}))
+    if not job_info:
+        recovered = _recover_job_from_disk(clean_id)
+        if recovered:
+            job_info = recovered
+
+    meta_data = {}
+    if os.path.exists(meta_file):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+        except Exception:
+            pass
+
+    # 2. Gather result and sandbox artifacts
+    result = job_info.get("result") or meta_data.get("result", {})
+    output_data = result.get("output", {}) if isinstance(result, dict) else {}
+    req_meta = output_data.get("request", {}) if isinstance(output_data, dict) else {}
+    exec_meta = output_data.get("execution", {}) if isinstance(output_data, dict) else (result.get("execution", {}) if isinstance(result, dict) else {})
+
+    sandbox_candidates = [
+        job_info.get("sandbox_path"),
+        meta_data.get("sandbox_path"),
+        exec_meta.get("sandbox_path"),
+        _job_sandbox_map.get(clean_id),
+        str((app_root / "terraform_runs" / "default_worker" / clean_id).resolve()),
+        str((app_root / "terraform_runs" / clean_id).resolve()),
+        os.path.join("terraform_runs", "default_worker", clean_id),
+    ]
+    sandbox_path = None
+    for sc in sandbox_candidates:
+        if sc and os.path.exists(sc):
+            sandbox_path = os.path.abspath(sc)
+            break
+    if not sandbox_path:
+        sandbox_path = str((app_root / "terraform_runs" / "default_worker" / clean_id).resolve())
+
+    exec_result_data = {}
+    if sandbox_path and os.path.exists(sandbox_path):
+        res_file = os.path.join(sandbox_path, "execution_result.json")
+        if os.path.exists(res_file):
+            try:
+                with open(res_file, "r", encoding="utf-8") as f:
+                    exec_result_data = json.load(f)
+            except Exception:
+                pass
+
+    # 3. Job attributes
+    title = job_info.get("title") or meta_data.get("title") or req_meta.get("title") or "Cloud Operations Automation"
+    external_id = meta_data.get("external_id") or req_meta.get("external_id") or (resolved_ticket if resolved_ticket else "N/A")
+    request_id = req_meta.get("request_id") or ""
+    raw_status = job_info.get("status") or meta_data.get("status")
+    status = raw_status if (raw_status and str(raw_status).lower() != "none") else "COMPLETED"
+    progress = job_info.get("progress") if job_info.get("progress") is not None else meta_data.get("progress", 100)
+    raw_msg = job_info.get("message") or meta_data.get("message")
+    message = raw_msg if (raw_msg and str(raw_msg).lower() != "none") else "Execution completed successfully."
+
+    started_at = job_info.get("started_at") or meta_data.get("started_at")
+    completed_at = job_info.get("completed_at") or meta_data.get("completed_at")
+    started_str = datetime.fromtimestamp(started_at).strftime("%Y-%m-%d %H:%M:%S UTC") if started_at else "N/A"
+    completed_str = datetime.fromtimestamp(completed_at).strftime("%Y-%m-%d %H:%M:%S UTC") if completed_at else "N/A"
+
+    # Register context mappings for future lookups
+    register_job_context(
+        clean_id,
+        request_id=request_id if request_id else None,
+        ticket=external_id if external_id and external_id != "N/A" else None,
+        sandbox_path=sandbox_path
+    )
+
+    # 4. Gather live stream logs from all sources
+    ticket_lower = str(external_id).lower().strip() if external_id and external_id != "N/A" else ""
+    req_id_lower = str(request_id).lower().strip() if request_id else ""
+
+    def _is_unrelated_scan(line_str: str) -> bool:
+        up = line_str.upper()
+        if "AWSOBSERVABILITYAGENT" in up or "FETCH_ACCOUNT_AUDIT" in up or "CHECK_RECORDER_STATUS" in up or "FETCH_GLOBAL_XRAY_SUMMARY" in up:
+            low = line_str.lower()
+            if clean_id in low or (ticket_lower and ticket_lower in low) or (req_id_lower and req_id_lower in low):
+                return False
+            return True
+        return False
+
+    raw_stream_candidates: List[Dict[str, Any]] = []
+
+    # A. Synced logs from frontend (guarantees what the user saw is preserved)
+    if clean_id in _synced_frontend_logs:
+        raw_stream_candidates.extend(_synced_frontend_logs[clean_id])
+
+    # B. Dedicated per-job in-memory logs
+    if clean_id in _job_live_logs:
+        raw_stream_candidates.extend(_job_live_logs[clean_id])
+
+    # C. Real-time disk live stream file (logs/<clean_id>.live.log)
+    live_log_file = os.path.join("logs", f"{clean_id}.live.log")
+    if os.path.exists(live_log_file):
+        try:
+            mtime = os.path.getmtime(live_log_file)
+            with open(live_log_file, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not _is_unrelated_scan(stripped):
+                        raw_stream_candidates.append({
+                            "timestamp": mtime,
+                            "level": "INFO" if "INFO" in stripped else ("ERROR" if "ERROR" in stripped else "WARN"),
+                            "logger": f"ExecutionAgents.{clean_id}",
+                            "message": stripped,
+                            "job_id": clean_id,
+                        })
+        except Exception:
+            pass
+
+    # C2. Sandbox directory live logs (terraform_runs/.../<clean_id>/live_logs.txt)
+    if sandbox_path and os.path.exists(sandbox_path):
+        for candidate_sb_name in ("live_logs.txt", "execution_logs.txt"):
+            sb_log_path = os.path.join(sandbox_path, candidate_sb_name)
+            if os.path.exists(sb_log_path):
+                try:
+                    mtime = os.path.getmtime(sb_log_path)
+                    with open(sb_log_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            stripped = line.strip()
+                            if stripped and not _is_unrelated_scan(stripped):
+                                raw_stream_candidates.append({
+                                    "timestamp": mtime,
+                                    "level": "INFO" if "INFO" in stripped else ("ERROR" if "ERROR" in stripped else "WARN"),
+                                    "logger": f"ExecutionAgents.{clean_id}",
+                                    "message": stripped,
+                                    "job_id": clean_id,
+                                })
+                except Exception:
+                    pass
+
+    # D. In-memory global _log_buffer entries matching this job
+    for entry in _log_buffer:
+        entry_jid = _clean_job_id(entry.get("job_id"))
+        entry_logger = str(entry.get("logger", "")).lower()
+        entry_msg = str(entry.get("message", "")).lower()
+
+        matches_jid = (entry_jid == clean_id) or (clean_id in entry_logger) or (clean_id in entry_msg)
+        matches_ticket = bool(ticket_lower and ticket_lower in entry_msg)
+        matches_req = bool(req_id_lower and req_id_lower in entry_msg)
+
+        if matches_jid or matches_ticket or matches_req:
+            if not _is_unrelated_scan(str(entry.get("message", ""))):
+                raw_stream_candidates.append(entry)
+
+    # E. Read existing disk logs from logs/<clean_id>.log (extracting backend stream section)
+    if os.path.exists(log_file_path):
+        try:
+            mtime = os.path.getmtime(log_file_path)
+            with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
+                in_backend_section = False
+                has_report_markers = False
+                for line in f:
+                    stripped = line.rstrip()
+                    if not stripped:
+                        continue
+                    if "CHANDRA CLOUD OPERATIONS — FULL EXECUTION & LIVE LOG REPORT" in stripped:
+                        has_report_markers = True
+                        continue
+                    if "BACKEND LIVE LOG STREAM" in stripped:
+                        in_backend_section = True
+                        continue
+                    if any(header in stripped for header in [
+                        "TERRAFORM & INFRASTRUCTURE AUTOMATION LOGS",
+                        "EXECUTION AUDIT TRAIL & LIFECYCLE PHASES",
+                        "EXECUTION OUTCOME & VERIFIED RESOURCES",
+                        "END OF LOG REPORT",
+                    ]):
+                        in_backend_section = False
+                        continue
+                    if stripped.startswith("========"):
+                        continue
+                    if any(stripped.startswith(prefix) for prefix in [
+                        "Job ID:", "Task / Title:", "Jira Ticket:", "Status:", "Progress:",
+                        "Message:", "Started At:", "Completed At:", "Sandbox Dir:", "Outcome:", "Outputs:"
+                    ]):
+                        if has_report_markers:
+                            continue
+
+                    if has_report_markers and not in_backend_section:
+                        continue
+
+                    if not _is_unrelated_scan(stripped):
+                        raw_stream_candidates.append({
+                            "timestamp": mtime,
+                            "level": "INFO" if "INFO" in stripped else ("ERROR" if "ERROR" in stripped else "WARN"),
+                            "logger": f"ExecutionAgents.{clean_id}",
+                            "message": stripped,
+                            "job_id": clean_id,
+                        })
+        except Exception:
+            pass
+
+    # 5. Gather Audit Trail and synthesize into structured lifecycle logs
+    audit_trail = (
+        meta_data.get("audit_trail")
+        or (output_data.get("audit_trail") if isinstance(output_data, dict) else [])
+        or (meta_data.get("result", {}).get("output", {}).get("audit_trail") if isinstance(meta_data.get("result"), dict) else [])
+        or (meta_data.get("result", {}).get("audit_trail") if isinstance(meta_data.get("result"), dict) else [])
+        or (job_info.get("result", {}).get("audit_trail") if isinstance(job_info.get("result"), dict) else [])
+    )
+
+    if audit_trail:
+        for entry in audit_trail:
+            if isinstance(entry, dict):
+                at_t = entry.get("at", "")
+                node = entry.get("node", "lifecycle")
+                event = entry.get("event", "event")
+                d_val = entry.get("data", {})
+                d_str = f" {json.dumps(d_val)}" if d_val else ""
+                
+                # Parse timestamp for sorting
+                ts_val = 0.0
+                if at_t:
+                    try:
+                        clean_at = at_t.replace("Z", "+00:00")
+                        ts_val = datetime.fromisoformat(clean_at).timestamp()
+                    except Exception:
+                        ts_val = time.time()
+                
+                formatted_audit_line = f"[{at_t}] [INFO] LifecycleAudit - [Node: {node}] {event}:{d_str}"
+                raw_stream_candidates.append({
+                    "timestamp": ts_val,
+                    "level": "INFO",
+                    "logger": f"Lifecycle.{node}",
+                    "message": formatted_audit_line,
+                    "job_id": clean_id,
+                })
+
+    # Deduplicate and sort raw stream logs
+    seen_messages = set()
+    sorted_stream_logs: List[str] = []
+
+    # Sort by timestamp
+    raw_stream_candidates.sort(key=lambda x: x.get("timestamp", 0) if isinstance(x.get("timestamp"), (int, float)) else 0)
+
+    for entry in raw_stream_candidates:
+        msg = entry.get("message", "")
+        if not msg:
+            continue
+        # Normalize message for deduplication key
+        try:
+            norm_key = re.sub(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,\.\d]*\s*", "", msg).strip()
+            norm_key = re.sub(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[^\]]*\]\s*", "", norm_key).strip()
+        except Exception:
+            norm_key = msg.strip()
+
+        if norm_key in seen_messages:
+            continue
+        seen_messages.add(norm_key)
+
+        ts = entry.get("timestamp", 0)
+        lvl = entry.get("level", "INFO")
+        logger_name = entry.get("logger") or "system"
+
+        try:
+            is_preformatted = msg.startswith("[") or " [" in msg[:30] or bool(re.match(r"^\d{4}-\d{2}-\d{2}", msg))
+        except Exception:
+            is_preformatted = msg.startswith("[") or " [" in msg[:30]
+
+        if is_preformatted:
+            sorted_stream_logs.append(msg)
+        else:
+            try:
+                ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S,%f")[:-3] if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+            except Exception:
+                ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+            sorted_stream_logs.append(f"[{ts_str}] [{lvl}] {logger_name} - {msg}")
+
+    # 6. Gather Terraform stdout / stderr
+    exec_logs = (
+        exec_meta.get("execution_logs")
+        or exec_result_data.get("execution_logs")
+        or exec_result_data.get("stdout")
+        or output_data.get("execution", {}).get("execution_logs")
+        or meta_data.get("result", {}).get("output", {}).get("execution", {}).get("execution_logs")
+        or meta_data.get("result", {}).get("execution_logs")
+    )
+
+    # 7. Detail & Outputs
+    detail = (
+        exec_meta.get("detail")
+        or exec_result_data.get("detail")
+        or output_data.get("execution", {}).get("detail")
+        or meta_data.get("result", {}).get("output", {}).get("execution", {}).get("detail")
+    )
+    outputs = (
+        output_data.get("outputs")
+        or exec_result_data.get("outputs")
+        or meta_data.get("result", {}).get("output", {}).get("terraform_apply_result", {}).get("outputs")
+        or meta_data.get("result", {}).get("output", {}).get("outputs")
+    )
+
+    lines = []
+    lines.append("=" * 80)
+    lines.append("CHANDRA CLOUD OPERATIONS — FULL EXECUTION & LIVE LOG REPORT")
+    lines.append("=" * 80)
+    lines.append(f"Job ID:          {clean_id}")
+    lines.append(f"Task / Title:    {title}")
+    lines.append(f"Jira Ticket:     {external_id}")
+    lines.append(f"Status:          {str(status).upper()}")
+    lines.append(f"Progress:        {progress}%")
+    lines.append(f"Message:         {message}")
+    lines.append(f"Started At:      {started_str}")
+    lines.append(f"Completed At:    {completed_str}")
+    lines.append(f"Sandbox Dir:     {sandbox_path}")
+    lines.append("")
+
+    if sorted_stream_logs:
+        lines.append("=" * 80)
+        lines.append("BACKEND LIVE LOG STREAM")
+        lines.append("=" * 80)
+        lines.extend(sorted_stream_logs)
+        lines.append("")
+
+    if exec_logs:
+        lines.append("=" * 80)
+        lines.append("TERRAFORM & INFRASTRUCTURE AUTOMATION LOGS (STDOUT / STDERR)")
+        lines.append("=" * 80)
+        lines.append(str(exec_logs).strip())
+        lines.append("")
+
+    if audit_trail:
+        lines.append("=" * 80)
+        lines.append("EXECUTION AUDIT TRAIL & LIFECYCLE PHASES")
+        lines.append("=" * 80)
+        for entry in audit_trail:
+            if isinstance(entry, dict):
+                at_t = entry.get("at", "")
+                node = entry.get("node", "")
+                event = entry.get("event", "")
+                d_str = json.dumps(entry.get("data", {})) if entry.get("data") else ""
+                lines.append(f"[{at_t}] [{node}] {event}: {d_str}")
+        lines.append("")
+
+    if detail or outputs:
+        lines.append("=" * 80)
+        lines.append("EXECUTION OUTCOME & VERIFIED RESOURCES")
+        lines.append("=" * 80)
+        if detail:
+            lines.append(f"Outcome: {detail}")
+        if outputs and isinstance(outputs, dict):
+            lines.append("Outputs:")
+            for k, v in outputs.items():
+                val = v.get("value") if isinstance(v, dict) else v
+                lines.append(f"  - {k}: {val}")
+        lines.append("")
+
+    lines.append("=" * 80)
+    lines.append("END OF LOG REPORT")
+    lines.append("=" * 80)
+
+    content = "\n".join(lines)
+    try:
+        (app_root / "logs").mkdir(parents=True, exist_ok=True)
+        with open(log_file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        if clean_id != _clean_job_id(job_id):
+            with open(str(app_root / "logs" / f"{_clean_job_id(job_id)}.log"), "w", encoding="utf-8") as f:
+                f.write(content)
+        if sandbox_path and os.path.exists(sandbox_path):
+            with open(os.path.join(sandbox_path, "live_logs.txt"), "w", encoding="utf-8") as f:
+                f.write(content)
+            with open(os.path.join(sandbox_path, "execution_logs.txt"), "w", encoding="utf-8") as f:
+                f.write(content)
+    except Exception:
+        pass
+
+    return content
+
+
 @app.get("/download_sandbox")
-def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None):
-    """Zip and download the sandbox directory for a completed job."""
-    target_path = path
-    if not target_path or not os.path.exists(target_path):
-        if job_id and job_id in _job_store:
-            stored_path = _job_store[job_id].get("sandbox_path")
-            if stored_path and os.path.exists(stored_path):
-                target_path = stored_path
-            else:
-                candidate = os.path.join("terraform_runs", "default_worker", job_id)
-                if os.path.exists(candidate):
-                    target_path = candidate
-        elif path:
-            candidate = os.path.join("terraform_runs", "default_worker", os.path.basename(path.rstrip("/\\")))
-            if os.path.exists(candidate):
-                target_path = candidate
+def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None, jiraUrl: Optional[str] = None):
+    """Zip and download the sandbox directory and full artifacts for a completed job."""
+    import json
+    import re
+    app_root = Path(__file__).resolve().parent
+
+    effective_id = _clean_job_id(job_id) or (os.path.basename(path.rstrip("/\\")) if path else None)
+    if effective_id:
+        effective_id = _clean_job_id(effective_id)
+
+    # Check for Jira ticket in job_id, path, or jiraUrl
+    jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', f"{job_id or ''} {path or ''} {jiraUrl or ''}".upper())
+    resolved_ticket = jira_match.group(1) if jira_match else None
+    if resolved_ticket:
+        if resolved_ticket in _ticket_to_job_id:
+            effective_id = _clean_job_id(_ticket_to_job_id[resolved_ticket])
+        else:
+            with _job_store_lock:
+                for jid, val in _job_store.items():
+                    if val.get("external_id") == resolved_ticket or resolved_ticket in str(val.get("title", "")):
+                        effective_id = _clean_job_id(jid)
+                        break
+
+    target_path = None
+    raw_path = (path or "").strip()
+    candidates = []
+
+    if raw_path:
+        candidates.append(raw_path)
+        clean_rel = raw_path.replace("\\", "/").lstrip("/")
+        candidates.extend([
+            str((app_root / clean_rel).resolve()),
+            os.path.join(os.getcwd(), clean_rel),
+            os.path.abspath(raw_path),
+        ])
+
+    if effective_id:
+        candidates.extend([
+            str((app_root / "terraform_runs" / "default_worker" / effective_id).resolve()),
+            str((app_root / "terraform_runs" / effective_id).resolve()),
+            os.path.join("terraform_runs", "default_worker", effective_id),
+        ])
+        with _job_store_lock:
+            for k in [effective_id, f"dw-{effective_id}"]:
+                if k in _job_store:
+                    sp = _job_store[k].get("sandbox_path")
+                    if sp:
+                        candidates.append(sp)
+                        candidates.append(str((app_root / sp.replace("\\", "/").lstrip("/")).resolve()))
+
+        for meta_name in [f"logs/{effective_id}.meta.json", f"logs/dw-{effective_id}.meta.json"]:
+            meta_p = app_root / meta_name
+            if meta_p.exists():
+                try:
+                    with open(meta_p, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                    m_sp = (
+                        m_data.get("sandbox_path") 
+                        or (m_data.get("result", {}).get("output", {}).get("execution", {}) or {}).get("sandbox_path")
+                        or (m_data.get("result", {}).get("sandbox_path"))
+                    )
+                    if m_sp:
+                        candidates.append(m_sp)
+                        candidates.append(str((app_root / m_sp.replace("\\", "/").lstrip("/")).resolve()))
+                except Exception:
+                    pass
+
+    # If still not found and resolved_ticket, inspect meta.json files
+    if resolved_ticket:
+        logs_dir = app_root / "logs"
+        if logs_dir.exists():
+            for meta_p in logs_dir.glob("*.meta.json"):
+                try:
+                    with open(meta_p, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                    if m_data.get("external_id") == resolved_ticket or resolved_ticket in str(m_data.get("title", "")):
+                        effective_id = _clean_job_id(meta_p.name[:-10])
+                        m_sp = m_data.get("sandbox_path")
+                        if m_sp:
+                            candidates.append(m_sp)
+                            candidates.append(str((app_root / m_sp.replace("\\", "/").lstrip("/")).resolve()))
+                except Exception:
+                    pass
+
+    for c in candidates:
+        if c and os.path.exists(c):
+            if os.path.isfile(c):
+                c = os.path.dirname(c)
+            if os.path.isdir(c):
+                target_path = os.path.abspath(c)
+                break
+
+    full_logs = ""
+    if effective_id:
+        try:
+            full_logs = _build_full_job_logs(effective_id)
+        except Exception as e:
+            logger.warning("Could not build full job logs for sandbox zip %s: %s", effective_id, e)
+
+    if not full_logs and target_path and os.path.exists(target_path):
+        for candidate_name in ("live_logs.txt", "execution_logs.txt"):
+            c_p = os.path.join(target_path, candidate_name)
+            if os.path.exists(c_p):
+                try:
+                    with open(c_p, "r", encoding="utf-8", errors="replace") as f:
+                        full_logs = f.read()
+                    if full_logs:
+                        break
+                except Exception:
+                    pass
+
+    # Always ensure live_logs.txt and execution_logs.txt on disk are up to date
+    if target_path and os.path.exists(target_path) and full_logs:
+        try:
+            with open(os.path.join(target_path, "live_logs.txt"), "w", encoding="utf-8") as f:
+                f.write(full_logs)
+            with open(os.path.join(target_path, "execution_logs.txt"), "w", encoding="utf-8") as f:
+                f.write(full_logs)
+        except Exception:
+            pass
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        written_arcnames = set()
         if target_path and os.path.exists(target_path):
             for root, dirs, files in os.walk(target_path):
                 for skip in [".terraform", ".git", "__pycache__"]:
                     if skip in dirs:
                         dirs.remove(skip)
                 for file in files:
+                    # Skip disk live_logs/execution_logs if full_logs is available so we write the fresh version
+                    if full_logs and file in ("live_logs.txt", "execution_logs.txt"):
+                        continue
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, target_path)
                     zip_file.write(file_path, arcname)
+                    written_arcnames.add(arcname.replace("\\", "/"))
+
+            # Always write the definitive full_logs to the archive
+            if full_logs:
+                zip_file.writestr("live_logs.txt", full_logs)
+                zip_file.writestr("execution_logs.txt", full_logs)
         else:
-            effective_id = job_id or (os.path.basename(path.rstrip("/\\")) if path else "artifacts")
-            job_info = _job_store.get(effective_id, {})
-            import json
+            job_info = _job_store.get(effective_id, {}) if effective_id else {}
             summary_content = {
-                "job_id": effective_id,
+                "job_id": effective_id or "unknown",
                 "status": job_info.get("status", "completed"),
                 "message": job_info.get("message", "Execution artifacts"),
                 "result": job_info.get("result", {}),
             }
             zip_file.writestr("execution_summary.json", json.dumps(summary_content, indent=2))
             zip_file.writestr("README.txt", f"Chandra execution artifacts for job {effective_id}\n")
+            if full_logs:
+                zip_file.writestr("live_logs.txt", full_logs)
+                zip_file.writestr("execution_logs.txt", full_logs)
 
     buffer.seek(0)
+    dl_filename = f"{effective_id}_artifacts.zip" if effective_id else "execution_artifacts.zip"
     return StreamingResponse(
         buffer, 
         media_type="application/zip", 
-        headers={"Content-Disposition": "attachment; filename=execution_artifacts.zip"}
+        headers={
+            "Content-Disposition": f"attachment; filename={dl_filename}",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        }
     )
 
 class DestroyRequest(BaseModel):
-    path: str
+    model_config = ConfigDict(extra="ignore")
+    path: Optional[str] = None
     job_id: Optional[str] = None
     jiraUrl: Optional[str] = None
+    jira_url: Optional[str] = None
+    jira_issue_key: Optional[str] = None
+    jiraKey: Optional[str] = None
 
 @app.post("/destroy_sandbox")
 def destroy_sandbox(request: DestroyRequest):
     """Run terraform destroy on a completed sandbox directory."""
-    if request.job_id:
-        _thread_local.job_id = request.job_id
-        
-    if not request.path or not os.path.exists(request.path):
-        return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
-        
-    script_path = os.path.join(os.path.dirname(__file__), "scripts", "destroy_terraform.py")
+    import json
+    import re
+    app_root = Path(__file__).resolve().parent
+
+    effective_id = request.job_id
+    if effective_id:
+        effective_id = str(effective_id).strip()
+        if effective_id.startswith("dw-"):
+            effective_id = effective_id[3:]
     
-    cmd = [sys.executable, script_path, request.path]
-    if request.jiraUrl:
-        cmd.extend(["--jiraUrl", request.jiraUrl])
+    # Extract Jira ticket key if present in request.jiraUrl, request.job_id, or request.path
+    jira_raw = f"{request.jiraUrl or ''} {request.job_id or ''} {request.path or ''}"
+    jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', jira_raw.upper())
+    resolved_ticket = jira_match.group(1) if jira_match else None
+
+    # If effective_id is not a UUID or is empty, try resolving from ticket
+    uuid_pattern = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    if resolved_ticket:
+        if resolved_ticket in _ticket_to_job_id:
+            effective_id = _clean_job_id(_ticket_to_job_id[resolved_ticket])
+        else:
+            with _job_store_lock:
+                for jid, val in _job_store.items():
+                    if val.get("external_id") == resolved_ticket or resolved_ticket in str(val.get("title", "")):
+                        effective_id = _clean_job_id(jid)
+                        break
+
+    # If effective_id is still not provided or empty, extract from path
+    if (not effective_id or not re.search(uuid_pattern, effective_id)) and request.path:
+        uuid_match = re.search(uuid_pattern, request.path)
+        if uuid_match:
+            effective_id = uuid_match.group(0)
+
+    if effective_id:
+        _thread_local.job_id = effective_id
+        
+    target_path = None
+    raw_path = (request.path or "").strip()
+    candidates = []
+
+    if raw_path:
+        candidates.append(raw_path)
+        # Strip leading slashes to prevent Windows os.path.join from dropping the parent directory
+        clean_rel = raw_path.replace("\\", "/").lstrip("/")
+        candidates.extend([
+            str((app_root / clean_rel).resolve()),
+            os.path.join(os.getcwd(), clean_rel),
+            os.path.join(str(app_root), clean_rel),
+            os.path.abspath(raw_path),
+        ])
+
+    if effective_id:
+        eff_lower = effective_id.lower()
+        eff_upper = effective_id.upper()
+        candidates.extend([
+            str((app_root / "terraform_runs" / "default_worker" / effective_id).resolve()),
+            str((app_root / "terraform_runs" / "default_worker" / eff_lower).resolve()),
+            str((app_root / "terraform_runs" / "default_worker" / eff_upper).resolve()),
+            str((app_root / "terraform_runs" / effective_id).resolve()),
+            str((app_root / "terraform_runs" / eff_lower).resolve()),
+            os.path.join("terraform_runs", "default_worker", effective_id),
+            os.path.join("terraform_runs", "default_worker", eff_lower),
+        ])
+        
+        with _job_store_lock:
+            for k in [effective_id, eff_lower, f"dw-{effective_id}", f"dw-{eff_lower}"]:
+                if k in _job_store:
+                    sp = _job_store[k].get("sandbox_path")
+                    if sp:
+                        candidates.append(sp)
+                        sp_clean = sp.replace("\\", "/").lstrip("/")
+                        candidates.append(str((app_root / sp_clean).resolve()))
+
+        for meta_name in [f"{effective_id}.meta.json", f"{eff_lower}.meta.json"]:
+            meta_file = app_root / "logs" / meta_name
+            if meta_file.exists():
+                try:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                        m_sp = (
+                            m_data.get("sandbox_path") 
+                            or (m_data.get("result", {}).get("output", {}).get("execution", {}) or {}).get("sandbox_path")
+                            or (m_data.get("result", {}).get("sandbox_path"))
+                        )
+                        if m_sp:
+                            candidates.append(m_sp)
+                            m_clean = m_sp.replace("\\", "/").lstrip("/")
+                            candidates.append(str((app_root / m_clean).resolve()))
+                except Exception:
+                    pass
+
+        # Glob match in terraform_runs as fallback
+        tf_runs_dir = app_root / "terraform_runs"
+        if tf_runs_dir.exists():
+            for match in tf_runs_dir.rglob(f"*{eff_lower}*"):
+                if match.is_dir():
+                    candidates.append(str(match.resolve()))
+
+    # Check for candidates matching resolved Jira ticket
+    if resolved_ticket:
+        logs_dir = app_root / "logs"
+        if logs_dir.exists():
+            for m_file in logs_dir.glob("*.meta.json"):
+                try:
+                    with open(m_file, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                    if m_data.get("external_id") == resolved_ticket or resolved_ticket in str(m_data.get("title", "")):
+                        m_sp = m_data.get("sandbox_path")
+                        if m_sp:
+                            candidates.append(m_sp)
+                            candidates.append(str((app_root / m_sp.replace("\\", "/").lstrip("/")).resolve()))
+                except Exception:
+                    pass
+
+        tf_worker_dir = app_root / "terraform_runs" / "default_worker"
+        if tf_worker_dir.exists():
+            for run_dir in tf_worker_dir.iterdir():
+                if run_dir.is_dir():
+                    for check_file in ["execution_logs.txt", "live_logs.txt", "execution_result.json"]:
+                        cf = run_dir / check_file
+                        if cf.exists():
+                            try:
+                                with open(cf, "r", encoding="utf-8", errors="replace") as f:
+                                    snippet = f.read(4000)
+                                if resolved_ticket in snippet:
+                                    candidates.append(str(run_dir.resolve()))
+                                    break
+                            except Exception:
+                                pass
+
+    for c in candidates:
+        if c and os.path.exists(c):
+            if os.path.isfile(c):
+                c = os.path.dirname(c)
+            if os.path.isdir(c):
+                target_path = os.path.abspath(c)
+                break
+
+    jira_url = request.jiraUrl or resolved_ticket
+    if not jira_url and effective_id:
+        for meta_name in [f"{effective_id}.meta.json", f"{effective_id.lower()}.meta.json"]:
+            meta_file = app_root / "logs" / meta_name
+            if meta_file.exists():
+                try:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                        ext_id = (
+                            m_data.get("external_id") 
+                            or (m_data.get("result", {}).get("output", {}).get("request", {}) or {}).get("external_id")
+                        )
+                        if ext_id:
+                            jira_url = ext_id
+                            break
+                except Exception:
+                    pass
+
+    if not target_path or not os.path.exists(target_path):
+        logger.error(f"Sandbox directory not found for destroy request: path={request.path}, job_id={request.job_id}, effective_id={effective_id}, ticket={resolved_ticket}")
+        # If sandbox already deleted from disk but ticket exists, still delete the Jira ticket
+        if jira_url:
+            try:
+                from tools.jira_tools.create_jira_ticket import delete_jira_ticket
+                issue_key = jira_url.rstrip("/").split("/")[-1]
+                logger.info(f"Sandbox not found on disk, deleting Jira ticket {issue_key} directly...")
+                delete_jira_ticket(issue_key)
+                return JSONResponse(status_code=200, content={"status": "success", "message": f"Sandbox already removed; Jira ticket {issue_key} deleted successfully."})
+            except Exception as j_err:
+                logger.warning("Failed to delete Jira ticket on missing sandbox: %s", j_err)
+        return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
+
+    env = os.environ.copy()
+    tf_dir = os.environ.get("TERRAFORM_BIN_DIR")
+    winget_dir = str(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links")
+    paths_to_add = [p for p in [tf_dir, winget_dir] if p and os.path.exists(p)]
+    if paths_to_add:
+        env["PATH"] = os.pathsep.join(paths_to_add) + os.pathsep + env.get("PATH", "")
+
+    cache_dir = str((app_root / ".terraform_cache").resolve())
+    if os.path.exists(cache_dir):
+        env["TF_PLUGIN_CACHE_DIR"] = cache_dir
+
+    local_tmp = str((app_root / "terraform_runs" / ".tmp").resolve())
+    try:
+        os.makedirs(local_tmp, exist_ok=True)
+        env["TMP"] = local_tmp
+        env["TEMP"] = local_tmp
+    except Exception:
+        pass
+
+    if "AWS_DEFAULT_REGION" in env and "AWS_REGION" not in env:
+        env["AWS_REGION"] = env["AWS_DEFAULT_REGION"]
+    elif "AWS_REGION" in env and "AWS_DEFAULT_REGION" not in env:
+        env["AWS_DEFAULT_REGION"] = env["AWS_REGION"]
+        
+    script_path = str((app_root / "scripts" / "destroy_terraform.py").resolve())
+    cmd = [sys.executable, script_path, target_path]
+    if jira_url:
+        cmd.extend(["--jiraUrl", jira_url])
         
     try:
-        logger.info(f"Starting infrastructure destruction for: {request.path}")
+        logger.info(f"Starting infrastructure destruction for: {target_path}")
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
             errors="replace"
         )
         
         output = []
         for line in proc.stdout:
-            clean_line = line.rstrip('\\n')
+            clean_line = line.rstrip('\n')
             output.append(clean_line)
-            # Log to the parent process logger so it goes to the UI stream
             logger.info(clean_line)
             
         proc.wait()
-        full_output = "\\n".join(output)
+        full_output = "\n".join(output)
+
+        # Directly ensure Jira ticket is deleted from Jira upon destruction
+        if jira_url:
+            try:
+                from tools.jira_tools.create_jira_ticket import delete_jira_ticket
+                issue_key = jira_url.rstrip("/").split("/")[-1]
+                logger.info(f"Ensuring Jira ticket {issue_key} is deleted...")
+                del_res = delete_jira_ticket(issue_key)
+                logger.info(f"Jira deletion response for {issue_key}: {del_res}")
+            except Exception as j_err:
+                logger.warning(f"Could not delete Jira ticket {jira_url} in destroy_sandbox: {j_err}")
         
         if proc.returncode != 0:
             return JSONResponse(status_code=500, content={"error": "Destroy failed", "details": full_output})
+
+        if effective_id:
+            eff_lower = effective_id.lower()
+            with _job_store_lock:
+                for k in [effective_id, eff_lower, f"dw-{effective_id}", f"dw-{eff_lower}"]:
+                    if k in _job_store:
+                        _job_store[k]["status"] = "destroyed"
+                        
+            for meta_name in [f"{effective_id}.meta.json", f"{eff_lower}.meta.json"]:
+                meta_file = app_root / "logs" / meta_name
+                if meta_file.exists():
+                    try:
+                        with open(meta_file, "r+", encoding="utf-8") as f:
+                            m_data = json.load(f)
+                            m_data["status"] = "destroyed"
+                            f.seek(0)
+                            json.dump(m_data, f, indent=2)
+                            f.truncate()
+                    except Exception:
+                        pass
+
         return JSONResponse(status_code=200, content={"status": "success", "message": full_output})
     except Exception as e:
-        logger.exception("Failed to destroy sandbox at %s: %s", request.path, e)
+        logger.exception("Failed to destroy sandbox at %s: %s", target_path, e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/delete_sandbox")
 def delete_sandbox(request: DestroyRequest):
     """Delete a sandbox folder without running terraform destroy."""
     import shutil
+    import re
+    app_root = Path(__file__).resolve().parent
+    effective_id = request.job_id
+    if effective_id:
+        effective_id = str(effective_id).strip()
+        if effective_id.startswith("dw-"):
+            effective_id = effective_id[3:]
+
+    raw_path = (request.path or "").strip()
+    target_path = None
+    candidates = []
+    if raw_path:
+        candidates.append(raw_path)
+        clean_rel = raw_path.replace("\\", "/").lstrip("/")
+        candidates.extend([
+            str((app_root / clean_rel).resolve()),
+            os.path.join(os.getcwd(), clean_rel),
+            os.path.abspath(raw_path),
+        ])
+    if effective_id:
+        candidates.extend([
+            str((app_root / "terraform_runs" / "default_worker" / effective_id).resolve()),
+            str((app_root / "terraform_runs" / "default_worker" / effective_id.lower()).resolve()),
+        ])
+
+    for c in candidates:
+        if c and os.path.exists(c) and os.path.isdir(c):
+            target_path = Path(c)
+            break
+
     try:
-        path = Path(request.path)
-        if not path.exists() or not path.is_dir():
+        if not target_path or not target_path.exists() or not target_path.is_dir():
             return JSONResponse(status_code=404, content={"error": f"Directory not found: {request.path}"})
-        logger.info("Deleting sandbox folder: %s", request.path)
-        shutil.rmtree(str(path), ignore_errors=True)
-        logger.info("Sandbox folder deleted: %s", request.path)
-        return JSONResponse(status_code=200, content={"status": "success", "message": f"Deleted {request.path}"})
+        logger.info("Deleting sandbox folder: %s", target_path)
+        shutil.rmtree(str(target_path), ignore_errors=True)
+        logger.info("Sandbox folder deleted: %s", target_path)
+        return JSONResponse(status_code=200, content={"status": "success", "message": f"Deleted {target_path}"})
     except Exception as e:
         logger.exception("Failed to delete sandbox: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -1388,12 +2442,24 @@ def orchestrate_action(request: OrchestrateRequest):
     }
     """
     job_id = str(uuid.uuid4())
+    clean_id = _clean_job_id(job_id)
+    resolved_ticket = (
+        getattr(request, "jira_issue_key", None)
+        or getattr(request, "jiraKey", None)
+        or getattr(request, "jiraUrl", None)
+        or getattr(request, "jira_url", None)
+    )
+    register_job_context(
+        clean_id,
+        ticket=resolved_ticket,
+        sandbox_path=request.sandbox_path,
+    )
     
     logger.info(
         "POST /orchestrate submitted | job_id=%s | action=%s | jiraUrl=%s",
         job_id,
         request.action.actionName,
-        request.jiraUrl or "None",
+        resolved_ticket or "None",
     )
     
     # Initialize job record
@@ -1424,6 +2490,7 @@ def orchestrate_action(request: OrchestrateRequest):
     )
 
 class ResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     answers: List[str] = Field(default_factory=list, description="User's answers to the HITL questions")
     permission_set_id: Optional[str] = Field(default=None, description="Optional permission set ID for approval")
 
@@ -1473,12 +2540,19 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         """Resume a Digital Worker graph that is paused at execute_automation HITL."""
         import time
         start_time = time.time()
-        _thread_local.job_id = job_id
+        clean_id = _clean_job_id(job_id)
+        _thread_local.job_id = clean_id
+        try:
+            _active_job_id_cv.set(clean_id)
+        except Exception:
+            pass
+        register_job_context(clean_id, thread_id=threading.get_ident())
         try:
             with _job_store_lock:
                 _job_store[job_id]["thread_id"] = threading.get_ident()
 
-            if _digital_worker is None:
+            dw = get_digital_worker()
+            if dw is None:
                 raise RuntimeError("Digital Worker graph is not initialized")
 
             # Resume the DW graph with the user's answers or permission_set_id as the interrupt value
@@ -1488,12 +2562,12 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
             if request.permission_set_id:
                 resume_payload = {"permission_set_id": request.permission_set_id}
                 
-            final_state = _digital_worker.invoke(
+            final_state = dw.invoke(
                 LGCommand(resume=resume_payload),
                 config=_dw_thread_config(job_id),
             )
 
-            snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+            snapshot = dw.get_state(_dw_thread_config(job_id))
             
             if snapshot.next and "permission_selection_pause" in snapshot.next:
                 interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
@@ -1507,6 +2581,14 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                 return
 
             if snapshot.next and "gate_2_review" in snapshot.next:
+                if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+                    logger.info("DW RESUME [%s] auto-resuming Gate 2 execution review directly", job_id)
+                    final_state = dw.invoke(
+                        LGCommand(resume={"approved": True, "approver": "system", "comment": "Gate 2 auto-approved directly"}),
+                        config=_dw_thread_config(job_id),
+                    )
+                    _dw_finalize_job(job_id, final_state, start_time)
+                    return
                 interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
                 interrupt_val = interrupts[0].value if interrupts else {}
                 with _job_store_lock:
@@ -1557,6 +2639,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     _job_store[job_id]["status"] = "failed"
                     _job_store[job_id]["error"] = str(exc)
                     _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+            _notify_jira_job_failure(job_id, str(exc))
         finally:
             _thread_local.job_id = None
 
@@ -1564,6 +2647,13 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
         """Resume a direct Execution Agent job (AWS Task or KRA)."""
         import time
         start_time = time.time()
+        clean_id = _clean_job_id(job_id)
+        _thread_local.job_id = clean_id
+        try:
+            _active_job_id_cv.set(clean_id)
+        except Exception:
+            pass
+        register_job_context(clean_id, thread_id=threading.get_ident())
         exec_thread_id = f"exec-{job_id}"
         try:
             with _job_store_lock:
@@ -1624,6 +2714,19 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                         )
                     except Exception as e:
                         logger.warning("Could not post Jira completion on resume: %s", e)
+            elif response.statusCode >= 400:
+                jira_ref = stored_action.get("jiraUrl") or _job_store[job_id].get("external_id") or _job_store[job_id].get("title")
+                if jira_ref:
+                    try:
+                        from src.chandra.digital_worker.tracker import post_jira_failure
+                        post_jira_failure(
+                            issue_key_or_url=jira_ref,
+                            error=response.summary or f"Execution failed with statusCode {response.statusCode}",
+                            job_id=job_id,
+                            action=stored_action,
+                        )
+                    except Exception as e:
+                        logger.warning("Could not post Jira failure on resume: %s", e)
             
             job_label = "AWS_TASK" if stored_action.get("action_type") == "AWS_TASK" else "KRA"
             logger.info("%s RESUME [%s] completed | statusCode=%d", job_label, job_id, response.statusCode)
@@ -1635,6 +2738,7 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                     _job_store[job_id]["status"] = "failed"
                     _job_store[job_id]["error"] = str(exc)
                     _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+            _notify_jira_job_failure(job_id, str(exc))
 
     if job_type == "dw":
         _thread_pool.submit(_run_dw_resume)
@@ -1670,46 +2774,154 @@ def get_orchestrate_status(job_id: str):
 
     return JobStatusResponse(job_id=job_id, **job)
 
+class LogSyncPayload(BaseModel):
+    logs: List[Dict[str, Any]] = Field(default_factory=list)
+
+@app.post("/orchestrate/logs/{job_id}/sync")
+def sync_job_logs(job_id: str, payload: LogSyncPayload):
+    """Sync frontend-accumulated live logs for a job so they are permanently preserved."""
+    clean_id = _clean_job_id(job_id)
+    if not clean_id or not payload.logs:
+        return {"status": "ok", "synced": 0}
+
+    if clean_id not in _synced_frontend_logs:
+        _synced_frontend_logs[clean_id] = []
+
+    existing_msgs = {l.get("message") for l in _synced_frontend_logs[clean_id]}
+    added = 0
+    for l in payload.logs:
+        msg = l.get("message")
+        if msg and msg not in existing_msgs:
+            _synced_frontend_logs[clean_id].append(l)
+            existing_msgs.add(msg)
+            added += 1
+
+    try:
+        _build_full_job_logs(clean_id)
+    except Exception:
+        pass
+
+    return {"status": "ok", "synced": added, "total": len(_synced_frontend_logs[clean_id])}
+
 @app.get("/orchestrate/logs/{job_id}")
 def download_orchestrate_logs(job_id: str):
-    """Download the logs for a specific orchestration job."""
-    log_file_path = f"logs/{job_id}.log"
-    os.makedirs("logs", exist_ok=True)
-    if not os.path.exists(log_file_path):
-        lines = []
-        jid_lower = job_id.lower().strip()
-        matched = [
-            l for l in _log_buffer
-            if (l.get("job_id") and str(l["job_id"]).lower() == jid_lower)
-            or (l.get("logger") and jid_lower in str(l["logger"]).lower())
-            or (l.get("message") and jid_lower in str(l["message"]).lower())
-        ]
-        if matched:
-            for entry in matched:
-                lines.append(f"[{entry.get('level', 'INFO')}] {entry.get('message', '')}")
-        else:
-            job_info = _job_store.get(job_id, {})
-            result = job_info.get("result", {})
-            lines.append(f"=== Execution Logs for Job: {job_id} ===")
-            lines.append(f"Status: {job_info.get('status')}")
-            lines.append(f"Message: {job_info.get('message')}")
-            if result:
-                import json
-                lines.append(f"Result:\n{json.dumps(result, indent=2)}")
-        try:
-            with open(log_file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-        except Exception:
-            pass
+    """Download the full live logs for a specific orchestration or digital worker job."""
+    from fastapi.responses import Response
+    import re
+    app_root = Path(__file__).resolve().parent
+    clean_id = _clean_job_id(job_id)
 
-    from fastapi.responses import FileResponse
-    return FileResponse(log_file_path, media_type='text/plain', filename=f"{job_id}.log")
+    # Check if job_id was passed as a Jira ticket (e.g. DEV-1068)
+    jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', str(job_id).upper())
+    resolved_ticket = jira_match.group(1) if jira_match else None
+    if resolved_ticket and resolved_ticket in _ticket_to_job_id:
+        clean_id = _clean_job_id(_ticket_to_job_id[resolved_ticket])
+    elif resolved_ticket:
+        with _job_store_lock:
+            for jid, val in _job_store.items():
+                if val.get("external_id") == resolved_ticket or resolved_ticket in str(val.get("title", "")):
+                    clean_id = _clean_job_id(jid)
+                    break
+        if clean_id == _clean_job_id(job_id) or not clean_id:
+            for m_file in (app_root / "logs").glob("*.meta.json"):
+                try:
+                    with open(m_file, "r", encoding="utf-8") as f:
+                        m_val = json.load(f)
+                    if m_val.get("external_id") == resolved_ticket:
+                        clean_id = _clean_job_id(m_file.name[:-10])
+                        break
+                except Exception:
+                    pass
+
+    content = ""
+    try:
+        content = _build_full_job_logs(clean_id)
+    except Exception as e:
+        logger.warning("Could not build full job logs for download_orchestrate_logs %s: %s", clean_id, e)
+
+    # If full live log content is available and substantial, return it directly
+    if content and len(content.strip()) > 100:
+        return Response(
+            content=content,
+            media_type='text/plain; charset=utf-8',
+            headers={
+                "Content-Disposition": f'attachment; filename="{clean_id}.log"',
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        )
+
+    # Fallback: check files on disk
+    for candidate in [
+        app_root / "logs" / f"{clean_id}.log",
+        app_root / "logs" / f"dw-{clean_id}.log",
+        app_root / "terraform_runs" / "default_worker" / clean_id / "live_logs.txt",
+        app_root / "terraform_runs" / "default_worker" / clean_id / "execution_logs.txt",
+    ]:
+        if candidate.exists() and candidate.stat().st_size > 50:
+            try:
+                with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+                    disk_content = f.read()
+                if len(disk_content.strip()) > 50:
+                    return Response(
+                        content=disk_content,
+                        media_type='text/plain; charset=utf-8',
+                        headers={
+                            "Content-Disposition": f'attachment; filename="{clean_id}.log"',
+                            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                            "Pragma": "no-cache",
+                            "Expires": "0",
+                        }
+                    )
+            except Exception:
+                pass
+
+    if content:
+        return Response(
+            content=content,
+            media_type='text/plain; charset=utf-8',
+            headers={
+                "Content-Disposition": f'attachment; filename="{clean_id}.log"',
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        )
+
+    return Response(
+        content=f"No logs found for job {clean_id}.",
+        media_type='text/plain; charset=utf-8',
+        headers={
+            "Content-Disposition": f'attachment; filename="{clean_id}.log"',
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )
 
 def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
     """Background worker to run orchestration without blocking the API."""
     import time
     start_time = time.time()
-    _thread_local.job_id = job_id
+    clean_id = _clean_job_id(job_id)
+    _thread_local.job_id = clean_id
+    try:
+        _active_job_id_cv.set(clean_id)
+    except Exception:
+        pass
+    resolved_ticket = (
+        getattr(request, "jira_issue_key", None)
+        or getattr(request, "jiraKey", None)
+        or getattr(request, "jiraUrl", None)
+        or getattr(request, "jira_url", None)
+    )
+    register_job_context(
+        clean_id,
+        thread_id=threading.get_ident(),
+        ticket=resolved_ticket,
+        sandbox_path=request.sandbox_path,
+    )
 
     try:
         with _job_store_lock:
@@ -1794,8 +3006,15 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
         orchestrator = ExecutionAgents(max_iterations=request.max_iterations, job_id=job_id)
 
         action_dict = request.action.model_dump()
-        if request.jiraUrl:
-            action_dict["jiraUrl"] = request.jiraUrl
+        resolved_jira = (
+            getattr(request, "jira_issue_key", None)
+            or getattr(request, "jiraKey", None)
+            or getattr(request, "jiraUrl", None)
+            or getattr(request, "jira_url", None)
+        )
+        if resolved_jira:
+            action_dict["jiraUrl"] = resolved_jira
+            action_dict["jiraKey"] = resolved_jira
 
         # Store action_dict and aws_permissions so the /resume endpoint can use it without needing a new request body
         aws_perms = request.aws_permissions or []
@@ -1889,6 +3108,19 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                         )
                     except Exception as e:
                         logger.warning("Could not post Jira completion on orchestrate: %s", e)
+            else:
+                jira_ref = action_dict.get("jiraUrl") or request.jiraUrl or _job_store[job_id].get("external_id") or _job_store[job_id].get("title")
+                if jira_ref:
+                    try:
+                        from src.chandra.digital_worker.tracker import post_jira_failure
+                        post_jira_failure(
+                            issue_key_or_url=jira_ref,
+                            error=response.summary or f"Orchestration completed with errors (statusCode={response.statusCode})",
+                            job_id=job_id,
+                            action=action_dict,
+                        )
+                    except Exception as e:
+                        logger.warning("Could not post Jira failure on orchestrate: %s", e)
 
         logger.info(
             "ORCHESTRATION TASK [%s] completed | statusCode=%d | duration=%.1fs",
@@ -1896,6 +3128,10 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
             response.statusCode,
             time.time() - start_time
         )
+        try:
+            _build_full_job_logs(job_id)
+        except Exception as e:
+            logger.warning("Could not build full job logs on orchestration completion: %s", e)
 
     except (InterruptedError, SystemExit):
         # Both are raised by our stop mechanism — status is already "stopped", do nothing
@@ -1909,6 +3145,7 @@ def _run_orchestration_task(job_id: str, request: OrchestrateRequest):
                 _job_store[job_id]["error"] = str(exc)
                 _job_store[job_id]["completed_at"] = time.time()
                 _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+        _notify_jira_job_failure(job_id, str(exc))
     finally:
         _thread_local.job_id = None
         # Clean up cancellation state so this thread ID can be safely reused by the pool
@@ -1944,6 +3181,7 @@ class CloudRequestSubmission(BaseModel):
 class ApprovalSubmission(BaseModel):
     approved: bool = Field(description="True to approve automated execution, False to reject.")
     approver: Optional[str] = Field(default=None, description="Who decided.")
+    agent_name: Optional[str] = Field(default=None, description="Active digital worker agent name.")
     comment: str = Field(default="", description="Optional decision rationale.")
     permission_set_id: Optional[str] = Field(default=None, description="Optional permission set ID attached by Copilot.")
     permission_set_document: Optional[Dict[str, Any]] = Field(default=None, description="Optional mocked permission set for E2E testing.")
@@ -1951,6 +3189,61 @@ class ApprovalSubmission(BaseModel):
 
 def _dw_thread_config(job_id: str) -> Dict[str, Any]:
     return {"configurable": {"thread_id": job_id}}
+
+
+def _notify_jira_job_failure(job_id: str, error_detail: str) -> None:
+    """Ensure a failure comment is always posted to Jira when an execution fails or crashes."""
+    try:
+        from src.chandra.digital_worker.tracker import post_jira_failure
+        issue_key = None
+        with _job_store_lock:
+            job_info = _job_store.get(job_id, {})
+            issue_key = job_info.get("external_id")
+            if not issue_key:
+                res = job_info.get("result") or {}
+                app = res.get("approval_request") or {}
+                issue_key = app.get("external_id")
+            if not issue_key:
+                act = job_info.get("action_dict") or {}
+                issue_key = act.get("jiraUrl") or act.get("jira_issue_key")
+            if not issue_key:
+                title = job_info.get("title") or ""
+                import re
+                m = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", str(title))
+                if m:
+                    issue_key = m.group(1)
+
+        # Fallback 1: LangGraph checkpoint state
+        if not issue_key:
+            try:
+                dw = get_digital_worker()
+                if dw:
+                    st = dw.get_state(_dw_thread_config(job_id))
+                    if st and st.values:
+                        req = st.values.get("request")
+                        if req:
+                            issue_key = getattr(req, "external_id", None) or (req.get("external_id") if isinstance(req, dict) else None)
+            except Exception:
+                pass
+
+        # Fallback 2: Disk metadata
+        if not issue_key:
+            try:
+                meta_file = f"logs/{job_id}.meta.json"
+                if os.path.exists(meta_file):
+                    import json
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        m = json.load(f)
+                        issue_key = m.get("external_id") or m.get("jira_key")
+            except Exception:
+                pass
+
+        if issue_key:
+            post_jira_failure(issue_key, error=error_detail, job_id=job_id)
+        else:
+            logger.warning("Could not resolve Jira issue_key for failed job %s", job_id)
+    except Exception as e:
+        logger.warning("Could not post Jira failure comment for job %s: %s", job_id, e)
 
 
 def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float) -> None:
@@ -1976,8 +3269,15 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
             elif isinstance(execution, dict) and "pipeline_response" in execution:
                 pipeline_res = execution.get("pipeline_response") or {}
 
-        # Guarantee actual_status is completed if terraform apply succeeded or final_status is COMPLETED
-        if final_state.get("terraform_apply_result", {}).get("success") or final_state.get("final_status") == "COMPLETED":
+        # Set status based on governed execution results
+        tf_res = final_state.get("terraform_apply_result") or {}
+        if tf_res.get("dry_run") or final_state.get("final_status") == "INDETERMINATE" or (execution and getattr(execution, "dry_run", False)) or (execution and getattr(execution, "status", None) == "dry_run"):
+            actual_status = "dry_run"
+        elif final_state.get("final_status") == "FAILED" or (
+            tf_res and not tf_res.get("success") and not tf_res.get("dry_run")
+        ):
+            actual_status = "failed"
+        elif tf_res.get("success") or final_state.get("final_status") == "COMPLETED":
             actual_status = "completed"
 
         _job_store[job_id]["status"] = actual_status
@@ -1992,6 +3292,15 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
         _job_store[job_id]["message"] = (
             f"Workflow {actual_status} in {time.time() - start_time:.1f}s"
         )
+        if actual_status == "failed":
+            fail_reason = (
+                final_state.get("terraform_apply_result", {}).get("detail")
+                or (execution.detail if execution and hasattr(execution, "detail") else None)
+                or _job_store[job_id].get("error")
+                or _job_store[job_id].get("message")
+                or "Workflow execution failed"
+            )
+            _notify_jira_job_failure(job_id, str(fail_reason))
         
         sandbox_path = None
         if execution:
@@ -2023,21 +3332,11 @@ def _dw_finalize_job(job_id: str, final_state: Dict[str, Any], start_time: float
             except Exception as e:
                 logger.warning("Could not write execution_result.json to sandbox: %s", e)
 
-        # Write execution logs to logs/<job_id>.log so /orchestrate/logs/<job_id> immediately finds it
+        # Compile full execution & live logs report to logs/<job_id>.log and sandbox files
         try:
-            from pathlib import Path
-            os.makedirs("logs", exist_ok=True)
-            log_file = Path("logs") / f"{job_id}.log"
-            logs_content = ""
-            if execution and getattr(execution, "execution_logs", None):
-                logs_content = execution.execution_logs
-            elif final_state.get("terraform_apply_result", {}).get("stdout"):
-                logs_content = final_state["terraform_apply_result"]["stdout"]
-            if logs_content and not log_file.exists():
-                with open(log_file, "w", encoding="utf-8") as lf:
-                    lf.write(logs_content)
-        except Exception:
-            pass
+            _build_full_job_logs(job_id)
+        except Exception as e:
+            logger.warning("Could not build full job logs on job finalization: %s", e)
 
 
 def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) -> None:
@@ -2045,9 +3344,25 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
     import time
     import threading
     start_time = time.time()
-    _thread_local.job_id = job_id
+    clean_id = _clean_job_id(job_id)
+    _thread_local.job_id = clean_id
     try:
-        if _digital_worker is None:
+        _active_job_id_cv.set(clean_id)
+    except Exception:
+        pass
+
+    ticket = None
+    if isinstance(submission.payload, dict):
+        ticket = submission.payload.get("issue", {}).get("key") or submission.payload.get("key")
+    register_job_context(
+        clean_id,
+        thread_id=threading.get_ident(),
+        ticket=ticket,
+        sandbox_path=os.path.join("terraform_runs", "default_worker", clean_id)
+    )
+    try:
+        dw = get_digital_worker()
+        if dw is None:
             raise RuntimeError("Digital Worker graph is not initialized")
         with _job_store_lock:
             _job_store[job_id]["status"] = "running"
@@ -2057,7 +3372,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
             _job_store[job_id]["message"] = f"Processing {submission.source} request..."
             _job_store[job_id]["thread_id"] = threading.get_ident()
 
-        final_state = _digital_worker.invoke(
+        final_state = dw.invoke(
             {
                 "source": submission.source,
                 "payload": submission.payload,
@@ -2069,7 +3384,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
 
         # interrupt_before=["approval_gate"] pauses the run when human
         # approval is required. Surface that state instead of completing.
-        snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+        snapshot = dw.get_state(_dw_thread_config(job_id))
         if snapshot.next and "approval_gate" in snapshot.next:
             values = snapshot.values
             request = values["request"]
@@ -2118,6 +3433,15 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
 
         # Handle Gate 2 execution review pause (governed Jira path)
         if snapshot.next and "gate_2_review" in snapshot.next:
+            if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+                from langgraph.types import Command as _LGCommand
+                logger.info("DIGITAL WORKER JOB [%s] auto-resuming Gate 2 execution review directly", job_id)
+                final_state = dw.invoke(
+                    _LGCommand(resume={"approved": True, "approver": "system", "comment": "Gate 2 auto-approved directly"}),
+                    config=_dw_thread_config(job_id),
+                )
+                _dw_finalize_job(job_id, final_state, start_time)
+                return
             interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
             interrupt_val = interrupts[0].value if interrupts else {}
             with _job_store_lock:
@@ -2181,6 +3505,7 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
                 _job_store[job_id]["error"] = str(exc)
                 _job_store[job_id]["completed_at"] = time.time()
                 _job_store[job_id]["message"] = f"Failed: {str(exc)[:200]}"
+        _notify_jira_job_failure(job_id, str(exc))
     finally:
         _thread_local.job_id = None
 
@@ -2192,9 +3517,16 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
     from langgraph.types import Command
 
     start_time = time.time()
-    _thread_local.job_id = job_id
+    clean_id = _clean_job_id(job_id)
+    _thread_local.job_id = clean_id
     try:
-        if _digital_worker is None:
+        _active_job_id_cv.set(clean_id)
+    except Exception:
+        pass
+    register_job_context(clean_id, thread_id=threading.get_ident())
+    try:
+        dw = get_digital_worker()
+        if dw is None:
             raise RuntimeError("Digital Worker graph is not initialized")
             
         with _job_store_lock:
@@ -2207,7 +3539,14 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["thread_id"] = threading.get_ident()
             # Flag that this job was explicitly approved by a human
             _job_store[job_id]["approved_by_human"] = True
+            _job_store[job_id]["approved_by"] = approval.approver or "operator"
             _job_store[job_id]["requires_approval"] = False
+            if approval.agent_name and str(approval.agent_name).strip():
+                try:
+                    from src.chandra.digital_worker.tracker import set_active_agent_name
+                    set_active_agent_name(str(approval.agent_name).strip())
+                except Exception:
+                    pass
             
         # Resolve permission_set_document if not provided
         perm_doc = approval.permission_set_document
@@ -2240,12 +3579,12 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             resume_payload = approval.model_dump()
             resume_payload["permission_set_document"] = perm_doc
 
-        final_state = _digital_worker.invoke(
+        final_state = dw.invoke(
             Command(resume=resume_payload),
             config=_dw_thread_config(job_id),
         )
 
-        snapshot = _digital_worker.get_state(_dw_thread_config(job_id))
+        snapshot = dw.get_state(_dw_thread_config(job_id))
 
         # Handle permission selection pause
         if snapshot.next and "permission_selection_pause" in snapshot.next:
@@ -2261,6 +3600,14 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
 
         # Handle Gate 2 execution review pause (governed Jira path)
         if snapshot.next and "gate_2_review" in snapshot.next:
+            if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+                logger.info("DIGITAL WORKER JOB [%s] auto-resuming Gate 2 execution review directly", job_id)
+                final_state = dw.invoke(
+                    Command(resume={"approved": True, "approver": "system", "comment": "Gate 2 auto-approved directly"}),
+                    config=_dw_thread_config(job_id),
+                )
+                _dw_finalize_job(job_id, final_state, start_time)
+                return
             interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
             interrupt_val = interrupts[0].value if interrupts else {}
             with _job_store_lock:
@@ -2317,6 +3664,7 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
             _job_store[job_id]["error"] = str(exc)
             _job_store[job_id]["completed_at"] = time.time()
             _job_store[job_id]["message"] = f"Resume failed: {str(exc)[:200]}"
+        _notify_jira_job_failure(job_id, str(exc))
     finally:
         _thread_local.job_id = None
 
@@ -2398,7 +3746,7 @@ def _dw_request_summary(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "message": job.get("message", ""),
         "source": approval.get("source") or request.get("source") or job.get("source"),
         "title": approval.get("title") or request.get("title") or job.get("title"),
-        "external_id": approval.get("external_id") or request.get("external_id"),
+        "external_id": approval.get("external_id") or request.get("external_id") or job.get("external_id"),
         "category": approval.get("category") or classification.get("category"),
         "platform": approval.get("platform") or classification.get("platform"),
         "priority": approval.get("priority") or classification.get("priority"),
@@ -2428,7 +3776,8 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "message": f"Unsupported source '{submission.source}'. Expected one of: {', '.join(SUPPORTED_SOURCES)}",
         })
         
-    if _digital_worker is None:
+    dw = get_digital_worker()
+    if dw is None:
         return JSONResponse(status_code=503, content={
             "status": "error", "message": "Digital Worker graph is not initialized",
         })
@@ -2436,6 +3785,8 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
     payload = submission.payload or {}
     issue = payload.get("issue") or {}
     jira_key = issue.get("key") if isinstance(issue, dict) else None
+    if not jira_key and isinstance(payload, dict):
+        jira_key = payload.get("key") or payload.get("issue_key")
     if jira_key and submission.source == "jira":
         with _job_store_lock:
             for jid, existing in _job_store.items():
@@ -2463,8 +3814,9 @@ def _submit_digital_worker_job(submission: CloudRequestSubmission) -> JSONRespon
             "kind": "digital_worker",
             "source": submission.source,
             "title": _dw_submission_title(submission),
+            "external_id": jira_key,
             "dry_run": submission.dry_run,
-            "submitted_at": time.time(),
+            "submitted_at": (submission.payload.get("submitted_at") if isinstance(submission.payload, dict) else None) or time.time(),
             "status": "pending", "progress": 0,
             "message": f"Queued: {submission.source} request workflow",
             "result": None, "error": None,
@@ -2505,24 +3857,70 @@ def submit_cloud_request(submission: CloudRequestSubmission):
     return _submit_digital_worker_job(submission)
 
 
+@app.get("/")
+def root_status():
+    """Root endpoint for status check and reverse proxy validation."""
+    return {"status": "ok", "service": "Chandra Digital Worker", "webhooks_url": "/webhooks/jira"}
+
+
+@app.get("/webhooks/{source}")
+def webhook_source_status(source: str):
+    """Liveness probe for a specific webhook channel."""
+    return {"status": "ok", "channel": source, "method": "POST required"}
+
+
+@app.post("/")
+def receive_root_webhook(
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    x_chandra_webhook_token: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+):
+    """Fallback handler when webhooks are configured with the root URL (e.g. ngrok root URL).
+
+    Automatically detects and routes Jira, Slack, Teams, or Cloud monitoring payloads.
+    """
+    logger.info("Received POST / at root URL (fallback routing)")
+    # Detect Jira
+    if (
+        "issue" in payload
+        or "webhookEvent" in payload
+        or payload.get("issue_event_type_name")
+        or "jira" in str(payload.get("webhookEvent", "")).lower()
+        or (isinstance(payload.get("issue"), dict) and "key" in payload["issue"])
+    ):
+        return _process_webhook("jira", payload, None, x_chandra_webhook_token, token)
+    # Detect Slack
+    if payload.get("type") == "url_verification" or "event" in payload or "challenge" in payload:
+        return _process_webhook("slack", payload, None, x_chandra_webhook_token, token)
+    # Detect Teams
+    if "teams" in str(payload).lower() or payload.get("type") == "message":
+        return _process_webhook("teams", payload, None, x_chandra_webhook_token, token)
+    # Default to Jira webhook if payload looks like an issue or has key/fields
+    if "key" in payload or "fields" in payload:
+        return _process_webhook("jira", payload, None, x_chandra_webhook_token, token)
+    # Default to generic webhook
+    return _process_webhook("webhook", payload, None, x_chandra_webhook_token, token)
+
+
 @app.post("/webhooks/{source}/{path_token}")
 def receive_webhook_with_path(
     source: str,
     path_token: str,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any] = Body(default_factory=dict),
     x_chandra_webhook_token: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
 ):
-    return _process_webhook(source, payload, path_token, x_chandra_webhook_token, token)
+    return _process_webhook(source, payload or {}, path_token, x_chandra_webhook_token, token)
 
 @app.post("/webhooks/{source}")
+@app.post("/webhooks/{source}/")
 def receive_webhook(
     source: str,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any] = Body(default_factory=dict),
     x_chandra_webhook_token: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
 ):
-    return _process_webhook(source, payload, None, x_chandra_webhook_token, token)
+    return _process_webhook(source, payload or {}, None, x_chandra_webhook_token, token)
 
 
 def _process_webhook(
@@ -2532,8 +3930,11 @@ def _process_webhook(
     x_chandra_webhook_token: Optional[str] = None,
     token: Optional[str] = None,
 ):
-    import json
-    logger.info(f"Received webhook from {source} with payload: {json.dumps(payload)}")
+    try:
+        import json
+        logger.info(f"Received webhook from {source} with payload: {json.dumps(payload, default=str)}")
+    except Exception:
+        logger.info(f"Received webhook from {source} with non-serializable payload")
     """Omnichannel webhook intake: jira | slack | teams | email | monitoring |
     cloudwatch | azure_monitor | gcp_monitoring | webhook.
 
@@ -2560,28 +3961,23 @@ def _process_webhook(
 
 
 @app.post("/requests/{job_id}/approve")
+@app.post("/requests/{job_id}/approve/")
 def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
     """Approve or reject a workflow paused at the human approval gate (or attach permissions)."""
+    if approval.agent_name and str(approval.agent_name).strip():
+        try:
+            from src.chandra.digital_worker.tracker import set_active_agent_name
+            set_active_agent_name(str(approval.agent_name).strip())
+        except Exception:
+            pass
     with _job_store_lock:
         job = _job_store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"error": "Job not found"})
         if job.get("status") not in ["awaiting_approval", "awaiting_permission", "awaiting_gate2"]:
-            if job.get("status") in ["running", "completed"]:
-                return JSONResponse(status_code=202, content={
-                    "job_id": job_id, "status": job.get("status"),
-                    "message": f"Job is already {job.get('status')}. Poll /jobs/status/{job_id}",
-                    "poll_url": f"/jobs/status/{job_id}",
-                })
             return JSONResponse(status_code=409, content={
                 "error": f"Job is '{job.get('status')}', not awaiting_approval/awaiting_permission/awaiting_gate2",
             })
-    if approval.approver and approval.approver.lower() not in ("console", "operator", "system", "human approver"):
-        try:
-            from src.chandra.digital_worker.tracker import set_active_agent_name
-            set_active_agent_name(approval.approver)
-        except Exception:
-            pass
     _thread_pool.submit(_resume_digital_worker_task, job_id, approval)
     return JSONResponse(status_code=202, content={
         "job_id": job_id, "status": "accepted",
@@ -2593,43 +3989,295 @@ def approve_cloud_request(job_id: str, approval: ApprovalSubmission):
 class DigitalWorkerSettings(BaseModel):
     max_iterations: int = Field(default=5, description="Maximum agent loop iterations.")
     command_timeout: int = Field(default=300, description="Timeout for shell commands.")
-    agent_name: Optional[str] = Field(default="DFTE", description="Onboarded agent name.")
+    agent_name: Optional[str] = Field(default=None, description="Onboarded agent name.")
+    onboarded_at: Optional[float] = Field(default=None, description="Timestamp when agent was onboarded.")
 
 @app.get("/settings/digital-worker", response_model=DigitalWorkerSettings)
+@app.get("/settings/digital-worker/", response_model=DigitalWorkerSettings)
 def get_digital_worker_settings():
     """Get the global digital worker settings."""
     config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
+    data = {}
     if os.path.exists(config_path):
         import json
         try:
             with open(config_path, "r") as f:
                 data = json.load(f)
-                return DigitalWorkerSettings(**data)
         except Exception as e:
             logger.warning("Failed to load digital_worker_config.json: %s", e)
-    return DigitalWorkerSettings()
+    try:
+        from src.chandra.digital_worker.tracker import get_active_agent_name, get_active_agent_onboarded_at
+        if "agent_name" not in data or not data["agent_name"]:
+            data["agent_name"] = get_active_agent_name()
+        if "onboarded_at" not in data or not data["onboarded_at"]:
+            data["onboarded_at"] = get_active_agent_onboarded_at()
+    except Exception:
+        pass
+    return DigitalWorkerSettings(**data)
 
 @app.post("/settings/digital-worker")
+@app.post("/settings/digital-worker/")
 def update_digital_worker_settings(settings: DigitalWorkerSettings):
     """Update the global digital worker settings."""
     config_path = os.path.join(os.path.dirname(__file__), "digital_worker_config.json")
     import json
     try:
-        with open(config_path, "w") as f:
-            json.dump(settings.model_dump(), f, indent=4)
-        if settings.agent_name and settings.agent_name.strip():
+        existing = {}
+        if os.path.exists(config_path):
             try:
-                from src.chandra.digital_worker.tracker import set_active_agent_name
-                set_active_agent_name(settings.agent_name.strip())
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
             except Exception:
                 pass
+        data = existing.copy()
+        data["max_iterations"] = settings.max_iterations
+        data["command_timeout"] = settings.command_timeout
+
+        new_name = (settings.agent_name or "").strip()
+        if new_name and new_name.upper() not in ("DFTE", "CONSOLE", "OPERATOR", "SYSTEM", "HUMAN APPROVER", "UNKNOWN", "SUGAR BABY"):
+            data["agent_name"] = new_name
+            try:
+                from src.chandra.digital_worker.tracker import set_active_agent_name, get_active_agent_onboarded_at
+                set_active_agent_name(new_name)
+                if not data.get("onboarded_at"):
+                    data["onboarded_at"] = get_active_agent_onboarded_at()
+            except Exception:
+                pass
+        elif "agent_name" not in data or not data["agent_name"]:
+            data["agent_name"] = new_name or "CHANDRA DIGITAL WORKER"
+
+        if settings.onboarded_at:
+            data["onboarded_at"] = settings.onboarded_at
+        elif not data.get("onboarded_at"):
+            import time
+            data["onboarded_at"] = time.time()
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/requests/sync-jira")
+@app.post("/webhooks/jira/sync")
+def sync_jira_issues(
+    limit: int = Query(default=10, ge=1, le=50),
+    project: Optional[str] = Query(default=None),
+):
+    """Pull recent Jira issues directly from Jira REST API and submit any that haven't been processed yet."""
+    try:
+        from src.chandra.digital_worker.tracker import _jira_client
+        client = _jira_client()
+        if client is None:
+            return JSONResponse(status_code=503, content={
+                "status": "error",
+                "message": "Jira is not configured (missing JIRA_SERVER, JIRA_EMAIL, or JIRA_API_TOKEN)"
+            })
+        
+        jql = f"project = {project} AND created >= -30d ORDER BY created DESC" if project else "created >= -30d ORDER BY created DESC"
+        issues = client.search_issues(jql, maxResults=limit)
+        imported = []
+        already_present = []
+        for issue in issues:
+            key = issue.key
+            # Check if this issue is already in _job_store
+            has_job = False
+            with _job_store_lock:
+                for jid, existing in _job_store.items():
+                    if existing.get("kind") == "digital_worker":
+                        res = existing.get("result") or {}
+                        app = res.get("approval_request") or {}
+                        ext = app.get("external_id") or existing.get("external_id") or ""
+                        title = existing.get("title") or ""
+                        if key == ext or key in ext or key in title:
+                            has_job = True
+                            break
+            if has_job:
+                already_present.append(key)
+                continue
+
+            # Submit issue as digital worker request
+            raw_desc = getattr(issue.fields, "description", "") or ""
+            payload = {
+                "issue": {
+                    "key": key,
+                    "fields": {
+                        "summary": issue.fields.summary,
+                        "description": raw_desc,
+                        "priority": {"name": getattr(issue.fields.priority, "name", "P3") if getattr(issue.fields, "priority", None) else "P3"},
+                        "reporter": {"displayName": getattr(issue.fields.reporter, "displayName", "Jira User") if getattr(issue.fields, "reporter", None) else "Jira User"},
+                        "labels": getattr(issue.fields, "labels", []) or []
+                    }
+                }
+            }
+            sub = CloudRequestSubmission(source="jira", payload=payload, dry_run=False)
+            res = _submit_digital_worker_job(sub)
+            imported.append(key)
+
+        return JSONResponse(status_code=200, content={
+            "status": "ok",
+            "imported": imported,
+            "already_present": already_present,
+            "count": len(imported),
+            "message": f"Synced {len(imported)} new Jira issue(s) ({len(already_present)} already tracked)"
+        })
+    except Exception as exc:
+        logger.exception("Failed to sync Jira issues: %s", exc)
+        return JSONResponse(status_code=500, content={
+            "status": "error",
+            "message": f"Failed to sync Jira issues: {exc}"
+        })
+
+
+_last_jira_auto_sync: float = 0.0
+
+def _trigger_background_jira_sync():
+    """Lightweight, non-blocking background check for recent Jira tickets (runs at most once every 5 seconds)."""
+    global _last_jira_auto_sync
+    import time
+    now = time.time()
+    if now - _last_jira_auto_sync < 5.0:
+        return
+    _last_jira_auto_sync = now
+
+    def _sync_worker():
+        try:
+            from src.chandra.digital_worker.tracker import _jira_client, get_active_agent_onboarded_at
+            from src.chandra.digital_worker.intake import _extract_jira_description
+            from datetime import datetime
+            import os
+            import requests
+            from requests.auth import HTTPBasicAuth
+
+            agent_onboarded_at = get_active_agent_onboarded_at()
+            issues_data = []
+
+            # Method 1: Try JIRA client with bounded query
+            client = _jira_client()
+            if client is not None:
+                try:
+                    # Bounded query: Atlassian Cloud strictly forbids unbounded JQL queries like "ORDER BY created DESC"
+                    jql = "created >= -7d ORDER BY created DESC"
+                    issues = client.search_issues(jql, maxResults=10)
+                    for issue in issues:
+                        raw_desc = getattr(issue.fields, "description", "") or ""
+                        clean_desc = _extract_jira_description(raw_desc) or getattr(issue.fields, "summary", "")
+                        raw_created = getattr(issue.fields, "created", None)
+                        p_name = getattr(issue.fields.priority, "name", "P3") if getattr(issue.fields, "priority", None) else "P3"
+                        r_name = getattr(issue.fields.reporter, "displayName", "Jira User") if getattr(issue.fields, "reporter", None) else "Jira User"
+                        labels = getattr(issue.fields, "labels", []) or []
+                        issues_data.append({
+                            "key": issue.key,
+                            "summary": getattr(issue.fields, "summary", "Jira request"),
+                            "description": clean_desc,
+                            "priority": p_name,
+                            "reporter": r_name,
+                            "labels": labels,
+                            "created": raw_created,
+                        })
+                except Exception as e:
+                    logger.warning("client.search_issues failed in background sync: %s", e)
+
+            # Method 2: Direct REST fallback if JIRA client had an issue or returned empty
+            if not issues_data:
+                server = (os.getenv("JIRA_SERVER") or "").strip().rstrip("/")
+                email = (os.getenv("JIRA_EMAIL") or "").strip()
+                token = (os.getenv("JIRA_API_TOKEN") or "").strip()
+                if server and email and token:
+                    try:
+                        url = f"{server}/rest/api/2/search"
+                        resp = requests.get(
+                            url,
+                            params={"jql": "created >= -7d ORDER BY created DESC", "maxResults": 10},
+                            auth=HTTPBasicAuth(email, token),
+                            headers={"Accept": "application/json"},
+                            timeout=6,
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            for item in data.get("issues", []):
+                                fields = item.get("fields", {})
+                                raw_desc = fields.get("description", "") or ""
+                                clean_desc = _extract_jira_description(raw_desc) or fields.get("summary", "")
+                                p_obj = fields.get("priority") or {}
+                                r_obj = fields.get("reporter") or {}
+                                issues_data.append({
+                                    "key": item.get("key"),
+                                    "summary": fields.get("summary", "Jira request"),
+                                    "description": clean_desc,
+                                    "priority": p_obj.get("name", "P3") if isinstance(p_obj, dict) else "P3",
+                                    "reporter": r_obj.get("displayName", "Jira User") if isinstance(r_obj, dict) else "Jira User",
+                                    "labels": fields.get("labels", []) or [],
+                                    "created": fields.get("created"),
+                                })
+                    except Exception as e:
+                        logger.warning("Direct Jira REST search failed: %s", e)
+
+            # Process discovered issues
+            for item in issues_data:
+                key = item.get("key")
+                if not key:
+                    continue
+
+                # Filter out tickets created before current active agent was onboarded
+                issue_ts = None
+                raw_created = item.get("created")
+                if raw_created:
+                    try:
+                        dt = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+                        issue_ts = dt.timestamp()
+                    except Exception:
+                        pass
+
+                if agent_onboarded_at and issue_ts is not None:
+                    # Allow 60s tolerance for clock drift
+                    if issue_ts < (agent_onboarded_at - 60):
+                        continue
+
+                # Check if this issue is already in _job_store
+                has_job = False
+                with _job_store_lock:
+                    for jid, existing in _job_store.items():
+                        if existing.get("kind") == "digital_worker":
+                            res = existing.get("result") or {}
+                            app = res.get("approval_request") or {}
+                            ext = app.get("external_id") or existing.get("external_id") or ""
+                            title = existing.get("title") or ""
+                            if key == ext or key in ext or key in title:
+                                has_job = True
+                                break
+
+                if not has_job:
+                    logger.info("Background Jira sync: discovered new ticket %s ('%s') — ingesting now", key, item.get("summary"))
+                    payload = {
+                        "issue": {
+                            "key": key,
+                            "fields": {
+                                "summary": item.get("summary"),
+                                "description": item.get("description"),
+                                "priority": {"name": item.get("priority", "P3")},
+                                "reporter": {"displayName": item.get("reporter", "Jira User")},
+                                "labels": item.get("labels", []),
+                            }
+                        }
+                    }
+                    if issue_ts:
+                        payload["submitted_at"] = issue_ts
+                    sub = CloudRequestSubmission(source="jira", payload=payload, dry_run=False)
+                    _submit_digital_worker_job(sub)
+
+        except Exception as exc:
+            logger.warning("Background Jira sync exception: %s", exc)
+
+    _thread_pool.submit(_sync_worker)
+
+
 @app.get("/requests")
-def list_cloud_requests(status: Optional[str] = Query(default=None)):
+def list_cloud_requests(
+    status: Optional[str] = Query(default=None),
+    since: Optional[float] = Query(default=None),
+):
     """List Digital Worker requests for the Human Approval Center.
 
     Optional ``?status=`` filter (e.g. ``awaiting_approval``, ``running``,
@@ -2637,10 +4285,11 @@ def list_cloud_requests(status: Optional[str] = Query(default=None)):
     discovery endpoint the approval center polls — no job_id needed.
     """
     try:
+        _trigger_background_jira_sync()
         with _job_store_lock:
             dw_count = sum(1 for j in _job_store.values() if j.get("kind") == "digital_worker")
             if dw_count == 0:
-                _load_jobs_from_disk(50)
+                _load_jobs_from_disk(50, digital_worker_only=True)
 
             # Sort all digital_worker jobs newest first
             sorted_jobs = sorted(
@@ -2653,6 +4302,12 @@ def list_cloud_requests(status: Optional[str] = Query(default=None)):
             for job_id, job in sorted_jobs:
                 if job.get("kind") != "digital_worker":
                     continue
+                if since is not None:
+                    job_time = job.get("submitted_at") or job.get("started_at") or 0
+                    if job_time < since:
+                        continue
+                if status is not None and job.get("status") != status:
+                    continue
                 res = job.get("result") or {}
                 approval = res.get("approval_request") or {}
                 ticket = approval.get("external_id") or job.get("external_id")
@@ -2660,8 +4315,6 @@ def list_cloud_requests(status: Optional[str] = Query(default=None)):
                     if ticket in seen_tickets:
                         continue
                     seen_tickets.add(ticket)
-                if status is not None and job.get("status") != status:
-                    continue
                 items.append(_dw_request_summary(job_id, job))
 
             counts: Dict[str, int] = {}

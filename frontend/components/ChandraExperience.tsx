@@ -3,7 +3,7 @@
 import { useOnboarding } from "@/store/OnboardingContext";
 import { getAvatarById, getAvatarImageSrc, type AgentAvatar } from "@/store/agentProfile";
 import { getKraMetric } from "@/store/kraCatalog";
-import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, fetchAwsTasks, submitDigitalWorkerApproval, listDigitalWorkerRequests, getDigitalWorkerRequest, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
+import { fetchAgentObservations, fetchCostMetrics, analyzeActions, fetchBackendLogs, sendCopilotMessage, fetchDetectorIssues, fetchPredefinedKraIssues, fetchAwsTasks, submitDigitalWorkerApproval, listDigitalWorkerRequests, getDigitalWorkerRequest, getDigitalWorkerSettings, updateDigitalWorkerSettings, type CopilotChatMessage, type ActionResult, type BackendLog, type ActionItem, type CostMetricsOutput, type CloudWatchMetricsOutput, type CloudWatchMetricSeries, type DetectorIssuesOutput, fetchCloudWatchMetrics, fetchAWSRegions } from "@/services/api";
 import { WorkerActionExecutionCenter, type WorkerActionExecutionCenterHandle } from "./WorkerActionExecutionCenter";
 import { HumanApprovalCenter, type UnifiedRequest } from "./HumanApprovalCenter";
 import {
@@ -1133,7 +1133,8 @@ function OperationsCopilot({
 
   useEffect(() => {
     if (pendingHacRequest) {
-      if (agentOnboardedAt && (pendingHacRequest as any).submitted_at && (pendingHacRequest as any).submitted_at < agentOnboardedAt) {
+      const isPriorTicket = agentOnboardedAt && (pendingHacRequest as any).submitted_at && (pendingHacRequest as any).submitted_at < agentOnboardedAt;
+      if (isPriorTicket) {
         setActiveHacRequest(null);
       } else {
         setActiveHacRequest(pendingHacRequest);
@@ -1144,9 +1145,8 @@ function OperationsCopilot({
   // Clear activeHacRequest if agent resets or new agent was onboarded or already approved
   useEffect(() => {
     if (activeHacRequest) {
-      if (agentOnboardedAt && (activeHacRequest as any).submitted_at && (activeHacRequest as any).submitted_at < agentOnboardedAt) {
-        setActiveHacRequest(null);
-      } else if (approvedJobIdsRef.current.has((activeHacRequest as any).job_id)) {
+      const isPriorTicket = agentOnboardedAt && (activeHacRequest as any).submitted_at && (activeHacRequest as any).submitted_at < agentOnboardedAt;
+      if (isPriorTicket || approvedJobIdsRef.current.has((activeHacRequest as any).job_id)) {
         setActiveHacRequest(null);
       }
     }
@@ -1164,8 +1164,8 @@ function OperationsCopilot({
             (r.status === "awaiting_approval" || r.status === "awaiting_permission" || r.requires_approval) &&
             !r.isKra &&
             !r.isAwsTask &&
-            !approvedJobIdsRef.current.has(r.job_id) &&
-            (!agentOnboardedAt || !r.submitted_at || r.submitted_at >= agentOnboardedAt)
+            (agentOnboardedAt ? (r.submitted_at && r.submitted_at >= agentOnboardedAt) : true) &&
+            !approvedJobIdsRef.current.has(r.job_id)
         );
         if (pending && !activeHacRequest && !approvedJobIdsRef.current.has(pending.job_id)) {
           setActiveHacRequest(pending as any);
@@ -1426,7 +1426,13 @@ function OperationsCopilot({
                       approvedJobIdsRef.current.add(targetJobId);
                       setActiveHacRequest(null);
 
-                      const permName = setId === "4bbb47a9-d7f7-4921-81e4-1f3d5f215579" ? "EC2 Operator" : (setId === "eab39a74-a48a-4f19-9803-e71e37cc4d62" ? "S3 Bucket Operator" : setId);
+                      const permName = 
+                        setId === "4bbb47a9-d7f7-4921-81e4-1f3d5f215579" ? "EC2 Operator" : 
+                        setId === "eab39a74-a48a-4f19-9803-e71e37cc4d62" ? "S3 Bucket Operator" : 
+                        setId === "c1f7cdb2-0551-4cd7-be8c-4f508dc4e37f" ? "VPC Admin" : 
+                        setId === "ps_1786690414403" ? "Lambda Deployer Access" : 
+                        setId === "e58b8d41-9c12-4f27-810a-319a27bb1201" ? "DynamoDB Operator" : 
+                        setId === "f71a932e-5a02-4cd8-89c0-128b94ec9144" ? "RDS Operator" : setId;
                       const extId = req.external_id || "DEV";
                       
                       setMessages(prev => [
@@ -1453,6 +1459,7 @@ function OperationsCopilot({
                         await submitDigitalWorkerApproval(targetJobId, {
                           approved: true,
                           approver: displayAgentName || "console",
+                          agent_name: displayAgentName || undefined,
                           permission_set_id: setId
                         });
                       } catch (err) {
@@ -2651,8 +2658,38 @@ export function ChandraExperience() {
   const [pendingHitlRequests, setPendingHitlRequests] = useState<HitlRequest[]>([]);
   const [pendingHacApprovalReq, setPendingHacApprovalReq] = useState<UnifiedRequest | null>(null);
 
-  // Reactive agentOnboardedAt from OnboardingContext (updates immediately on onboarding complete / reset)
-  const agentOnboardedAt = contextAgentOnboardedAt ?? undefined;
+  const [backendOnboardedAt, setBackendOnboardedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    getDigitalWorkerSettings().then(settings => {
+      if (typeof settings.onboarded_at === "number" && settings.onboarded_at > 0) {
+        setBackendOnboardedAt(settings.onboarded_at);
+      }
+      const currentName = (agentName || "").trim();
+      if (currentName && settings.agent_name !== currentName) {
+        updateDigitalWorkerSettings({
+          max_iterations: settings.max_iterations || 4,
+          command_timeout: settings.command_timeout || 480,
+          agent_name: currentName,
+          onboarded_at: settings.onboarded_at || (Date.now() / 1000),
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [agentName]);
+
+  // Reactive agentOnboardedAt from OnboardingContext or backend settings (persists across page reloads)
+  const agentOnboardedAt = useMemo(() => {
+    if (typeof contextAgentOnboardedAt === "number" && contextAgentOnboardedAt > 0) return contextAgentOnboardedAt;
+    if (typeof backendOnboardedAt === "number" && backendOnboardedAt > 0) return backendOnboardedAt;
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("agentOnboardedAt");
+      if (stored) {
+        const val = Number(stored);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    }
+    return undefined;
+  }, [contextAgentOnboardedAt, backendOnboardedAt]);
 
   const [cwRegion, setCwRegion] = useState(process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1");
   const [cwHours, setCwHours] = useState(12);
@@ -3168,6 +3205,7 @@ export function ChandraExperience() {
         <div className="section-inner">
           <WorkerActionExecutionCenter
             awsPermissions={selectedAwsPermissions}
+            agentOnboardedAt={agentOnboardedAt}
             ref={workerRef}
             onPendingHitlChange={(pendingRequests) => {
               setPendingHitlRequests(pendingRequests);

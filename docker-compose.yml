@@ -27,15 +27,20 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
     image: chandra-app
-    command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001", "--workers", "4"]
+    command: ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "6001", "--workers", "2", "--limit-max-requests", "2000", "--limit-max-requests-jitter", "200", "--timeout-keep-alive", "65"]
     ports:
       - "6001:6001"
-    env_file: /opt/chandra/.env
+    env_file:
+      - path: .env
+        required: false
+      - path: /opt/chandra/.env
+        required: false
     environment:
       - FRONTEND_URL=${FRONTEND_URL:-http://54.160.31.20:3000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://54.160.31.20:3000/api/backend}
       # Inside the compose network the database host is the service name.
       - POSTGRES_URL=postgresql+psycopg://chandra:chandra@postgres:5432/chandra
+      - PYTHONPATH=/app:/app/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,7 +89,11 @@ services:
     command: ["uv", "run", "app.py"]
     ports:
       - "7861:7861"
-    env_file: /opt/chandra/.env
+    env_file:
+      - path: .env
+        required: false
+      - path: /opt/chandra/.env
+        required: false
     depends_on:
       - backend
     restart: unless-stopped

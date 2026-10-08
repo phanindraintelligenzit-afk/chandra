@@ -14,6 +14,7 @@ import {
 import {
   fetchCustomKras,
   saveCustomKras,
+  updateDigitalWorkerSettings,
   type StoredCustomKra,
   type AgentObservation,
   type CostMetricsOutput
@@ -62,7 +63,7 @@ export type OnboardingState = {
 
   setObservations: (data: AgentObservation | null, error?: string | null) => void;
   setCostMetrics: (data: CostMetricsOutput | null, error?: string | null) => void;
-  completeOnboarding: () => void;
+  completeOnboarding: (overrideName?: string) => void;
   dashboardOpened: boolean;
   openDashboard: () => void;
   reset: () => void;
@@ -383,7 +384,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     setSelectedAwsPermissions((current) => current.filter((k) => k !== id));
   }, []);
 
-  const completeOnboarding = useCallback(() => {
+  const completeOnboarding = useCallback((overrideName?: string) => {
     setOnboardingCompleted(true);
     const nowSec = Date.now() / 1000;
     setAgentOnboardedAt(nowSec);
@@ -391,7 +392,22 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem("agentOnboardedAt", String(nowSec));
     } catch { /* ignore */ }
-  }, []);
+
+    const targetName = (overrideName || agentName || "").trim();
+    if (targetName) {
+      if (overrideName && overrideName !== agentName) {
+        setAgentName(overrideName);
+      }
+      updateDigitalWorkerSettings({
+        max_iterations: 4,
+        command_timeout: 480,
+        agent_name: targetName,
+        onboarded_at: nowSec,
+      }).catch((err) => {
+        console.warn("Failed to synchronize agent name with backend:", err);
+      });
+    }
+  }, [agentName]);
 
   const openDashboard = useCallback(() => {
     setDashboardOpened(true);
