@@ -80,7 +80,7 @@ def gov_workflow(
         "JIRA_SERVER", "JIRA_EMAIL", "JIRA_API_TOKEN",
         "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL", "SMTP_HOST",
     ):
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")
     
     # Mock ExecutionAgents.GenerateTerraformOnly to prevent slow LLM calls
     monkeypatch.setattr(
@@ -89,7 +89,7 @@ def gov_workflow(
     )
     
     # Disable real terraform apply
-    monkeypatch.delenv("CHANDRA_TERRAFORM_APPLY_ENABLED", raising=False)
+    monkeypatch.setenv("CHANDRA_TERRAFORM_APPLY_ENABLED", "false")
     return build_digital_worker_graph(checkpointer=MemorySaver())
 
 
