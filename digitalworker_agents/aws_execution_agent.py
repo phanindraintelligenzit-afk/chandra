@@ -261,7 +261,7 @@ def _build_checkpointer() -> Any:
         if conn_string:
             if conn_string.startswith("postgresql+psycopg://"):
                 conn_string = conn_string.replace("postgresql+psycopg://", "postgresql://", 1)
-            with psycopg.connect(conn_string, autocommit=True) as conn:
+            with psycopg.connect(conn_string, autocommit=True, connect_timeout=2) as conn:
                 PostgresSaver(conn).setup()
             pool = ConnectionPool(conn_string, max_size=10, open=True)
             atexit.register(pool.close)
@@ -725,12 +725,19 @@ class _PersistentMCPSession:
             t0 = time.perf_counter()
             self._client = MultiServerMCPClient(server_config)
 
-            # ---- initialize both MCP servers AT ONCE, concurrently ----
-            aws_tools, tf_tools = await asyncio.gather(
-                self._client.get_tools(server_name="aws_api"),
-                self._client.get_tools(server_name="terraform"),
-                return_exceptions=True,
-            )
+            # ---- initialize both MCP servers AT ONCE, concurrently (with 5s timeout) ----
+            try:
+                aws_tools, tf_tools = await asyncio.wait_for(
+                    asyncio.gather(
+                        self._client.get_tools(server_name="aws_api"),
+                        self._client.get_tools(server_name="terraform"),
+                        return_exceptions=True,
+                    ),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, Exception) as mcp_err:
+                logger.warning("[MCP SESSION] MCP servers startup timed out or failed (%s), continuing without MCP tools", mcp_err)
+                aws_tools, tf_tools = [], []
 
             if isinstance(aws_tools, Exception):
                 logger.warning("[MCP SESSION] aws_api server failed to start: %s", aws_tools)

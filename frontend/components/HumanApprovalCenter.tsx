@@ -463,7 +463,7 @@ export function HumanApprovalCenter({
   const load = useCallback(async () => {
     try {
       const status = filterRef.current === "all" ? undefined : filterRef.current;
-      const data = await listDigitalWorkerRequests(status);
+      const data = await listDigitalWorkerRequests(status, { since: effectiveOnboardedAt ?? undefined });
       setRequests((prevRequests) => {
         const incoming = data.requests || [];
         if (incoming.length === 0) {
@@ -501,7 +501,7 @@ export function HumanApprovalCenter({
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [effectiveOnboardedAt]);
 
   useEffect(() => {
     load();
@@ -571,14 +571,8 @@ export function HumanApprovalCenter({
     }));
 
     const filteredJira = requests.filter(req => {
-      // Pending tickets MUST remain in Human Approval Center until their workflow legitimately changes state
-      const isPending =
-        req.status === "awaiting_approval" ||
-        req.status === "awaiting_permission" ||
-        req.status === "awaiting_gate2" ||
-        req.requires_approval;
-
-      if (!isPending && effectiveOnboardedAt) {
+      // Per-agent isolation: newly onboarded agents should ONLY see tickets submitted for this agent
+      if (effectiveOnboardedAt) {
         const ticketTime = req.submitted_at || req.started_at;
         if (ticketTime) {
           const ticketMs = ticketTime < 1e11 ? ticketTime * 1000 : ticketTime;

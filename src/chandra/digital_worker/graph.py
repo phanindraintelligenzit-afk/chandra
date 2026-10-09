@@ -573,23 +573,31 @@ def terraform_generate(state: DigitalWorkerState) -> dict[str, Any]:
     sandbox_path = stable_sandbox
 
     hcl = ""
-    try:
-        orchestrator = ExecutionAgents(max_iterations=1, job_id=job_id)
+    full_text = f"{(request.title or '').lower()} {(request.description or '').lower()}"
+    services_lower = [str(s).lower() for s in getattr(classification, "services", []) or []]
+    is_standard_infra = any(k in full_text for k in ["s3", "bucket", "ec2", "instance", "lambda", "function", "vpc", "subnet", "network"]) or any(s in ("s3", "ec2", "lambda", "vpc") for s in services_lower)
 
-        result = orchestrator.GenerateTerraformOnly(
-            action=action_dict,
-            aws_permissions=aws_permissions,
-            sandbox_path=sandbox_path,
-            thread_id=job_id,
-        )
-
-        hcl = result.get("hcl", "") if isinstance(result, dict) else ""
-        if not hcl or (isinstance(result, dict) and result.get("status") in ("error", "failed")):
-            logger.warning("ExecutionAgents generation failed, using fallback.")
-            hcl = _deterministic_terraform_template(request, classification)
-    except Exception as exc:
-        logger.warning("ExecutionAgents failed with exception: %s, using fallback.", exc)
+    if is_standard_infra:
+        logger.info("Standard AWS infrastructure request detected ('%s') — generating high-speed validated Terraform template instantly", request.title)
         hcl = _deterministic_terraform_template(request, classification)
+    else:
+        try:
+            orchestrator = ExecutionAgents(max_iterations=1, job_id=job_id)
+
+            result = orchestrator.GenerateTerraformOnly(
+                action=action_dict,
+                aws_permissions=aws_permissions,
+                sandbox_path=sandbox_path,
+                thread_id=job_id,
+            )
+
+            hcl = result.get("hcl", "") if isinstance(result, dict) else ""
+            if not hcl or (isinstance(result, dict) and result.get("status") in ("error", "failed")):
+                logger.warning("ExecutionAgents generation failed, using fallback.")
+                hcl = _deterministic_terraform_template(request, classification)
+        except Exception as exc:
+            logger.warning("ExecutionAgents failed with exception: %s, using fallback.", exc)
+            hcl = _deterministic_terraform_template(request, classification)
 
     # Ensure main.tf is written to sandbox_path so subsequent stages have it
     hcl = _sanitize_hcl_for_platform(hcl, Path(sandbox_path))

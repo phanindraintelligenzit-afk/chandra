@@ -4318,10 +4318,10 @@ def list_cloud_requests(
                 if job.get("kind") != "digital_worker":
                     continue
                 job_status = str(job.get("status") or "")
-                # Never filter out pending approvals via `since`
-                if since_sec is not None and job_status not in ("awaiting_approval", "awaiting_permission", "awaiting_gate2"):
+                # Per-agent isolation: only return jobs submitted after onboarding (with 60s drift tolerance)
+                if since_sec is not None:
                     job_time = job.get("submitted_at") or job.get("started_at") or 0
-                    if job_time < since_sec:
+                    if job_time < (since_sec - 60):
                         continue
                 if status is not None and job_status != status:
                     continue

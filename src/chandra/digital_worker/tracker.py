@@ -642,7 +642,8 @@ class JiraActivityRecorder:
                 cls._recorded_events.discard(event_id)
                 return
             
-            client.add_worklog(issue_key, timeSpentSeconds=duration_seconds, comment=summary)
+            time_str = f"{max(1, int(duration_seconds // 60))}m"
+            client.add_worklog(issue_key, timeSpent=time_str, comment=summary)
             logger.info("tracker.jira_worklog_added", issue=issue_key, duration=duration_seconds)
         except Exception as exc:
             cls._recorded_events.discard(event_id)

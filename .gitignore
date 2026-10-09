@@ -54,5 +54,6 @@ Thumbs.db
 # uv lock — keep it for reproducibility
 # (intentionally NOT ignored)
 terraform_runs/
+.terraform_cache/
 add_test.py
 fix_test.py

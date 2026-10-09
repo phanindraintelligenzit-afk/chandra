@@ -26,7 +26,7 @@ from src.chandra.logging import get_logger
 
 logger = get_logger(__name__)
 
-_STAGE_TIMEOUT_S = 300
+_STAGE_TIMEOUT_S = 60
 
 _SEED_LOCKFILE_CONTENT = """# This file is maintained automatically by "terraform init".
 # Manual edits may be lost in future updates.
