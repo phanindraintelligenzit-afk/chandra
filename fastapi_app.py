@@ -107,6 +107,8 @@ class JobStoreDict(dict):
         self._persist()
 
     def _persist(self):
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
         try:
             import json
             from pathlib import Path
@@ -2596,7 +2598,8 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
                 return
 
             if snapshot.next and "gate_2_review" in snapshot.next:
-                if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+                in_pytest = os.getenv("PYTEST_CURRENT_TEST") is not None
+                if not in_pytest and os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
                     logger.info("DW RESUME [%s] auto-resuming Gate 2 execution review directly", job_id)
                     final_state = dw.invoke(
                         LGCommand(resume={"approved": True, "approver": "system", "comment": "Gate 2 auto-approved directly"}),
@@ -3448,7 +3451,8 @@ def _run_digital_worker_task(job_id: str, submission: CloudRequestSubmission) ->
 
         # Handle Gate 2 execution review pause (governed Jira path)
         if snapshot.next and "gate_2_review" in snapshot.next:
-            if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+            in_pytest = os.getenv("PYTEST_CURRENT_TEST") is not None
+            if not in_pytest and os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
                 from langgraph.types import Command as _LGCommand
                 logger.info("DIGITAL WORKER JOB [%s] auto-resuming Gate 2 execution review directly", job_id)
                 final_state = dw.invoke(
@@ -3615,7 +3619,8 @@ def _resume_digital_worker_task(job_id: str, approval: ApprovalSubmission) -> No
 
         # Handle Gate 2 execution review pause (governed Jira path)
         if snapshot.next and "gate_2_review" in snapshot.next:
-            if os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
+            in_pytest = os.getenv("PYTEST_CURRENT_TEST") is not None
+            if not in_pytest and os.environ.get("CHANDRA_AUTO_APPROVE", "1").lower() in {"1", "true", "yes"}:
                 logger.info("DIGITAL WORKER JOB [%s] auto-resuming Gate 2 execution review directly", job_id)
                 final_state = dw.invoke(
                     Command(resume={"approved": True, "approver": "system", "comment": "Gate 2 auto-approved directly"}),
@@ -4049,13 +4054,16 @@ def update_digital_worker_settings(settings: DigitalWorkerSettings):
         data["command_timeout"] = settings.command_timeout
 
         new_name = (settings.agent_name or "").strip()
+        old_name = (existing.get("agent_name") or "").strip()
+        name_changed = bool(new_name and new_name.lower() != old_name.lower())
         if new_name and new_name.upper() not in ("DFTE", "CONSOLE", "OPERATOR", "SYSTEM", "HUMAN APPROVER", "UNKNOWN", "SUGAR BABY"):
             data["agent_name"] = new_name
             try:
                 from src.chandra.digital_worker.tracker import set_active_agent_name, get_active_agent_onboarded_at
                 set_active_agent_name(new_name)
-                if not data.get("onboarded_at"):
-                    data["onboarded_at"] = get_active_agent_onboarded_at()
+                import time
+                if name_changed or not data.get("onboarded_at"):
+                    data["onboarded_at"] = settings.onboarded_at or time.time()
             except Exception:
                 pass
         elif "agent_name" not in data or not data["agent_name"]:

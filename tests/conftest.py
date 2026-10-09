@@ -14,6 +14,7 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
 os.environ.setdefault("AWS_SECURITY_TOKEN", "testing")
+os.environ["CHANDRA_TERRAFORM_APPLY_ENABLED"] = "false"
 
 from moto import mock_aws
 from src.chandra.aws.client_factory import AwsClientFactory

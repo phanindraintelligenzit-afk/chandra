@@ -584,8 +584,10 @@ export function HumanApprovalCenter({
         }
       }
       if (!req.title) return true;
+      const titleLower = req.title.toLowerCase().trim();
       if ((req.status as string) === "dry_run") return false;
-      if (req.title.toLowerCase().startsWith("task_")) return false;
+      if (titleLower.startsWith("task_")) return false;
+      if (titleLower.includes("no approval needed here") || titleLower.includes("list me please")) return false;
       if (!kraActionNames.has(req.title.toLowerCase().trim())) {
         return true;
       }

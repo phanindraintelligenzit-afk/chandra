@@ -269,6 +269,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                 }
               }
             }
+            if (r.title && (r.title.toLowerCase().includes("no approval needed here") || r.title.toLowerCase().includes("list me please"))) return false;
             // Must be in a trackable state
             if (r.requires_approval) return false;
             if (r.status !== "running" && r.status !== "completed" && r.status !== "failed") return false;

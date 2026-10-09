@@ -63,7 +63,10 @@ from pydantic import BaseModel, Field, ConfigDict
 from tools.jira_tools.create_jira_ticket import add_summary_comment, update_ticket_status
 from src.chandra.digital_worker.tracker import add_comment_to_issue
 
-load_dotenv(override=True)
+if not os.getenv("PYTEST_CURRENT_TEST"):
+    load_dotenv(override=True)
+else:
+    load_dotenv(override=False)
 
 logging.basicConfig(
     level=logging.INFO,

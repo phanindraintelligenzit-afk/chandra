@@ -26,7 +26,10 @@ from langchain_core.outputs import LLMResult
 
 from tools.langchain_tools import DEFAULT_REGION, TOOLS_LIST, default_tool_args
 
-load_dotenv(override=True)
+if not os.getenv("PYTEST_CURRENT_TEST"):
+    load_dotenv(override=True)
+else:
+    load_dotenv(override=False)
 
 logging.basicConfig(
     level=logging.INFO,

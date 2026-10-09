@@ -1280,15 +1280,16 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
     request = state["request"]
     hcl = state.get("terraform_hcl", "")
     apply_enabled = os.environ.get("CHANDRA_TERRAFORM_APPLY_ENABLED", "false").lower() == "true"
+    is_dry_run = state.get("dry_run", False) or not apply_enabled
 
-    logger.info("TRANSITION: TERRAFORM_APPLY", enabled=apply_enabled)
+    logger.info("TRANSITION: TERRAFORM_APPLY", enabled=not is_dry_run)
 
-    if not apply_enabled:
+    if is_dry_run:
         return {
             "terraform_apply_result": {
                 "success": False,
                 "dry_run": True,
-                "detail": "Terraform apply disabled (CHANDRA_TERRAFORM_APPLY_ENABLED != true)",
+                "detail": "Terraform apply disabled — dry run mode",
                 "outputs": {},
             },
             "execution": ExecutionOutcome(
@@ -1297,7 +1298,7 @@ def terraform_apply(state: DigitalWorkerState) -> dict[str, Any]:
                 detail="Terraform apply disabled — dry run mode",
             ),
             "audit_trail": [
-                _audit("terraform_apply", "terraform_apply_skipped", reason="disabled")
+                _audit("terraform_apply", "terraform_apply_skipped", reason="disabled" if not apply_enabled else "dry_run_requested")
             ],
         }
 
@@ -2330,7 +2331,7 @@ def persist(state: DigitalWorkerState) -> dict[str, Any]:
                 )
         logger.info("graph.persist", request_id=request.request_id)
         return {}
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, Exception) as exc:
         # The workflow result is still returned to the caller; losing the
         # audit row must not lose the work.
         logger.warning("graph.persist_unavailable", request_id=request.request_id, error=str(exc))

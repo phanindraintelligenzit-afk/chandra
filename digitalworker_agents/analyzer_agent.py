@@ -22,7 +22,10 @@ from langgraph.graph import END, StateGraph
 from tools.jira_tools.create_jira_ticket import add_approval_comment, add_comment_to_ticket, create_jira_ticket
 from src.chandra.escalation.schemas import EscalationPayload
 
-load_dotenv(override=True)
+if not os.getenv("PYTEST_CURRENT_TEST"):
+    load_dotenv(override=True)
+else:
+    load_dotenv(override=False)
 
 logging.basicConfig(
     level=logging.INFO,

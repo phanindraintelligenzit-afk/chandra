@@ -152,13 +152,6 @@ class TaskAuthorizationService:
                 is_pass = True
             elif any(action.lower().strip() in ("*", "*:*") for action in allowed_actions):
                 is_pass = True
-            elif target_id in (
-                "c1f7cdb2-0551-4cd7-be8c-4f508dc4e37f", # VPC Admin
-                "ps_1786690414403",                     # Lambda Deployer Access
-                "4bbb47a9-d7f7-4921-81e4-1f3d5f215579", # EC2 Operator
-                "eab39a74-a48a-4f19-9803-e71e37cc4d62", # S3 Bucket Operator
-            ):
-                is_pass = True
 
             if is_pass:
                 matched_actions.extend(missing_actions)
