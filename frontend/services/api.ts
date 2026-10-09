@@ -861,7 +861,11 @@ export type DigitalWorkerStatus =
   | "completed"
   | "failed"
   | "stopped"
-  | "skipped";
+  | "skipped"
+  | "awaiting_permission"
+  | "awaiting_gate2"
+  | "awaiting_input"
+  | "dry_run";
 
 /** One row in the approval-center list (GET /requests). */
 export type DigitalWorkerRequestSummary = {

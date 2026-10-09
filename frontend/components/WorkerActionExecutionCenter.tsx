@@ -582,7 +582,7 @@ export const WorkerActionExecutionCenter = forwardRef<
   const submitAnswers = async (actionId: string, providedAnswers?: string[], permissionSetId?: string) => {
     // Reading from ref ensures programmatic calls use latest state
     const action = executingActionsRef.current.find((a) => a.id === actionId);
-    if (!action || !action.questions || (action.status !== "awaiting_input" && action.status !== "awaiting_gate2" && action.status !== "awaiting_permission")) return;
+    if (!action || (!action.questions && action.status !== "awaiting_permission") || (action.status !== "awaiting_input" && action.status !== "awaiting_gate2" && action.status !== "awaiting_permission")) return;
 
     // Collect answers from DOM if not provided programmatically
     const answers: string[] = providedAnswers || [];
@@ -1230,7 +1230,7 @@ export const WorkerActionExecutionCenter = forwardRef<
                         </div>
                         <div className="p-2 font-mono text-[0.6rem] overflow-x-auto max-h-48 custom-scrollbar">
                           <pre className="text-frost/80 m-0">
-                            {action.gate2Review.plan_output?.split('\n').map((line, i) => {
+                            {action.gate2Review.plan_output?.split('\n').map((line: string, i: number) => {
                               let colorClass = "text-frost/80";
                               if (line.startsWith('+')) colorClass = "text-emerald-400";
                               else if (line.startsWith('-')) colorClass = "text-signal";
