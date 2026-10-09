@@ -32,7 +32,7 @@ start_fastapi() {
     $UVICORN_BIN fastapi_app:app \
         --host 0.0.0.0 \
         --port 6001 \
-        --workers "${UVICORN_WORKERS:-2}" \
+        --workers "${UVICORN_WORKERS:-1}" \
         --limit-max-requests 2000 \
         --limit-max-requests-jitter 200 \
         --timeout-keep-alive 65 \

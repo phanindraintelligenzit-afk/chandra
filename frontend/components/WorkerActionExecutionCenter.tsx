@@ -261,8 +261,12 @@ export const WorkerActionExecutionCenter = forwardRef<
             // Per-agent isolation: exclude tickets/jobs created before this agent was onboarded
             if (effectiveAt) {
               const jobTime = r.submitted_at || r.started_at;
-              if (!jobTime || jobTime < effectiveAt) {
-                return false;
+              if (jobTime) {
+                const jTimeMs = jobTime < 1e11 ? jobTime * 1000 : jobTime;
+                const effMs = effectiveAt < 1e11 ? effectiveAt * 1000 : effectiveAt;
+                if (jTimeMs < (effMs - 60_000)) {
+                  return false;
+                }
               }
             }
             // Must be in a trackable state

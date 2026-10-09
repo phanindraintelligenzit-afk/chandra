@@ -145,12 +145,15 @@ class JobStoreManager(dict):
             try:
                 from pathlib import Path
                 import json
-                meta_path = Path("logs") / f"{key}.meta.json"
-                if meta_path.is_file():
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict):
-                        super().__setitem__(key, JobStoreDict(key, data))
+                clean_k = str(key).replace("dw-", "")
+                for candidate in [key, clean_k, f"dw-{clean_k}"]:
+                    meta_path = Path("logs") / f"{candidate}.meta.json"
+                    if meta_path.is_file():
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        if isinstance(data, dict):
+                            super().__setitem__(key, JobStoreDict(key, data))
+                            return
             except Exception:
                 pass
 
@@ -168,7 +171,7 @@ class JobStoreManager(dict):
 
 _job_store: Dict[str, Dict[str, Any]] = JobStoreManager()
 
-def _load_jobs_from_disk(limit: int = 50, digital_worker_only: bool = False):
+def _load_jobs_from_disk(limit: int = 50, digital_worker_only: bool = False, is_startup: bool = False):
     """Load existing jobs from logs/*.meta.json into _job_store on startup or when needed."""
     try:
         import os
@@ -200,14 +203,21 @@ def _load_jobs_from_disk(limit: int = 50, digital_worker_only: bool = False):
                     if ticket in seen_tickets:
                         continue
                 js_dict = dict(data)
-                # Cleanup zombie running/pending jobs from disk:
-                # If a job was saved with status "running" or "pending" but server restarted,
-                # mark it as failed so it doesn't spin as active forever (e.g. DEV-987)
-                if js_dict.get("status") in ("running", "pending"):
+                # Cleanup zombie running/pending jobs ONLY on initial server startup:
+                if is_startup and js_dict.get("status") in ("running", "pending"):
                     js_dict["status"] = "failed"
                     js_dict["error"] = "Process interrupted by server restart"
                     js_dict["message"] = "Execution halted when backend restarted"
-                super(JobStoreManager, _job_store).__setitem__(job_id, js_dict)
+
+                # If job already exists in memory, merge any newer disk attributes
+                if job_id in _job_store:
+                    existing = _job_store[job_id]
+                    for k, v in js_dict.items():
+                        if k not in existing or (k == "status" and existing.get("status") == "pending" and v != "pending"):
+                            existing[k] = v
+                else:
+                    super(JobStoreManager, _job_store).__setitem__(job_id, js_dict)
+
                 if is_dw:
                     dw_loaded += 1
                 if digital_worker_only and dw_loaded >= limit:
@@ -220,7 +230,7 @@ def _load_jobs_from_disk(limit: int = 50, digital_worker_only: bool = False):
         logger.warning("Failed to load jobs from disk: %s", e)
 
 try:
-    _load_jobs_from_disk(50)
+    _load_jobs_from_disk(50, is_startup=True)
 except Exception:
     pass
 
@@ -1076,13 +1086,18 @@ def get_job_status_generic(job_id: str):
     """Poll the status of any submitted async job."""
     job: Dict[str, Any] = {}
     try:
+        clean_id = _clean_job_id(job_id)
         with _job_store_lock:
-            if job_id not in _job_store:
-                return JSONResponse(status_code=404, content={
-                    "job_id": job_id, "status": "not_found",
-                    "message": "No job with this ID exists"
-                })
-            job = dict(_job_store[job_id])
+            if job_id not in _job_store and clean_id not in _job_store:
+                recovered = _recover_job_from_disk(clean_id) or _recover_job_from_disk(job_id)
+                if recovered:
+                    _job_store[job_id] = recovered
+                else:
+                    return JSONResponse(status_code=404, content={
+                        "job_id": job_id, "status": "not_found",
+                        "message": "No job with this ID exists"
+                    })
+            job = dict(_job_store.get(job_id) or _job_store.get(clean_id) or {})
 
         from fastapi.encoders import jsonable_encoder
         clean_content = jsonable_encoder({"job_id": job_id, **job})
@@ -4287,9 +4302,8 @@ def list_cloud_requests(
     try:
         _trigger_background_jira_sync()
         with _job_store_lock:
-            dw_count = sum(1 for j in _job_store.values() if j.get("kind") == "digital_worker")
-            if dw_count == 0:
-                _load_jobs_from_disk(50, digital_worker_only=True)
+            # Sync latest jobs from disk into memory across all worker processes
+            _load_jobs_from_disk(100, digital_worker_only=True, is_startup=False)
 
             # Sort all digital_worker jobs newest first
             sorted_jobs = sorted(
@@ -4299,14 +4313,17 @@ def list_cloud_requests(
             )
             seen_tickets = set()
             items = []
+            since_sec = (since / 1000.0) if (since is not None and since > 1e11) else since
             for job_id, job in sorted_jobs:
                 if job.get("kind") != "digital_worker":
                     continue
-                if since is not None:
+                job_status = str(job.get("status") or "")
+                # Never filter out pending approvals via `since`
+                if since_sec is not None and job_status not in ("awaiting_approval", "awaiting_permission", "awaiting_gate2"):
                     job_time = job.get("submitted_at") or job.get("started_at") or 0
-                    if job_time < since:
+                    if job_time < since_sec:
                         continue
-                if status is not None and job.get("status") != status:
+                if status is not None and job_status != status:
                     continue
                 res = job.get("result") or {}
                 approval = res.get("approval_request") or {}

@@ -463,8 +463,35 @@ export function HumanApprovalCenter({
   const load = useCallback(async () => {
     try {
       const status = filterRef.current === "all" ? undefined : filterRef.current;
-      const data = await listDigitalWorkerRequests(status, { since: effectiveOnboardedAt ?? undefined });
-      setRequests(data.requests);
+      const data = await listDigitalWorkerRequests(status);
+      setRequests((prevRequests) => {
+        const incoming = data.requests || [];
+        if (incoming.length === 0) {
+          // Retain pending approval tickets so the screen never flickers or drops tickets
+          const pending = prevRequests.filter(
+            (r) =>
+              r.status === "awaiting_approval" ||
+              r.status === "awaiting_permission" ||
+              r.status === "awaiting_gate2" ||
+              r.requires_approval
+          );
+          return pending.length > 0 ? pending : prevRequests;
+        }
+        const incomingMap = new Map(incoming.map((r) => [r.job_id, r]));
+        const merged = [...incoming];
+        for (const prev of prevRequests) {
+          if (
+            !incomingMap.has(prev.job_id) &&
+            (prev.status === "awaiting_approval" ||
+              prev.status === "awaiting_permission" ||
+              prev.status === "awaiting_gate2" ||
+              prev.requires_approval)
+          ) {
+            merged.push(prev);
+          }
+        }
+        return merged;
+      });
       setCounts(data.counts);
       setError(null);
     } catch (e: any) {
@@ -474,7 +501,7 @@ export function HumanApprovalCenter({
     } finally {
       setLoaded(true);
     }
-  }, [effectiveOnboardedAt]);
+  }, []);
 
   useEffect(() => {
     load();
@@ -544,10 +571,23 @@ export function HumanApprovalCenter({
     }));
 
     const filteredJira = requests.filter(req => {
-      // Per-agent isolation: newly onboarded agents should ONLY see tickets submitted after onboarding
-      const ticketTime = req.submitted_at || req.started_at;
-      if (effectiveOnboardedAt && (!ticketTime || ticketTime < effectiveOnboardedAt)) {
-        return false;
+      // Pending tickets MUST remain in Human Approval Center until their workflow legitimately changes state
+      const isPending =
+        req.status === "awaiting_approval" ||
+        req.status === "awaiting_permission" ||
+        req.status === "awaiting_gate2" ||
+        req.requires_approval;
+
+      if (!isPending && effectiveOnboardedAt) {
+        const ticketTime = req.submitted_at || req.started_at;
+        if (ticketTime) {
+          const ticketMs = ticketTime < 1e11 ? ticketTime * 1000 : ticketTime;
+          const onboardedMs = effectiveOnboardedAt < 1e11 ? effectiveOnboardedAt * 1000 : effectiveOnboardedAt;
+          // Allow 60s tolerance for clock drift between services
+          if (ticketMs < (onboardedMs - 60_000)) {
+            return false;
+          }
+        }
       }
       if (!req.title) return true;
       if ((req.status as string) === "dry_run") return false;

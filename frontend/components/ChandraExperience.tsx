@@ -1131,9 +1131,17 @@ function OperationsCopilot({
   const [activeHacRequest, setActiveHacRequest] = useState<UnifiedRequest | null>(pendingHacRequest || null);
   const approvedJobIdsRef = useRef<Set<string>>(new Set());
 
+  const isTicketBeforeOnboarding = (ticketTs?: number | null, onboardedTs?: number | null) => {
+    if (!ticketTs || !onboardedTs) return false;
+    const ticketMs = ticketTs < 1e11 ? ticketTs * 1000 : ticketTs;
+    const onboardedMs = onboardedTs < 1e11 ? onboardedTs * 1000 : onboardedTs;
+    // Allow 60s tolerance for clock drift between services
+    return ticketMs < (onboardedMs - 60_000);
+  };
+
   useEffect(() => {
     if (pendingHacRequest) {
-      const isPriorTicket = agentOnboardedAt && (pendingHacRequest as any).submitted_at && (pendingHacRequest as any).submitted_at < agentOnboardedAt;
+      const isPriorTicket = isTicketBeforeOnboarding((pendingHacRequest as any).submitted_at, agentOnboardedAt);
       if (isPriorTicket) {
         setActiveHacRequest(null);
       } else {
@@ -1145,7 +1153,7 @@ function OperationsCopilot({
   // Clear activeHacRequest if agent resets or new agent was onboarded or already approved
   useEffect(() => {
     if (activeHacRequest) {
-      const isPriorTicket = agentOnboardedAt && (activeHacRequest as any).submitted_at && (activeHacRequest as any).submitted_at < agentOnboardedAt;
+      const isPriorTicket = isTicketBeforeOnboarding((activeHacRequest as any).submitted_at, agentOnboardedAt);
       if (isPriorTicket || approvedJobIdsRef.current.has((activeHacRequest as any).job_id)) {
         setActiveHacRequest(null);
       }
@@ -1164,7 +1172,7 @@ function OperationsCopilot({
             (r.status === "awaiting_approval" || r.status === "awaiting_permission" || r.requires_approval) &&
             !r.isKra &&
             !r.isAwsTask &&
-            (agentOnboardedAt ? (r.submitted_at && r.submitted_at >= agentOnboardedAt) : true) &&
+            (!isTicketBeforeOnboarding(r.submitted_at, agentOnboardedAt)) &&
             !approvedJobIdsRef.current.has(r.job_id)
         );
         if (pending && !activeHacRequest && !approvedJobIdsRef.current.has(pending.job_id)) {
