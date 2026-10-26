@@ -1,5 +1,6 @@
 # ruff: noqa: N806, E501
 import os
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -215,37 +216,47 @@ def add_label_to_ticket(issue_key: str, label: str) -> dict:  # type: ignore
     except Exception as e:
         print(f"Failed to add label to {issue_key}: {e}")
 def delete_jira_ticket(issue_key: str) -> dict:  # type: ignore
-    """Delete a Jira ticket completely from Jira upon infrastructure destruction.
-    
-    If hard deletion is disallowed by Jira project permissions, gracefully falls back
-    to updating the status to 'Done'/'Closed' and tagging with 'infrastructure-destroyed'.
-    """
+    """Delete a Jira ticket, reporting permission failures without a soft-delete fallback."""
     JIRA_SERVER = os.getenv("JIRA_SERVER")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL")
     JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 
     if not issue_key:
         return {"status": "error", "message": "issue_key is required"}
+    if not all((JIRA_SERVER, JIRA_EMAIL, JIRA_API_TOKEN)):
+        return {
+            "status": "error",
+            "message": "JIRA_SERVER, JIRA_EMAIL, and JIRA_API_TOKEN must be configured",
+        }
 
     clean_key = issue_key.strip()
     if "/" in clean_key:
-        clean_key = clean_key.rstrip("/").split("/")[-1]
+        from urllib.parse import urlsplit
+
+        clean_key = urlsplit(clean_key).path.rstrip("/").split("/")[-1]
+    else:
+        clean_key = clean_key.split("?", 1)[0].split("#", 1)[0]
+    clean_key = clean_key.upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", clean_key):
+        return {"status": "error", "message": f"Invalid Jira issue key: {clean_key}"}
 
     try:
         jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))  # type: ignore
         issue = jira.issue(clean_key)
         issue.delete()
-        print(f"Successfully deleted Jira ticket '{clean_key}'")
         return {"status": "success", "message": f"Ticket {clean_key} deleted successfully"}
-    except Exception as e:
-        print(f"Direct delete failed for {clean_key}: {e}. Applying fallback transition & label...")
-        try:
-            # Fallback for restricted permissions: tag and close ticket
-            add_label_to_ticket(clean_key, "infrastructure-destroyed")
-            transition_jira_ticket(clean_key, "Done")
-            return {"status": "partial", "message": f"Marked {clean_key} as Done/Destroyed (Hard-delete permission restricted: {e})"}
-        except Exception as fe:
-            return {"status": "error", "message": f"Delete and fallback both failed: {fe}"}
+    except JIRAError as exc:
+        if exc.status_code == 404:
+            return {"status": "success", "message": f"Ticket {clean_key} was already deleted"}
+        return {
+            "status": "error",
+            "message": (
+                f"Could not delete Jira ticket {clean_key} (HTTP {exc.status_code}). "
+                "Verify the Jira credentials and the account's Delete Issues permission."
+            ),
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Could not delete Jira ticket {clean_key}: {exc}"}
 
 # ==========================================
 # HOW TO USE THE FUNCTION:

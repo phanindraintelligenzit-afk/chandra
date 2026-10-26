@@ -41,6 +41,35 @@ function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+async function downloadExecutionFile(url: string, fallbackFilename: string) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(
+      `Download failed (${response.status}): ${details || response.statusText}`
+    );
+  }
+
+  const blob = await response.blob();
+  if (blob.size === 0) {
+    throw new Error("The server returned an empty download.");
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  const filename = filenameMatch?.[1]
+    ? decodeURIComponent(filenameMatch[1].replace(/"$/, ""))
+    : fallbackFilename;
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 function StatusBadge({ status, progress }: { status: ExecutingAction["status"]; progress?: number }) {
   const tones: Record<string, string> = {
     pending: "border-amber/45 bg-amber/12 text-amber",
@@ -1082,29 +1111,23 @@ export const WorkerActionExecutionCenter = forwardRef<
                           <div className="flex flex-wrap gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
                             {action.status === "completed" && (
                               <button 
-                                onClick={async (e) => {
+                              onClick={async (e) => {
                                   e.stopPropagation();
-                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
                                   const rawId = action.jobId || action.id || "";
                                   const effectiveId = rawId.replace(/^dw-/, "");
-                                  
-                                  // Best-effort: sync frontend logs to backend so artifact zip contains full live logs
-                                  if (action.logs && action.logs.length > 0 && effectiveId) {
-                                    try {
-                                      await fetch(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}/sync`, {
-                                        method: "POST",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ logs: action.logs }),
-                                      });
-                                    } catch (_) {}
-                                  }
 
                                   const params = new URLSearchParams();
-                                  if (action.sandboxPath) params.set("path", action.sandboxPath);
                                   if (effectiveId) params.set("job_id", effectiveId);
-                                  if (action.jiraUrl || action.jiraKey) params.set("jiraUrl", action.jiraUrl || action.jiraKey || '');
                                   params.set("t", Date.now().toString());
-                                  window.open(`${apiUrl}/download_sandbox?${params.toString()}`, '_blank');
+
+                                  try {
+                                    await downloadExecutionFile(
+                                      `${getApiUrl("/download_sandbox")}?${params.toString()}`,
+                                      `${effectiveId || "execution"}_artifacts.zip`
+                                    );
+                                  } catch (error) {
+                                    console.error("Could not download execution artifacts:", error);
+                                  }
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >
@@ -1141,20 +1164,24 @@ export const WorkerActionExecutionCenter = forwardRef<
                                       }, 2000);
 
                                       try {
-                                        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
                                         const effectiveJobId = action.jobId || (action.id ? action.id.replace(/^dw-/, '') : '');
-                                        const response = await fetch(`${apiUrl}/destroy_sandbox`, {
+                                        const response = await fetch(getApiUrl("/destroy_sandbox"), {
                                           method: "POST",
                                           headers: { "Content-Type": "application/json" },
                                           body: JSON.stringify({
                                             path: action.sandboxPath || '',
                                             job_id: effectiveJobId,
-                                            jiraUrl: action.jiraUrl || action.jiraKey
+                                            jira_issue_key: action.jiraKey,
+                                            jira_url: action.jiraUrl
                                           })
                                         });
+                                        const destroyResult = await response.json().catch(() => ({}));
                                         if (!response.ok) {
-                                          const errData = await response.json().catch(() => ({}));
-                                          alert("Failed to destroy infrastructure: " + (errData.error || errData.details || response.statusText));
+                                          console.error("Failed to destroy infrastructure:", {
+                                            status: response.status,
+                                            error: destroyResult.error || response.statusText,
+                                            details: destroyResult.details,
+                                          });
                                           setExecutingActions(current => 
                                             current.map(a => a.id === action.id ? { ...a, status: "completed" } : a)
                                           );
@@ -1165,12 +1192,17 @@ export const WorkerActionExecutionCenter = forwardRef<
                                           current.map(a => a.id === action.id ? { ...a, status: "destroyed" } : a)
                                         );
                                         if (onActionDestroyed) onActionDestroyed(action.kraCode, action.id);
+                                        if (destroyResult.jira_status === "error") {
+                                          console.error(
+                                            `Infrastructure was destroyed, but the Jira comment could not be added to ${destroyResult.jira_issue_key || action.jiraKey}:`,
+                                            destroyResult.jira_error || "Check the backend Jira credentials and project comment permissions."
+                                          );
+                                        }
                                         setTimeout(() => {
                                           removeAction(action.id);
                                         }, 1200);
                                       } catch (error) {
                                         console.error(error);
-                                        alert("Error occurred while destroying infrastructure.");
                                         setExecutingActions(current => 
                                           current.map(a => a.id === action.id ? { ...a, status: "completed" } : a)
                                         );
@@ -1228,20 +1260,32 @@ export const WorkerActionExecutionCenter = forwardRef<
                                   e.stopPropagation();
                                   const rawId = action.jobId || action.id || "";
                                   const effectiveId = rawId.replace(/^dw-/, "");
-                                  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:6001";
 
-                                  // Best-effort: sync frontend logs to backend before download
                                   if (action.logs && action.logs.length > 0 && effectiveId) {
                                     try {
-                                      await fetch(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}/sync`, {
-                                        method: "POST",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ logs: action.logs }),
-                                      });
-                                    } catch (_) {}
+                                      await fetch(
+                                        getApiUrl(`/orchestrate/logs/${encodeURIComponent(effectiveId)}/sync`),
+                                        {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ logs: action.logs }),
+                                        }
+                                      );
+                                    } catch (error) {
+                                      console.warn("Could not sync execution logs before log download:", error);
+                                    }
                                   }
 
-                                  window.open(`${apiUrl}/orchestrate/logs/${encodeURIComponent(effectiveId)}?t=${Date.now()}`, '_blank');
+                                  try {
+                                    await downloadExecutionFile(
+                                      `${getApiUrl(
+                                        `/orchestrate/logs/${encodeURIComponent(effectiveId)}`
+                                      )}?t=${Date.now()}`,
+                                      `${effectiveId}.log`
+                                    );
+                                  } catch (error) {
+                                    console.error("Could not download execution logs:", error);
+                                  }
                                 }}
                                 className="flex items-center gap-2 rounded border border-frost/30 bg-frost/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.1em] text-frost hover:bg-frost/20 transition"
                               >

@@ -37,9 +37,13 @@ _account_audit = AWSOptimizationAndSecurityFetcher()
 _config = AWSConfigHistoryFetcher()
 _xray = AWSXRayFetcher()
 
+_AWS_TOOL_TIMEOUT_SECONDS = 60
 
 def _run(coro):
-    return asyncio.run(coro)
+    async def run_with_timeout():
+        return await asyncio.wait_for(coro, timeout=_AWS_TOOL_TIMEOUT_SECONDS)
+
+    return asyncio.run(run_with_timeout())
 
 
 def _with_tool_name(result: dict[str, Any], name: str) -> dict[str, Any]:
@@ -209,7 +213,10 @@ def fetch_global_xray_summary(
 
 @tool
 def fetch_all_findings() -> dict:
-    """Compliance, security, reliability, performance and cost findings across all enabled AWS regions."""
+    """Fetch compliance, security, reliability, performance, and cost findings.
+
+    Results cover all enabled AWS regions.
+    """
     findings = _run(run_all_detectors())
     serialized = [f.model_dump() if hasattr(f, "model_dump") else f for f in findings]
     return _with_tool_name({"findings": serialized, "total": len(serialized)}, "fetch_all_findings")

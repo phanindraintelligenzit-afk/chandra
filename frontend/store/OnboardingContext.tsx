@@ -177,6 +177,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [costMetricsError, setCostMetricsError] = useState<string | null>(null);
   const [dashboardOpened, setDashboardOpened] = useState<boolean>(false);
   const [hydrated, setHydrated] = useState(false);
+  const [customKrasHydrated, setCustomKrasHydrated] = useState(false);
   const selectedKRAs = useMemo(() => buildSelectedKras(predefinedKras, customKras), [predefinedKras, customKras]);
   const kraPayload = useMemo(() => buildKraAgentPayload(predefinedKras, customKras), [predefinedKras, customKras]);
 
@@ -190,9 +191,6 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   }, [customKras]);
 
   const hydratedRef = useRef(false);
-  // Guard so we only sync to customKras.json once hydration is done — otherwise
-  // a fast user click on "Add" would race the file fetch and overwrite it.
-  const customKrasHydratedRef = useRef(false);
   // Debounce handle for the PUT /customKras call.
   const customKrasSaveTimerRef = useRef<number | null>(null);
 
@@ -242,8 +240,6 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   // on first mount, then merge with anything in localStorage so the user sees
   // their full library the next time they open the onboarding page.
   useEffect(() => {
-    if (customKrasHydratedRef.current) return;
-    customKrasHydratedRef.current = true;
     let cancelled = false;
     (async () => {
       try {
@@ -264,6 +260,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         });
       } catch (error) {
         console.warn("Failed to hydrate customKras from backend:", error);
+      } finally {
+        if (!cancelled) setCustomKrasHydrated(true);
       }
     })();
     return () => {
@@ -274,7 +272,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   // Debounced persistence — every time the customKras list changes we save it
   // back to customKras.json on the backend so the library survives a hard refresh.
   useEffect(() => {
-    if (!hydrated || !customKrasHydratedRef.current) return;
+    if (!hydrated || !customKrasHydrated) return;
     if (customKrasSaveTimerRef.current !== null) {
       window.clearTimeout(customKrasSaveTimerRef.current);
     }
@@ -295,7 +293,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         customKrasSaveTimerRef.current = null;
       }
     };
-  }, [customKras, hydrated]);
+  }, [customKras, customKrasHydrated, hydrated]);
 
 
   useEffect(() => {
@@ -417,7 +415,9 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     if (typeof window !== "undefined") {
       console.log("📝 SET OBSERVATIONS CALLED - data:", data ? `health=${data.health}` : "null", "error:", error);
     }
-    setObservationsState(data);
+    if (data !== null || error === null) {
+      setObservationsState(data);
+    }
     setObservationsError(error);
   }, []);
 

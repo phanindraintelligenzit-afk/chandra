@@ -849,7 +849,7 @@ def _save_custom_kras_to_disk(entries: list) -> int:
 
 
 @app.get("/customKras")
-def get_custom_kras():
+async def get_custom_kras():
     """Read all custom KRAs persisted in customKras.json."""
     entries = _load_custom_kras_from_disk()
     return JSONResponse(
@@ -859,19 +859,26 @@ def get_custom_kras():
 
 
 class CustomKrasPayload(BaseModel):
-    kras: List[Dict[str, Any]] = Field(
-        description="Full list of custom KRAs to persist. Replaces the contents of customKras.json."
+    kras: list[dict[str, Any]] = Field(
+        description=(
+            "Full list of custom KRAs to persist. "
+            "Replaces the contents of customKras.json."
+        )
     )
 
 
 @app.put("/customKras")
-def put_custom_kras(payload: CustomKrasPayload):
+async def put_custom_kras(payload: CustomKrasPayload):
     """Replace the contents of customKras.json with the supplied list."""
     try:
         written = _save_custom_kras_to_disk(payload.kras)
         return JSONResponse(
             status_code=200,
-            content={"status": "success", "count": written, "message": f"Saved {written} custom KRAs"},
+            content={
+                "status": "success",
+                "count": written,
+                "message": f"Saved {written} custom KRAs",
+            },
         )
     except Exception as exc:
         logger.exception("Failed to write customKras.json: %s", exc)
@@ -1084,22 +1091,34 @@ def run_pipeline(request: PipelineRequest):
 
 # ── Generic job status endpoint (shared by all async jobs) ────────────────────
 @app.get("/jobs/status/{job_id}")
-def get_job_status_generic(job_id: str):
+async def get_job_status_generic(job_id: str):
     """Poll the status of any submitted async job."""
     job: Dict[str, Any] = {}
     try:
         clean_id = _clean_job_id(job_id)
         with _job_store_lock:
-            if job_id not in _job_store and clean_id not in _job_store:
-                recovered = _recover_job_from_disk(clean_id) or _recover_job_from_disk(job_id)
-                if recovered:
-                    _job_store[job_id] = recovered
-                else:
-                    return JSONResponse(status_code=404, content={
-                        "job_id": job_id, "status": "not_found",
-                        "message": "No job with this ID exists"
-                    })
-            job = dict(_job_store.get(job_id) or _job_store.get(clean_id) or {})
+            stored_job = _job_store.get(job_id)
+            if stored_job is None:
+                stored_job = _job_store.get(clean_id)
+            job_found = stored_job is not None
+            if job_found:
+                job = dict(stored_job)
+
+        if not job_found:
+            recovered = await asyncio.to_thread(_recover_job_from_disk, clean_id)
+            if not recovered and clean_id != job_id:
+                recovered = await asyncio.to_thread(_recover_job_from_disk, job_id)
+            if not recovered:
+                return JSONResponse(status_code=404, content={
+                    "job_id": job_id, "status": "not_found",
+                    "message": "No job with this ID exists"
+                })
+            with _job_store_lock:
+                _job_store.setdefault(job_id, recovered)
+                stored_job = _job_store.get(job_id)
+                if stored_job is None:
+                    stored_job = _job_store.get(clean_id)
+                job = dict(stored_job if stored_job is not None else recovered)
 
         from fastapi.encoders import jsonable_encoder
         clean_content = jsonable_encoder({"job_id": job_id, **job})
@@ -1911,7 +1930,7 @@ def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None, j
     # Check for Jira ticket in job_id, path, or jiraUrl
     jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', f"{job_id or ''} {path or ''} {jiraUrl or ''}".upper())
     resolved_ticket = jira_match.group(1) if jira_match else None
-    if resolved_ticket:
+    if resolved_ticket and not job_id:
         if resolved_ticket in _ticket_to_job_id:
             effective_id = _clean_job_id(_ticket_to_job_id[resolved_ticket])
         else:
@@ -1990,6 +2009,64 @@ def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None, j
                 target_path = os.path.abspath(c)
                 break
 
+    if not target_path and effective_id:
+        metadata_paths = [
+            app_root / "logs" / f"{effective_id}.meta.json",
+            app_root / "logs" / f"dw-{effective_id}.meta.json",
+        ]
+        metadata_path = next((candidate for candidate in metadata_paths if candidate.is_file()), None)
+        if metadata_path:
+            buffer = io.BytesIO()
+            persisted_entries = 0
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.warning("Could not read persisted job metadata for artifact download %s: %s", effective_id, exc)
+                    metadata = None
+
+                if isinstance(metadata, dict):
+                    zip_file.writestr("job_metadata.json", json.dumps(metadata, indent=2))
+                    persisted_entries += 1
+                    result = metadata.get("result")
+                    if isinstance(result, dict):
+                        zip_file.writestr("execution_result.json", json.dumps(result, indent=2))
+                        persisted_entries += 1
+
+                log_paths = [
+                    app_root / "logs" / f"{effective_id}.log",
+                    app_root / "logs" / f"{effective_id}.live.log",
+                    app_root / "logs" / f"dw-{effective_id}.log",
+                    app_root / "logs" / f"dw-{effective_id}.live.log",
+                ]
+                for log_path in log_paths:
+                    if log_path.is_file():
+                        zip_file.write(log_path, f"logs/{log_path.name}")
+                        persisted_entries += 1
+
+            buffer.seek(0)
+            if persisted_entries:
+                return StreamingResponse(
+                    buffer,
+                    media_type="application/zip",
+                    headers={
+                        "Content-Disposition": f"attachment; filename={effective_id}_artifacts.zip",
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache",
+                    },
+                )
+
+    if not target_path:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": (
+                    "Sandbox directory not found. Download execution artifacts before destroying "
+                    "the infrastructure."
+                )
+            },
+        )
+
     full_logs = ""
     if effective_id:
         try:
@@ -2022,37 +2099,23 @@ def download_sandbox(path: Optional[str] = None, job_id: Optional[str] = None, j
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         written_arcnames = set()
-        if target_path and os.path.exists(target_path):
-            for root, dirs, files in os.walk(target_path):
-                for skip in [".terraform", ".git", "__pycache__"]:
-                    if skip in dirs:
-                        dirs.remove(skip)
-                for file in files:
-                    # Skip disk live_logs/execution_logs if full_logs is available so we write the fresh version
-                    if full_logs and file in ("live_logs.txt", "execution_logs.txt"):
-                        continue
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, target_path)
-                    zip_file.write(file_path, arcname)
-                    written_arcnames.add(arcname.replace("\\", "/"))
+        for root, dirs, files in os.walk(target_path):
+            for skip in [".terraform", ".git", "__pycache__"]:
+                if skip in dirs:
+                    dirs.remove(skip)
+            for file in files:
+                # Skip disk live_logs/execution_logs if full_logs is available so we write the fresh version
+                if full_logs and file in ("live_logs.txt", "execution_logs.txt"):
+                    continue
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, target_path)
+                zip_file.write(file_path, arcname)
+                written_arcnames.add(arcname.replace("\\", "/"))
 
-            # Always write the definitive full_logs to the archive
-            if full_logs:
-                zip_file.writestr("live_logs.txt", full_logs)
-                zip_file.writestr("execution_logs.txt", full_logs)
-        else:
-            job_info = _job_store.get(effective_id, {}) if effective_id else {}
-            summary_content = {
-                "job_id": effective_id or "unknown",
-                "status": job_info.get("status", "completed"),
-                "message": job_info.get("message", "Execution artifacts"),
-                "result": job_info.get("result", {}),
-            }
-            zip_file.writestr("execution_summary.json", json.dumps(summary_content, indent=2))
-            zip_file.writestr("README.txt", f"Chandra execution artifacts for job {effective_id}\n")
-            if full_logs:
-                zip_file.writestr("live_logs.txt", full_logs)
-                zip_file.writestr("execution_logs.txt", full_logs)
+        # Always write the definitive full_logs to the archive
+        if full_logs:
+            zip_file.writestr("live_logs.txt", full_logs)
+            zip_file.writestr("execution_logs.txt", full_logs)
 
     buffer.seek(0)
     dl_filename = f"{effective_id}_artifacts.zip" if effective_id else "execution_artifacts.zip"
@@ -2075,6 +2138,53 @@ class DestroyRequest(BaseModel):
     jira_issue_key: Optional[str] = None
     jiraKey: Optional[str] = None
 
+
+def _read_destroy_outputs(sandbox_path: str) -> dict[str, Any]:
+    """Read Terraform outputs before the destroy script removes the sandbox."""
+    result_file = Path(sandbox_path) / "execution_result.json"
+    state_file = Path(sandbox_path) / "terraform.tfstate"
+    for output_file in (result_file, state_file):
+        if not output_file.is_file():
+            continue
+        try:
+            with output_file.open("r", encoding="utf-8") as file:
+                document = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read Terraform outputs from %s: %s", output_file, exc)
+            continue
+
+        output_sections = [document.get("outputs", {})]
+        if isinstance(document.get("result"), dict):
+            result = document["result"]
+            output_sections.append(result.get("outputs", {}))
+            output = result.get("output")
+            if isinstance(output, dict):
+                execution = output.get("execution")
+                if isinstance(execution, dict):
+                    output_sections.append(execution.get("outputs", {}))
+
+        values: dict[str, Any] = {}
+        for section in output_sections:
+            if not isinstance(section, dict):
+                continue
+            for name, output in section.items():
+                normalized_name = "region" if name == "bucket_region" else name
+                if normalized_name not in {
+                    "bucket_name",
+                    "bucket_arn",
+                    "function_name",
+                    "function_arn",
+                    "region",
+                }:
+                    continue
+                value = output.get("value") if isinstance(output, dict) else output
+                if value is not None:
+                    values[normalized_name] = value
+        if values:
+            return values
+    return {}
+
+
 @app.post("/destroy_sandbox")
 def destroy_sandbox(request: DestroyRequest):
     """Run terraform destroy on a completed sandbox directory."""
@@ -2088,8 +2198,12 @@ def destroy_sandbox(request: DestroyRequest):
         if effective_id.startswith("dw-"):
             effective_id = effective_id[3:]
     
-    # Extract Jira ticket key if present in request.jiraUrl, request.job_id, or request.path
-    jira_raw = f"{request.jiraUrl or ''} {request.job_id or ''} {request.path or ''}"
+    # Prefer the explicit issue key; URLs and legacy payloads remain supported.
+    jira_raw = (
+        f"{request.jira_issue_key or ''} {request.jiraKey or ''} "
+        f"{request.jira_url or ''} {request.jiraUrl or ''} "
+        f"{request.job_id or ''} {request.path or ''}"
+    )
     jira_match = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', jira_raw.upper())
     resolved_ticket = jira_match.group(1) if jira_match else None
 
@@ -2216,7 +2330,7 @@ def destroy_sandbox(request: DestroyRequest):
                 target_path = os.path.abspath(c)
                 break
 
-    jira_url = request.jiraUrl or resolved_ticket
+    jira_url = resolved_ticket
     if not jira_url and effective_id:
         for meta_name in [f"{effective_id}.meta.json", f"{effective_id.lower()}.meta.json"]:
             meta_file = app_root / "logs" / meta_name
@@ -2236,17 +2350,9 @@ def destroy_sandbox(request: DestroyRequest):
 
     if not target_path or not os.path.exists(target_path):
         logger.error(f"Sandbox directory not found for destroy request: path={request.path}, job_id={request.job_id}, effective_id={effective_id}, ticket={resolved_ticket}")
-        # If sandbox already deleted from disk but ticket exists, still delete the Jira ticket
-        if jira_url:
-            try:
-                from tools.jira_tools.create_jira_ticket import delete_jira_ticket
-                issue_key = jira_url.rstrip("/").split("/")[-1]
-                logger.info(f"Sandbox not found on disk, deleting Jira ticket {issue_key} directly...")
-                delete_jira_ticket(issue_key)
-                return JSONResponse(status_code=200, content={"status": "success", "message": f"Sandbox already removed; Jira ticket {issue_key} deleted successfully."})
-            except Exception as j_err:
-                logger.warning("Failed to delete Jira ticket on missing sandbox: %s", j_err)
         return JSONResponse(status_code=404, content={"error": "Sandbox not found"})
+
+    destroy_outputs = _read_destroy_outputs(target_path)
 
     env = os.environ.copy()
     tf_dir = os.environ.get("TERRAFORM_BIN_DIR")
@@ -2274,9 +2380,7 @@ def destroy_sandbox(request: DestroyRequest):
         
     script_path = str((app_root / "scripts" / "destroy_terraform.py").resolve())
     cmd = [sys.executable, script_path, target_path]
-    if jira_url:
-        cmd.extend(["--jiraUrl", jira_url])
-        
+
     try:
         logger.info(f"Starting infrastructure destruction for: {target_path}")
         proc = subprocess.Popen(
@@ -2297,19 +2401,48 @@ def destroy_sandbox(request: DestroyRequest):
         proc.wait()
         full_output = "\n".join(output)
 
-        # Directly ensure Jira ticket is deleted from Jira upon destruction
-        if jira_url:
-            try:
-                from tools.jira_tools.create_jira_ticket import delete_jira_ticket
-                issue_key = jira_url.rstrip("/").split("/")[-1]
-                logger.info(f"Ensuring Jira ticket {issue_key} is deleted...")
-                del_res = delete_jira_ticket(issue_key)
-                logger.info(f"Jira deletion response for {issue_key}: {del_res}")
-            except Exception as j_err:
-                logger.warning(f"Could not delete Jira ticket {jira_url} in destroy_sandbox: {j_err}")
-        
         if proc.returncode != 0:
             return JSONResponse(status_code=500, content={"error": "Destroy failed", "details": full_output})
+
+        jira_result = None
+        issue_key = resolved_ticket or jira_url
+        if issue_key:
+            try:
+                from src.chandra.digital_worker.tracker import get_active_agent_name
+                from tools.jira_tools.create_jira_ticket import add_summary_comment
+
+                agent_name = get_active_agent_name().strip().upper()
+                comment_lines = [
+                    "Infrastructure destroyed successfully.",
+                    f"{agent_name} outcome: executed (dry_run=False).",
+                ]
+                resource_output_names = (
+                    "bucket_name",
+                    "bucket_arn",
+                    "function_name",
+                    "function_arn",
+                )
+                for output_name in resource_output_names:
+                    if output_name in destroy_outputs:
+                        comment_lines.append(
+                            f"{output_name} : {destroy_outputs[output_name]}"
+                        )
+                if not any(name in destroy_outputs for name in resource_output_names):
+                    comment_lines.extend(
+                        ["bucket_name : N/A", "bucket_arn : N/A"]
+                    )
+                comment_lines.extend(
+                    [
+                        f"region : {destroy_outputs.get('region', env.get('AWS_REGION', 'N/A'))}",
+                        "Validation passed: false.",
+                    ]
+                )
+                jira_result = add_summary_comment(issue_key, "\n".join(comment_lines))
+            except Exception as j_err:
+                logger.exception(
+                    "Could not add destroy comment to Jira ticket %s", issue_key
+                )
+                jira_result = {"status": "error", "message": str(j_err)}
 
         if effective_id:
             eff_lower = effective_id.lower()
@@ -2331,7 +2464,22 @@ def destroy_sandbox(request: DestroyRequest):
                     except Exception:
                         pass
 
-        return JSONResponse(status_code=200, content={"status": "success", "message": full_output})
+        if jira_result and jira_result.get("status") != "success":
+            return JSONResponse(status_code=200, content={
+                "status": "partial",
+                "infrastructure_status": "destroyed",
+                "jira_status": "error",
+                "jira_issue_key": issue_key,
+                "jira_error": jira_result.get("message", "Jira destruction comment failed"),
+                "message": full_output,
+            })
+
+        return JSONResponse(status_code=200, content={
+            "status": "success",
+            "infrastructure_status": "destroyed",
+            "jira_status": "commented" if jira_result else "skipped",
+            "message": full_output,
+        })
     except Exception as e:
         logger.exception("Failed to destroy sandbox at %s: %s", target_path, e)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -2773,22 +2921,23 @@ def resume_orchestration(job_id: str, request: ResumeRequest):
 
 
 @app.get("/orchestrate/status/{job_id}", response_model=JobStatusResponse)
-def get_orchestrate_status(job_id: str):
+async def get_orchestrate_status(job_id: str):
     """Poll the status of a submitted orchestration job."""
     with _job_store_lock:
-        if job_id not in _job_store:
-            recovered = _recover_job_from_disk(job_id)
-            if recovered:
-                _job_store[job_id] = recovered
-            else:
-                return JobStatusResponse(
-                    job_id=job_id,
-                    status="not_found",
-                    message="Job ID not found",
-                    error="No job with this ID exists"
-                )
-        # Copy inside the lock so we don't race with the task thread modifying the dict
-        job = dict(_job_store[job_id])
+        job = dict(_job_store[job_id]) if job_id in _job_store else {}
+
+    if not job:
+        recovered = await asyncio.to_thread(_recover_job_from_disk, job_id)
+        if not recovered:
+            return JobStatusResponse(
+                job_id=job_id,
+                status="not_found",
+                message="Job ID not found",
+                error="No job with this ID exists"
+            )
+        with _job_store_lock:
+            _job_store.setdefault(job_id, recovered)
+            job = dict(_job_store.get(job_id) or recovered)
 
     return JobStatusResponse(job_id=job_id, **job)
 

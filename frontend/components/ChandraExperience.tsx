@@ -426,7 +426,8 @@ function CommandHeader({
   const { agentName, avatarId, permissions, observationsError } = useOnboarding();
   const AGENT = (agentName || "Chandra").toUpperCase();
   const avatar = getAvatarById(avatarId);
-  const health = liveObservations?.health ?? "Active";
+  const hasObservations = Boolean(liveObservations);
+  const health = liveObservations?.health ?? (observationsError ? "Unavailable" : "Loading");
   const healthClass = healthTone(health);
   // (liveOpsForPanel removed — was computed but never consumed in this component)
 
@@ -448,8 +449,8 @@ function CommandHeader({
             >
               EDIT DEPLOYMENT CHOICES
             </button>
-            <div className={`flex items-center gap-2 border px-3 py-1.5 text-[0.6rem] uppercase tracking-[0.22em] ${healthClass} ${health.toUpperCase().includes("DEGRADED") ? "border-amber/35 bg-amber/10" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAILED") ? "border-signal/35 bg-signal/10" : "border-emerald-300/35 bg-emerald-300/10"}`}>
-              <span className={`h-1.5 w-1.5 rounded-full pulse-core ${health.toUpperCase().includes("DEGRADED") ? "bg-amber" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAILED") ? "bg-signal" : "bg-emerald-300"}`} />
+            <div className={`flex items-center gap-2 border px-3 py-1.5 text-[0.6rem] uppercase tracking-[0.22em] ${healthClass} ${!hasObservations ? "border-white/15 bg-white/5" : health.toUpperCase().includes("DEGRADED") ? "border-amber/35 bg-amber/10" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAILED") ? "border-signal/35 bg-signal/10" : "border-emerald-300/35 bg-emerald-300/10"}`}>
+              <span className={`h-1.5 w-1.5 rounded-full pulse-core ${!hasObservations ? "bg-frost/50" : health.toUpperCase().includes("DEGRADED") ? "bg-amber" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAILED") ? "bg-signal" : "bg-emerald-300"}`} />
               OPERATING STATUS: {health.toUpperCase()}
             </div>
             {observationsError ? (
@@ -471,19 +472,19 @@ function CommandHeader({
             </div>
             <div className="grid gap-2 sm:grid-cols-5">
               {[
-                [String(liveObservations?.observations?.length || 0), "TOTAL OBSERVATIONS"],
-                [String(liveSummary.total || 0), "ACTIVE ALERTS"],
-                [String((liveSummary.p1 + liveSummary.p2) || 0), "ACTIVE INCIDENTS"],
-                [String(liveObservations?.actions?.length || 0), "PENDING ACTIONS"]
+                [liveObservations ? String(liveObservations.observations?.length ?? 0) : "—", "TOTAL OBSERVATIONS"],
+                [liveObservations ? String(liveSummary.total) : "—", "ACTIVE ALERTS"],
+                [liveObservations ? String(liveSummary.p1 + liveSummary.p2) : "—", "ACTIVE INCIDENTS"],
+                [liveObservations ? String(liveObservations.actions?.length ?? 0) : "—", "PENDING ACTIONS"]
               ].map(([value, label]) => (
                 <div key={label} className="rounded-2xl border border-white/10 bg-black/30 px-3 py-2">
                   <div className="text-base text-frost">{value}</div>
                   <div className="mt-1 text-[0.54rem] uppercase tracking-[0.16em] text-muted">{label}</div>
                 </div>
               ))}
-              <div className={cx("rounded-2xl border px-3 py-2", health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "bg-signal/20 border-signal/50" : health.toUpperCase().includes("DEGRADED") ? "bg-amber/20 border-amber/50" : "bg-emerald-300/20 border-emerald-300/50")}>
-                  <div className={cx("text-base font-bold", health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "text-signal" : health.toUpperCase().includes("DEGRADED") ? "text-amber" : "text-emerald-300")}>
-                    {health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "🔴 CRITICAL" : health.toUpperCase().includes("DEGRADED") ? "🟡 ATTENTION" : "🟢 HEALTHY"}
+              <div className={cx("rounded-2xl border px-3 py-2", !hasObservations ? "border-white/15 bg-white/5" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "bg-signal/20 border-signal/50" : health.toUpperCase().includes("DEGRADED") ? "bg-amber/20 border-amber/50" : "bg-emerald-300/20 border-emerald-300/50")}>
+                  <div className={cx("text-base font-bold", !hasObservations ? "text-frost" : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "text-signal" : health.toUpperCase().includes("DEGRADED") ? "text-amber" : "text-emerald-300")}>
+                    {!hasObservations ? health.toUpperCase() : health.toUpperCase().includes("CRITICAL") || health.toUpperCase().includes("FAIL") ? "🔴 CRITICAL" : health.toUpperCase().includes("DEGRADED") ? "🟡 ATTENTION" : "🟢 HEALTHY"}
                   </div>
                   <div className="mt-1 text-[0.54rem] uppercase tracking-[0.16em] text-muted">OVERALL STATUS</div>
               </div>
@@ -2816,7 +2817,6 @@ export function ChandraExperience() {
 
   const [costDays, setCostDays] = useState(7);
   const isFirstCostFetchRef = useRef(true);
-  const observationsInitRef = useRef(false);
   const setCostMetricsRef = useRef(setCostMetrics);
   const setObservationsRef = useRef(setObservations);
   useEffect(() => {
@@ -2867,7 +2867,7 @@ export function ChandraExperience() {
   const observationsPayload = useMemo(
     () => ({
       region: process.env.NEXT_PUBLIC_AWS_REGION || "us-east-1",
-      kras: buildKraPayload([], activeCustomKras),
+      kras: buildKraPayload(predefinedKras, activeCustomKras),
       selected_kras: selectedKRAs,
       custom_kras: activeCustomKras,
       maturity_level: maturity,
@@ -2894,9 +2894,7 @@ export function ChandraExperience() {
   }, [predefinedKras, activeCustomKras]);
 
   useEffect(() => {
-    if (observationsInitRef.current) return;
     if (observations) {
-      observationsInitRef.current = true;
       setObservationsSync({
         status: "success",
         attempt: 0,
@@ -2905,10 +2903,10 @@ export function ChandraExperience() {
       });
       return;
     }
-    observationsInitRef.current = true;
 
     let cancelled = false;
     let retryTimer: number | null = null;
+    let startTimer: number | null = null;
     let controller: AbortController | null = null;
 
     async function loadOperationalIntelligence(attempt: number) {
@@ -2950,11 +2948,14 @@ export function ChandraExperience() {
       }
     }
 
-    loadOperationalIntelligence(1);
+    startTimer = window.setTimeout(() => {
+      void loadOperationalIntelligence(1);
+    }, 0);
 
     return () => {
       cancelled = true;
       controller?.abort();
+      if (startTimer) window.clearTimeout(startTimer);
       if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, []);
