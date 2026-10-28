@@ -878,6 +878,8 @@ export type DigitalWorkerStatus =
   | "pending"
   | "running"
   | "awaiting_approval"
+  | "awaiting_permission"
+  | "awaiting_gate2"
   | "completed"
   | "failed"
   | "stopped"

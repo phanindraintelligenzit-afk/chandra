@@ -470,9 +470,9 @@ export function HumanApprovalCenter({
           // Retain pending approval tickets so the screen never flickers or drops tickets
           const pending = prevRequests.filter(
             (r) =>
-              r.status === "awaiting_approval" ||
-              r.status === "awaiting_permission" ||
-              r.status === "awaiting_gate2" ||
+              (r.status as string) === "awaiting_approval" ||
+              (r.status as string) === "awaiting_permission" ||
+              (r.status as string) === "awaiting_gate2" ||
               r.requires_approval
           );
           return pending.length > 0 ? pending : prevRequests;
@@ -482,9 +482,9 @@ export function HumanApprovalCenter({
         for (const prev of prevRequests) {
           if (
             !incomingMap.has(prev.job_id) &&
-            (prev.status === "awaiting_approval" ||
-              prev.status === "awaiting_permission" ||
-              prev.status === "awaiting_gate2" ||
+            ((prev.status as string) === "awaiting_approval" ||
+              (prev.status as string) === "awaiting_permission" ||
+              (prev.status as string) === "awaiting_gate2" ||
               prev.requires_approval)
           ) {
             merged.push(prev);
